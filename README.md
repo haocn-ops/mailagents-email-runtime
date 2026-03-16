@@ -80,6 +80,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for:
 - `.dev.vars` is for local secrets and is gitignored
 - `.wrangler/` contains local state and is gitignored
 - `node_modules/` is gitignored
+- [`SECURITY.md`](SECURITY.md) documents open source safety and secret handling expectations
 
 See [`docs/testing.md`](docs/testing.md) for:
 
@@ -106,12 +107,11 @@ Template scripts:
 - [`scripts/bootstrap_dev_resources.sh`](scripts/bootstrap_dev_resources.sh)
 - [`scripts/bootstrap_worker_secrets.sh`](scripts/bootstrap_worker_secrets.sh)
 
-## Deployment Status
+## Deployment Notes
 
-- `dev` Worker deployed successfully
-- `dev` outbound SES send verified
-- remote smoke flow completed against Cloudflare
-- `staging` and `production` are not configured yet
+- `wrangler.toml` intentionally uses placeholder environment IDs and domains
+- real Cloudflare and SES values should be supplied per environment before deploy
+- keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
 
 ## GitHub Actions Deploy
 
