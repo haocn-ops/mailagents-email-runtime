@@ -21,8 +21,9 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   const messageId = createId("msg");
   const receivedAt = nowIso();
   const rawR2Key = `raw/${receivedAt.slice(0, 4)}/${receivedAt.slice(5, 7)}/${messageId}.eml`;
+  const rawBytes = new Uint8Array(await new Response(message.raw).arrayBuffer());
 
-  await env.R2_EMAIL.put(rawR2Key, message.raw);
+  await env.R2_EMAIL.put(rawR2Key, rawBytes);
 
   await env.D1_DB.prepare(
     `INSERT INTO messages (

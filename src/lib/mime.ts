@@ -33,6 +33,7 @@ export interface BuildMimeInput {
   to: string[];
   cc?: string[];
   bcc?: string[];
+  replyTo?: string[];
   subject: string;
   text?: string;
   html?: string;
@@ -57,6 +58,10 @@ export function buildRawMimeMessage(input: BuildMimeInput): Uint8Array {
 
   if (input.bcc?.length) {
     headers.push(`Bcc: ${input.bcc.map(normalizeHeaderValue).join(", ")}`);
+  }
+
+  if (input.replyTo?.length) {
+    headers.push(`Reply-To: ${input.replyTo.map(normalizeHeaderValue).join(", ")}`);
   }
 
   if (input.inReplyTo) {

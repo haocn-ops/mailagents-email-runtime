@@ -7,7 +7,7 @@ INSERT OR IGNORE INTO mailboxes (
 ) VALUES (
   'mbx_demo',
   't_demo',
-  'agent@inbound.example.com',
+  'agent@mailagents.net',
   'active',
   '2026-03-16T00:00:00.000Z'
 );

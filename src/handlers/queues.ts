@@ -3,6 +3,7 @@ import { buildRawMimeMessage } from "../lib/mime";
 import { enqueueDeadLetter } from "../lib/queue";
 import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
+import { getMailboxById } from "../repositories/agents";
 import {
   createTask,
   getDraftByR2Key,
@@ -161,6 +162,11 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
       }
+      const mailbox = await getMailboxById(env, outboundMessage.mailboxId);
+      if (!mailbox) {
+        throw new Error("Mailbox not found");
+      }
+
       const from = typeof draftPayload.from === "string" ? draftPayload.from : "";
       const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
       const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
@@ -197,6 +203,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
             inReplyTo,
             references,
             attachmentRefs,
+            replyToAddresses: [mailbox.address],
             configurationSetName: env.SES_CONFIGURATION_SET,
             emailTags,
           })
@@ -208,7 +215,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
             subject,
             text,
             html,
-            replyToAddresses: from ? [from] : [],
+            replyToAddresses: [mailbox.address],
             configurationSetName: env.SES_CONFIGURATION_SET,
             emailTags,
           });
@@ -254,6 +261,7 @@ async function sendRawDraft(env: Env, input: {
   inReplyTo?: string;
   references: string[];
   attachmentRefs: Array<{ filename?: unknown; contentType?: unknown; r2Key?: unknown }>;
+  replyToAddresses: string[];
   configurationSetName: string;
   emailTags: Array<{ Name: string; Value: string }>;
 }) {
@@ -281,6 +289,7 @@ async function sendRawDraft(env: Env, input: {
     to: input.to,
     cc: input.cc,
     bcc: input.bcc,
+    replyTo: input.replyToAddresses,
     subject: input.subject,
     text: input.text,
     html: input.html,

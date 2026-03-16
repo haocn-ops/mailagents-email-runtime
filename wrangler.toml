@@ -60,7 +60,7 @@ name = "mailagents-dev"
 [[env.dev.d1_databases]]
 binding = "D1_DB"
 database_name = "mailagents-dev"
-database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
+database_id = "ac48363e-4537-4e22-8d95-983b52f05729"
 
 [[env.dev.r2_buckets]]
 binding = "R2_EMAIL"
@@ -99,7 +99,7 @@ max_batch_timeout = 5
 
 [env.dev.vars]
 SES_REGION = "us-east-1"
-SES_FROM_DOMAIN = "dev.mail.example.com"
+SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-dev"
 ADMIN_ROUTES_ENABLED = "true"
 DEBUG_ROUTES_ENABLED = "true"
