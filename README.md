@@ -142,6 +142,10 @@ You can also choose whether to run the demo seed during the deployment.
 
 This project is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
 
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for notable project changes.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local workflow, pull request expectations, and contribution guidelines.
