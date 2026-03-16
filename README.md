@@ -137,3 +137,7 @@ You can also choose whether to run the demo seed during the deployment.
 3. Replace the MVP email parser with a full RFC-aware MIME parser if needed.
 4. Add deeper D1/R2 integration assertions or a real test suite.
 5. Further harden queue/webhook tenant ownership checks.
+
+## License
+
+This project is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
