@@ -1,6 +1,6 @@
-# Mailagents Cloudflare MVP
+# Mailagents Email Runtime
 
-This repository contains the MVP scaffold for an email-first AI agent runtime built on:
+An email-first AI agent runtime built on:
 
 - Cloudflare Workers
 - Cloudflare Email Routing
@@ -9,9 +9,9 @@ This repository contains the MVP scaffold for an email-first AI agent runtime bu
 - Cloudflare D1
 - Amazon SES
 
-## Current State
+## What It Includes
 
-The repository currently includes:
+This repository includes:
 
 - product and architecture documentation in `docs/`
 - initial D1 schema in `migrations/`
@@ -28,6 +28,26 @@ The HTTP API now enforces tenant-scoped signed bearer tokens for agent, task, ma
 and draft operations.
 Outbound sending now supports SES `Raw` MIME when drafts include reply headers or attachments.
 Inbound email and replay jobs now carry mailbox-specific routing data instead of relying on demo defaults.
+
+## Quick Start
+
+```bash
+npm install
+npm run check
+npm run d1:migrate:local
+npm run d1:seed:local
+npm run dev:local
+```
+
+In another shell:
+
+```bash
+ADMIN_API_SECRET_FOR_SMOKE=your-admin-secret \
+WEBHOOK_SHARED_SECRET_FOR_SMOKE=your-webhook-secret \
+npm run smoke:local
+```
+
+See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 
 ## Key Files
 
@@ -47,7 +67,7 @@ Inbound email and replay jobs now carry mailbox-specific routing data instead of
 
 ## Local Development
 
-See [docs/local-dev.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/local-dev.md) for:
+See [`docs/local-dev.md`](docs/local-dev.md) for:
 
 - local Wrangler setup
 - D1 migration commands
@@ -61,13 +81,13 @@ See [docs/local-dev.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/lo
 - `.wrangler/` contains local state and is gitignored
 - `node_modules/` is gitignored
 
-See [docs/testing.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/testing.md) for:
+See [`docs/testing.md`](docs/testing.md) for:
 
 - local smoke flow
 - SES webhook fixtures
 - smoke script usage
 
-See [docs/deployment.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/deployment.md) for:
+See [`docs/deployment.md`](docs/deployment.md) for:
 
 - real Cloudflare/AWS resource wiring
 - environment-specific resource naming
@@ -75,7 +95,7 @@ See [docs/deployment.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/d
 - pre-deploy config validation
 - deploy checklist
 
-See [docs/dev-bootstrap.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/dev-bootstrap.md) for:
+See [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) for:
 
 - first real `dev` environment creation
 - Cloudflare resource creation commands
@@ -83,8 +103,15 @@ See [docs/dev-bootstrap.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/doc
 
 Template scripts:
 
-- [scripts/bootstrap_dev_resources.sh](/Users/zh/Documents/codeX/mailagents_cloudflare2/scripts/bootstrap_dev_resources.sh)
-- [scripts/bootstrap_worker_secrets.sh](/Users/zh/Documents/codeX/mailagents_cloudflare2/scripts/bootstrap_worker_secrets.sh)
+- [`scripts/bootstrap_dev_resources.sh`](scripts/bootstrap_dev_resources.sh)
+- [`scripts/bootstrap_worker_secrets.sh`](scripts/bootstrap_worker_secrets.sh)
+
+## Deployment Status
+
+- `dev` Worker deployed successfully
+- `dev` outbound SES send verified
+- remote smoke flow completed against Cloudflare
+- `staging` and `production` are not configured yet
 
 ## Next Steps
 
