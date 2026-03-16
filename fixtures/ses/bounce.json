@@ -1,0 +1,22 @@
+{
+  "detail-type": "SES Email Event",
+  "source": "aws.ses",
+  "detail": {
+    "eventType": "Bounce",
+    "mail": {
+      "messageId": "provider_demo_message_id",
+      "tags": {
+        "message_id": ["msg_demo"],
+        "outbound_job_id": ["obj_demo"]
+      }
+    },
+    "bounce": {
+      "bounceType": "Permanent",
+      "bouncedRecipients": [
+        {
+          "emailAddress": "user@example.com"
+        }
+      ]
+    }
+  }
+}

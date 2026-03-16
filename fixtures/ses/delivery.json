@@ -1,0 +1,17 @@
+{
+  "detail-type": "SES Email Event",
+  "source": "aws.ses",
+  "detail": {
+    "eventType": "Delivery",
+    "mail": {
+      "messageId": "provider_demo_message_id",
+      "tags": {
+        "message_id": ["msg_demo"],
+        "outbound_job_id": ["obj_demo"]
+      }
+    },
+    "delivery": {
+      "recipients": ["user@example.com"]
+    }
+  }
+}

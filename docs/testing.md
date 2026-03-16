@@ -1,0 +1,63 @@
+# Smoke Testing
+
+This project currently uses a lightweight local smoke workflow instead of a full test framework.
+
+## What it covers
+
+The smoke flow exercises:
+
+- admin token minting
+- signed bearer auth
+- agent creation
+- mailbox binding
+- mailbox listing assertion
+- draft creation
+- draft fetch assertion
+- draft send enqueue
+- persisted outbound job assertion
+- SES webhook ingestion
+
+## Prerequisites
+
+- local worker already running with `npm run dev:local`
+- local D1 already migrated and seeded
+- `jq` installed
+
+## Run the smoke script
+
+```bash
+chmod +x scripts/local_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+WEBHOOK_SHARED_SECRET_FOR_SMOKE=replace-with-shared-secret \
+./scripts/local_smoke.sh
+```
+
+Optional overrides:
+
+- `BASE_URL`
+- `TENANT_ID`
+- `MAILBOX_ID`
+
+## Sample SES fixtures
+
+Fixtures live in:
+
+- [fixtures/ses/delivery.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/fixtures/ses/delivery.json)
+- [fixtures/ses/bounce.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/fixtures/ses/bounce.json)
+
+You can post them manually:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
+  -H 'content-type: application/json' \
+  -H 'x-webhook-shared-secret: replace-with-shared-secret' \
+  --data-binary @fixtures/ses/delivery.json
+```
+
+## Notes
+
+- The smoke script does not guarantee SES actually delivered an outbound message.
+- It verifies that the local API and queue-facing lifecycle can be exercised end to end.
+- It asserts key response fields with `jq` so obvious regressions fail fast.
+- Debug endpoints are admin-secret protected and intended only for local/dev verification.
+- For production confidence, add real integration tests around D1 state assertions and SES callback handling.

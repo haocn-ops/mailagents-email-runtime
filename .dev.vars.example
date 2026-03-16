@@ -1,0 +1,7 @@
+SES_ACCESS_KEY_ID=replace-with-aws-access-key-id
+SES_SECRET_ACCESS_KEY=replace-with-aws-secret-access-key
+WEBHOOK_SHARED_SECRET=replace-with-shared-secret
+API_SIGNING_SECRET=replace-with-api-signing-secret
+ADMIN_API_SECRET=replace-with-admin-api-secret
+ADMIN_ROUTES_ENABLED=true
+DEBUG_ROUTES_ENABLED=true

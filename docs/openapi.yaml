@@ -1,0 +1,807 @@
+openapi: 3.1.0
+info:
+  title: AI Agent Email Runtime API
+  version: 0.1.0
+  summary: Control plane and data plane API for an email-first AI agent runtime
+servers:
+  - url: https://api.example.com
+security:
+  - bearerAuth: []
+tags:
+  - name: Agents
+  - name: Auth
+  - name: Debug
+  - name: Mailboxes
+  - name: Tasks
+  - name: Messages
+  - name: Threads
+  - name: Drafts
+  - name: Webhooks
+paths:
+  /v1/auth/tokens:
+    post:
+      tags: [Auth]
+      summary: Mint a signed bearer token
+      operationId: createAccessToken
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sub, tenantId, scopes]
+              properties:
+                sub:
+                  type: string
+                tenantId:
+                  type: string
+                agentId:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                mailboxIds:
+                  type: array
+                  items:
+                    type: string
+                expiresInSeconds:
+                  type: integer
+      responses:
+        '201':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expiresAt]
+                properties:
+                  token:
+                    type: string
+                  expiresAt:
+                    type: string
+                    format: date-time
+  /v1/debug/agents/{agentId}:
+    get:
+      tags: [Debug]
+      summary: Inspect agent state
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent state
+  /v1/debug/drafts/{draftId}:
+    get:
+      tags: [Debug]
+      summary: Inspect draft state and payload
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/DraftId'
+      responses:
+        '200':
+          description: Draft state
+  /v1/debug/outbound-jobs/{outboundJobId}:
+    get:
+      tags: [Debug]
+      summary: Inspect outbound job state
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: outboundJobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Outbound job state
+  /v1/agents:
+    post:
+      tags: [Agents]
+      summary: Create an agent
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+  /v1/agents/{agentId}:
+    get:
+      tags: [Agents]
+      summary: Get an agent
+      operationId: getAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+    patch:
+      tags: [Agents]
+      summary: Update an agent
+      operationId: updateAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentRequest'
+      responses:
+        '200':
+          description: Updated agent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+  /v1/agents/{agentId}/mailboxes:
+    post:
+      tags: [Mailboxes]
+      summary: Bind a mailbox to an agent
+      operationId: bindMailboxToAgent
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindMailboxRequest'
+      responses:
+        '201':
+          description: Binding created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMailboxBinding'
+    get:
+      tags: [Mailboxes]
+      summary: List mailboxes for an agent
+      operationId: listAgentMailboxes
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Mailboxes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentMailboxBinding'
+  /v1/agents/{agentId}/policy:
+    put:
+      tags: [Agents]
+      summary: Upsert agent policy
+      operationId: upsertAgentPolicy
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertAgentPolicyRequest'
+      responses:
+        '200':
+          description: Policy saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentPolicy'
+  /v1/agents/{agentId}/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks for an agent
+      operationId: listAgentTasks
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+  /v1/messages/{messageId}:
+    get:
+      tags: [Messages]
+      summary: Get message metadata
+      operationId: getMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+  /v1/messages/{messageId}/content:
+    get:
+      tags: [Messages]
+      summary: Get normalized message content
+      operationId: getMessageContent
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageContent'
+  /v1/messages/{messageId}/replay:
+    post:
+      tags: [Messages]
+      summary: Replay a stored message
+      operationId: replayMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayMessageRequest'
+      responses:
+        '202':
+          description: Replay accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayAccepted'
+  /v1/threads/{threadId}:
+    get:
+      tags: [Threads]
+      summary: Get a thread
+      operationId: getThread
+      parameters:
+        - $ref: '#/components/parameters/ThreadId'
+      responses:
+        '200':
+          description: Thread
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thread'
+  /v1/agents/{agentId}/drafts:
+    post:
+      tags: [Drafts]
+      summary: Create a draft
+      operationId: createDraft
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDraftRequest'
+      responses:
+        '201':
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+  /v1/drafts/{draftId}:
+    get:
+      tags: [Drafts]
+      summary: Get a draft
+      operationId: getDraft
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+      responses:
+        '200':
+          description: Draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Draft'
+  /v1/drafts/{draftId}/send:
+    post:
+      tags: [Drafts]
+      summary: Enqueue a draft for sending
+      operationId: sendDraft
+      parameters:
+        - $ref: '#/components/parameters/DraftId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendDraftRequest'
+      responses:
+        '202':
+          description: Draft accepted for sending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendDraftAccepted'
+  /v1/webhooks/ses:
+    post:
+      tags: [Webhooks]
+      summary: Receive SES delivery events
+      operationId: receiveSesWebhook
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SesWebhookEvent'
+      responses:
+        '202':
+          description: Event accepted
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
+    ThreadId:
+      name: threadId
+      in: path
+      required: true
+      schema:
+        type: string
+    DraftId:
+      name: draftId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    AgentMode:
+      type: string
+      enum: [assistant, autonomous, review_only]
+    AgentStatus:
+      type: string
+      enum: [active, disabled]
+    TaskStatus:
+      type: string
+      enum: [queued, running, done, needs_review, failed]
+    DraftStatus:
+      type: string
+      enum: [draft, approved, queued, sent, cancelled, failed]
+    MessageStatus:
+      type: string
+      enum: [received, normalized, tasked, replied, ignored, failed]
+    OutboundJobStatus:
+      type: string
+      enum: [queued, sending, sent, retry, failed]
+    Agent:
+      type: object
+      required: [id, tenantId, name, status, mode, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        mode:
+          $ref: '#/components/schemas/AgentMode'
+        configR2Key:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateAgentRequest:
+      type: object
+      required: [name, mode, config]
+      properties:
+        name:
+          type: string
+        mode:
+          $ref: '#/components/schemas/AgentMode'
+        config:
+          type: object
+          additionalProperties: true
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        mode:
+          $ref: '#/components/schemas/AgentMode'
+        config:
+          type: object
+          additionalProperties: true
+    AgentMailboxBinding:
+      type: object
+      required: [id, agentId, mailboxId, role, status, createdAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        mailboxId:
+          type: string
+        role:
+          type: string
+          enum: [primary, shared, send_only, receive_only]
+        status:
+          type: string
+          enum: [active, disabled]
+        createdAt:
+          type: string
+          format: date-time
+    BindMailboxRequest:
+      type: object
+      required: [mailboxId, role]
+      properties:
+        mailboxId:
+          type: string
+        role:
+          type: string
+          enum: [primary, shared, send_only, receive_only]
+    AgentPolicy:
+      type: object
+      required:
+        [agentId, autoReplyEnabled, humanReviewRequired, confidenceThreshold, maxAutoRepliesPerThread, updatedAt]
+      properties:
+        agentId:
+          type: string
+        autoReplyEnabled:
+          type: boolean
+        humanReviewRequired:
+          type: boolean
+        confidenceThreshold:
+          type: number
+        maxAutoRepliesPerThread:
+          type: integer
+        allowedRecipientDomains:
+          type: array
+          items:
+            type: string
+        blockedSenderDomains:
+          type: array
+          items:
+            type: string
+        allowedTools:
+          type: array
+          items:
+            type: string
+        updatedAt:
+          type: string
+          format: date-time
+    UpsertAgentPolicyRequest:
+      type: object
+      required:
+        [autoReplyEnabled, humanReviewRequired, confidenceThreshold, maxAutoRepliesPerThread]
+      properties:
+        autoReplyEnabled:
+          type: boolean
+        humanReviewRequired:
+          type: boolean
+        confidenceThreshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        maxAutoRepliesPerThread:
+          type: integer
+          minimum: 0
+        allowedRecipientDomains:
+          type: array
+          items:
+            type: string
+        blockedSenderDomains:
+          type: array
+          items:
+            type: string
+        allowedTools:
+          type: array
+          items:
+            type: string
+    Task:
+      type: object
+      required:
+        [id, tenantId, mailboxId, sourceMessageId, taskType, priority, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        mailboxId:
+          type: string
+        sourceMessageId:
+          type: string
+        taskType:
+          type: string
+        priority:
+          type: integer
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        assignedAgent:
+          type: string
+        resultR2Key:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    Message:
+      type: object
+      required:
+        [id, tenantId, mailboxId, direction, provider, fromAddr, toAddr, status, createdAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        mailboxId:
+          type: string
+        threadId:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        provider:
+          type: string
+          enum: [cloudflare, ses]
+        internetMessageId:
+          type: string
+        providerMessageId:
+          type: string
+        fromAddr:
+          type: string
+        toAddr:
+          type: string
+        subject:
+          type: string
+        snippet:
+          type: string
+        status:
+          $ref: '#/components/schemas/MessageStatus'
+        rawR2Key:
+          type: string
+        normalizedR2Key:
+          type: string
+        receivedAt:
+          type: string
+          format: date-time
+        sentAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    Attachment:
+      type: object
+      required: [id, filename, contentType, sizeBytes]
+      properties:
+        id:
+          type: string
+        filename:
+          type: string
+        contentType:
+          type: string
+        sizeBytes:
+          type: integer
+        downloadUrl:
+          type: string
+          format: uri
+    MessageContent:
+      type: object
+      required: [text, attachments]
+      properties:
+        text:
+          type: string
+        html:
+          type: string
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+    Thread:
+      type: object
+      required: [id, mailboxId, messages]
+      properties:
+        id:
+          type: string
+        mailboxId:
+          type: string
+        subjectNorm:
+          type: string
+        status:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+    DraftAttachment:
+      type: object
+      required: [filename, contentType, r2Key]
+      properties:
+        filename:
+          type: string
+        contentType:
+          type: string
+        r2Key:
+          type: string
+    Draft:
+      type: object
+      required: [id, tenantId, agentId, mailboxId, status, draftR2Key, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        agentId:
+          type: string
+        mailboxId:
+          type: string
+        threadId:
+          type: string
+        sourceMessageId:
+          type: string
+        status:
+          $ref: '#/components/schemas/DraftStatus'
+        draftR2Key:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateDraftRequest:
+      type: object
+      required: [mailboxId, from, to, subject]
+      properties:
+        mailboxId:
+          type: string
+        threadId:
+          type: string
+        sourceMessageId:
+          type: string
+        from:
+          type: string
+        to:
+          type: array
+          items:
+            type: string
+        cc:
+          type: array
+          items:
+            type: string
+        bcc:
+          type: array
+          items:
+            type: string
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        inReplyTo:
+          type: string
+        references:
+          type: array
+          items:
+            type: string
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DraftAttachment'
+    SendDraftRequest:
+      type: object
+      properties:
+        idempotencyKey:
+          type: string
+    SendDraftAccepted:
+      type: object
+      required: [draftId, outboundJobId, status]
+      properties:
+        draftId:
+          type: string
+        outboundJobId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OutboundJobStatus'
+    ReplayMessageRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [normalize, rerun_agent]
+        agentId:
+          type: string
+        idempotencyKey:
+          type: string
+    ReplayAccepted:
+      type: object
+      required: [messageId, mode, status]
+      properties:
+        messageId:
+          type: string
+        mode:
+          type: string
+        status:
+          type: string
+          enum: [accepted]
+    SesWebhookEvent:
+      type: object
+      description: Raw event payload forwarded from EventBridge API Destination
+      additionalProperties: true

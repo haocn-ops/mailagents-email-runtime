@@ -1,0 +1,205 @@
+name = "mailagents-local"
+main = "src/index.ts"
+compatibility_date = "2026-03-16"
+
+[observability]
+enabled = true
+
+# Local/default development bindings.
+# Real Cloudflare environments are defined below under [env.*].
+[[d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-local"
+database_id = "local-mailagents-d1"
+
+[[r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-local-email"
+
+[[queues.producers]]
+binding = "EMAIL_INGEST_QUEUE"
+queue = "mailagents-local-email-ingest"
+
+[[queues.producers]]
+binding = "AGENT_EXECUTE_QUEUE"
+queue = "mailagents-local-agent-execute"
+
+[[queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-local-outbound-send"
+
+[[queues.producers]]
+binding = "DEAD_LETTER_QUEUE"
+queue = "mailagents-local-dead-letter"
+
+[[queues.consumers]]
+queue = "mailagents-local-email-ingest"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[queues.consumers]]
+queue = "mailagents-local-agent-execute"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[queues.consumers]]
+queue = "mailagents-local-outbound-send"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[vars]
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "local.mailagents.test"
+SES_CONFIGURATION_SET = "mailagents-local"
+ADMIN_ROUTES_ENABLED = "true"
+DEBUG_ROUTES_ENABLED = "true"
+
+[env.dev]
+name = "mailagents-dev"
+
+[[env.dev.d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-dev"
+database_id = "ac48363e-4537-4e22-8d95-983b52f05729"
+
+[[env.dev.r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-dev-email"
+
+[[env.dev.queues.producers]]
+binding = "EMAIL_INGEST_QUEUE"
+queue = "mailagents-dev-email-ingest"
+
+[[env.dev.queues.producers]]
+binding = "AGENT_EXECUTE_QUEUE"
+queue = "mailagents-dev-agent-execute"
+
+[[env.dev.queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-dev-outbound-send"
+
+[[env.dev.queues.producers]]
+binding = "DEAD_LETTER_QUEUE"
+queue = "mailagents-dev-dead-letter"
+
+[[env.dev.queues.consumers]]
+queue = "mailagents-dev-email-ingest"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.dev.queues.consumers]]
+queue = "mailagents-dev-agent-execute"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.dev.queues.consumers]]
+queue = "mailagents-dev-outbound-send"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[env.dev.vars]
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "mailagents.net"
+SES_CONFIGURATION_SET = "mailagents-dev"
+ADMIN_ROUTES_ENABLED = "true"
+DEBUG_ROUTES_ENABLED = "true"
+
+[env.staging]
+name = "mailagents-staging"
+
+[[env.staging.d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-staging"
+database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
+
+[[env.staging.r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-staging-email"
+
+[[env.staging.queues.producers]]
+binding = "EMAIL_INGEST_QUEUE"
+queue = "mailagents-staging-email-ingest"
+
+[[env.staging.queues.producers]]
+binding = "AGENT_EXECUTE_QUEUE"
+queue = "mailagents-staging-agent-execute"
+
+[[env.staging.queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-staging-outbound-send"
+
+[[env.staging.queues.producers]]
+binding = "DEAD_LETTER_QUEUE"
+queue = "mailagents-staging-dead-letter"
+
+[[env.staging.queues.consumers]]
+queue = "mailagents-staging-email-ingest"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.staging.queues.consumers]]
+queue = "mailagents-staging-agent-execute"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.staging.queues.consumers]]
+queue = "mailagents-staging-outbound-send"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[env.staging.vars]
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "staging.mail.example.com"
+SES_CONFIGURATION_SET = "mailagents-staging"
+ADMIN_ROUTES_ENABLED = "false"
+DEBUG_ROUTES_ENABLED = "false"
+
+[env.production]
+name = "mailagents-production"
+
+[[env.production.d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-production"
+database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+
+[[env.production.r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-production-email"
+
+[[env.production.queues.producers]]
+binding = "EMAIL_INGEST_QUEUE"
+queue = "mailagents-production-email-ingest"
+
+[[env.production.queues.producers]]
+binding = "AGENT_EXECUTE_QUEUE"
+queue = "mailagents-production-agent-execute"
+
+[[env.production.queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-production-outbound-send"
+
+[[env.production.queues.producers]]
+binding = "DEAD_LETTER_QUEUE"
+queue = "mailagents-production-dead-letter"
+
+[[env.production.queues.consumers]]
+queue = "mailagents-production-email-ingest"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.production.queues.consumers]]
+queue = "mailagents-production-agent-execute"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[[env.production.queues.consumers]]
+queue = "mailagents-production-outbound-send"
+max_batch_size = 10
+max_batch_timeout = 5
+
+[env.production.vars]
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "mail.example.com"
+SES_CONFIGURATION_SET = "mailagents-production"
+ADMIN_ROUTES_ENABLED = "false"
+DEBUG_ROUTES_ENABLED = "false"

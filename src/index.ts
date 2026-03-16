@@ -1,0 +1,20 @@
+import { notFound } from "./lib/http";
+import { handleEmail } from "./handlers/email";
+import { handleQueue } from "./handlers/queues";
+import { handleApiRequest } from "./routes/api";
+import type { Env } from "./types";
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const response = await handleApiRequest(request, env, ctx);
+    return response ?? notFound();
+  },
+
+  async email(message: Parameters<typeof handleEmail>[0], env: Env): Promise<void> {
+    await handleEmail(message, env);
+  },
+
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    await handleQueue(batch, env);
+  },
+};
