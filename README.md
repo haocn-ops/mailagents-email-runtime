@@ -113,6 +113,23 @@ Template scripts:
 - remote smoke flow completed against Cloudflare
 - `staging` and `production` are not configured yet
 
+## GitHub Actions Deploy
+
+This repository includes a manual deploy workflow at [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).
+
+Set these GitHub Actions secrets before using it:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+Then run the `Deploy` workflow and choose:
+
+- `dev`
+- `staging`
+- `production`
+
+You can also choose whether to run the demo seed during the deployment.
+
 ## Next Steps
 
 1. Replace placeholder IDs and domains in `wrangler.toml`, then run `npm run config:check:dev`, `npm run config:check:staging`, or `npm run config:check:production`.

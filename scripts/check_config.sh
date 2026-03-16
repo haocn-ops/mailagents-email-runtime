@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WRANGLER_TOML="$ROOT_DIR/wrangler.toml"
 DEV_VARS="$ROOT_DIR/.dev.vars"
 TARGET_ENV="${1:-production}"
+SKIP_LOCAL_SECRET_CHECKS="${SKIP_LOCAL_SECRET_CHECKS:-false}"
 
 fail() {
   echo "Config check failed: $1" >&2
@@ -34,7 +35,6 @@ check_has_value() {
 }
 
 require_file "$WRANGLER_TOML"
-require_file "$DEV_VARS"
 
 case "$TARGET_ENV" in
   dev)
@@ -58,15 +58,19 @@ case "$TARGET_ENV" in
     ;;
 esac
 
-check_has_value "$DEV_VARS" "SES_ACCESS_KEY_ID"
-check_has_value "$DEV_VARS" "SES_SECRET_ACCESS_KEY"
-check_has_value "$DEV_VARS" "WEBHOOK_SHARED_SECRET"
-check_has_value "$DEV_VARS" "API_SIGNING_SECRET"
-check_has_value "$DEV_VARS" "ADMIN_API_SECRET"
-check_has_value "$DEV_VARS" "ADMIN_ROUTES_ENABLED"
-check_has_value "$DEV_VARS" "DEBUG_ROUTES_ENABLED"
+if [[ "$SKIP_LOCAL_SECRET_CHECKS" != "true" ]]; then
+  require_file "$DEV_VARS"
 
-check_no_placeholder "$DEV_VARS" "replace-with-" ".dev.vars"
-check_no_placeholder "$DEV_VARS" "local-dev-access-key|local-dev-secret-key|local-webhook-secret|local-api-signing-secret|local-admin-secret" ".dev.vars"
+  check_has_value "$DEV_VARS" "SES_ACCESS_KEY_ID"
+  check_has_value "$DEV_VARS" "SES_SECRET_ACCESS_KEY"
+  check_has_value "$DEV_VARS" "WEBHOOK_SHARED_SECRET"
+  check_has_value "$DEV_VARS" "API_SIGNING_SECRET"
+  check_has_value "$DEV_VARS" "ADMIN_API_SECRET"
+  check_has_value "$DEV_VARS" "ADMIN_ROUTES_ENABLED"
+  check_has_value "$DEV_VARS" "DEBUG_ROUTES_ENABLED"
+
+  check_no_placeholder "$DEV_VARS" "replace-with-" ".dev.vars"
+  check_no_placeholder "$DEV_VARS" "local-dev-access-key|local-dev-secret-key|local-webhook-secret|local-api-signing-secret|local-admin-secret" ".dev.vars"
+fi
 
 echo "Config check passed for environment: $TARGET_ENV"

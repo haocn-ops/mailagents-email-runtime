@@ -201,6 +201,30 @@ npm run deploy:production
 
 Before deploy, make sure the corresponding Worker secrets were set for that environment.
 
+## GitHub Actions
+
+This repository includes a manual GitHub Actions workflow at [`.github/workflows/deploy.yml`](/Users/zh/Documents/codeX/mailagents_cloudflare2/.github/workflows/deploy.yml).
+
+Required repository or environment secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+The workflow:
+
+- installs dependencies
+- runs `npm run check`
+- runs the environment config check with local secret validation disabled
+- applies the remote D1 migration
+- optionally applies the demo seed
+- deploys the selected Worker environment
+
+Recommended setup:
+
+- store `dev`, `staging`, and `production` approvals in GitHub Environments
+- limit `production` workflow access to maintainers
+- do not enable the demo seed for `production`
+
 ## Post-Deploy Checks
 
 Verify:
