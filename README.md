@@ -145,3 +145,7 @@ This project is licensed under the Apache License 2.0. See [`LICENSE`](LICENSE).
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local workflow, pull request expectations, and contribution guidelines.
+
+## Code of Conduct
+
+See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for collaboration expectations and reporting guidance.
