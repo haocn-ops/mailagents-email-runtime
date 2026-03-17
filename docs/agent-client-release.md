@@ -10,6 +10,7 @@ Current package skeleton:
 - [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
 - [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
 - [docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
+- [docs/agent-client-release-notes-0.1.0.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-release-notes-0.1.0.md)
 
 ## Current State
 
@@ -36,6 +37,7 @@ Before publishing:
 7. confirm the public API surface in `src/index.ts`
 8. decide whether the current typed surface is enough for a first release
 9. update the package-local changelog for the release cut
+10. finalize the draft first-release notes
 
 ## Validation Steps
 

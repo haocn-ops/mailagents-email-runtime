@@ -23,3 +23,4 @@ All notable changes to `@mailagents/agent-client` will be documented here.
 - the package remains `private: true` and is not published yet
 - dry-run packaging is already exercised from the monorepo root
 - semver guidance now lives in [docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
+- draft first-release notes live in [docs/agent-client-release-notes-0.1.0.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-release-notes-0.1.0.md)
