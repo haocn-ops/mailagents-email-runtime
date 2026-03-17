@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "0.1.0",
+  "workflows": [
+    {
+      "name": "reply_to_inbound_email",
+      "goal": "Read inbound mail, gather context, draft a reply, and send only when delivery is explicitly intended.",
+      "inputs": ["agentId", "messageId", "threadId?", "sendIdempotencyKey?"],
+      "steps": [
+        { "tool": "get_message", "mode": "read" },
+        { "tool": "get_message_content", "mode": "read" },
+        { "tool": "get_thread", "mode": "read_optional" },
+        { "tool": "create_draft", "mode": "write" },
+        { "tool": "get_draft", "mode": "read" },
+        { "tool": "send_draft", "mode": "high_risk" }
+      ],
+      "stopConditions": [
+        "reply intent is ambiguous",
+        "recipient list appears unsafe",
+        "policy requires review",
+        "prior send state is unclear"
+      ],
+      "retryRules": [
+        "repeat reads normally",
+        "do not recreate drafts blindly",
+        "reuse the same idempotencyKey for repeated send attempts"
+      ]
+    },
+    {
+      "name": "operator_manual_send",
+      "goal": "Allow an operator or operator-guided agent to compose and send through the normal draft and queue path.",
+      "inputs": ["tenantId", "mailboxId", "recipients", "subject", "body", "idempotencyKey?"],
+      "steps": [
+        { "tool": "create_draft", "mode": "write" },
+        { "tool": "get_draft", "mode": "read" },
+        { "tool": "send_draft", "mode": "high_risk" }
+      ],
+      "stopConditions": [
+        "sender mailbox is unclear",
+        "recipients are broad or unexpected",
+        "message belongs in a product workflow rather than an operator path"
+      ],
+      "retryRules": [
+        "reuse the same idempotencyKey for the same logical send",
+        "use a new idempotencyKey when message content materially changes"
+      ]
+    },
+    {
+      "name": "replay_and_recover_message",
+      "goal": "Replay normalization or execution, then re-read state before deciding whether a follow-up action is safe.",
+      "inputs": ["messageId", "mode", "agentId?", "replayIdempotencyKey?"],
+      "steps": [
+        { "tool": "get_message", "mode": "read" },
+        { "tool": "get_message_content", "mode": "read" },
+        { "tool": "replay_message", "mode": "high_risk" },
+        { "tool": "get_message", "mode": "read" },
+        { "tool": "get_message_content", "mode": "read" },
+        { "tool": "get_thread", "mode": "read_optional" },
+        { "tool": "create_draft", "mode": "write_optional" },
+        { "tool": "get_draft", "mode": "read_optional" },
+        { "tool": "send_draft", "mode": "high_risk_optional" }
+      ],
+      "stopConditions": [
+        "replayed state is still inconsistent",
+        "requested replay mode does not match the recovery goal",
+        "outbound delivery would happen without clear approval"
+      ],
+      "retryRules": [
+        "reuse the same idempotencyKey for the same logical replay",
+        "do not reuse a replay key for a different mode or target message",
+        "treat any send after replay as a separate explicit action"
+      ]
+    }
+  ]
+}

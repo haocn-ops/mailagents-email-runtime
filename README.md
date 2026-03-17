@@ -60,6 +60,8 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-debug.md`
 - `docs/mcp-tooling-draft.md`
 - `docs/mcp-local.md`
+- `docs/agent-workflow-packs.md`
+- `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
 - `docs/dev-bootstrap.md`
 - `docs/deployment.md`
