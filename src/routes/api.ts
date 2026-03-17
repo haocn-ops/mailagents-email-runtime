@@ -11,7 +11,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
-import { buildCompatibilityContract, buildRuntimeMetadata } from "../lib/runtime-metadata";
+import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
   bindMailbox,
@@ -51,6 +51,10 @@ router.on("GET", "/v2/meta/runtime", async (_request, env) => {
 
 router.on("GET", "/v2/meta/compatibility", async (_request, env) => {
   return json(buildCompatibilityContract(env));
+});
+
+router.on("GET", "/v2/meta/compatibility/schema", async (_request, _env) => {
+  return json(COMPATIBILITY_CONTRACT_SCHEMA);
 });
 
 router.on("GET", "/v1/debug/agents/:agentId", async (request, env, _ctx, route) => {

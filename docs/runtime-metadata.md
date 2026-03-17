@@ -38,6 +38,7 @@ The `api` section includes:
 
 - `metaRuntimePath`
 - `compatibilityPath`
+- `compatibilitySchemaPath`
 - `mcpPath`
 
 For each MCP tool, the metadata includes:

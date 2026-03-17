@@ -58,11 +58,15 @@ curl -sS "$BASE_URL/mcp" \
 
 echo "Checking runtime metadata endpoint..."
 curl -sS "$BASE_URL/v2/meta/runtime" \
-  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime" and .api.compatibilityPath == "/v2/meta/compatibility"' >/dev/null
+  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime" and .api.compatibilityPath == "/v2/meta/compatibility" and .api.compatibilitySchemaPath == "/v2/meta/compatibility/schema"' >/dev/null
 
 echo "Checking compatibility contract endpoint..."
 curl -sS "$BASE_URL/v2/meta/compatibility" \
   | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and .contract.changelogPath == "/CHANGELOG.md" and .evolution.deprecationPolicy.minimumNotice == "one compatibility version" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
+
+echo "Checking compatibility schema endpoint..."
+curl -sS "$BASE_URL/v2/meta/compatibility/schema" \
+  | jq -e '.title == "Mailagents Agent Compatibility Contract" and (.properties.discovery.properties.compatibilitySchemaPath.type == "string") and (.properties.errors.items.required | index("code"))' >/dev/null
 
 echo "Listing scoped MCP tools..."
 TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \

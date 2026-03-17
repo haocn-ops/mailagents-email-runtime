@@ -1,6 +1,7 @@
 # Runtime Compatibility Contract
 
 This runtime exposes a compatibility contract at `/v2/meta/compatibility`.
+It also exposes a JSON Schema for that contract at `/v2/meta/compatibility/schema`.
 
 Use it when an external agent, hosted integration, or SDK needs a more stable
 machine-oriented contract than the higher-level runtime metadata endpoint.
@@ -9,6 +10,8 @@ Example:
 
 ```bash
 curl -sS http://127.0.0.1:8787/v2/meta/compatibility | jq
+
+curl -sS http://127.0.0.1:8787/v2/meta/compatibility/schema | jq
 ```
 
 The contract is intended to stabilize:
@@ -36,6 +39,7 @@ Key details:
 - `contract.changelogPath` points to the repository changelog used for rollout notes
 - `discovery.runtimeMetadataPath` points to the richer runtime metadata endpoint
 - `discovery.compatibilityPath` points back to this contract
+- `discovery.compatibilitySchemaPath` points to the JSON Schema for contract validation
 - `evolution.versioningPolicy` explains which changes are additive and which require a compatibility version bump
 - `evolution.deprecationPolicy` explains how removals should be announced
 - `evolution.deprecatedFields` is the machine-readable place to watch for pending removals
@@ -48,6 +52,13 @@ This contract is especially useful for:
 - hosted agent platforms
 - generated SDKs or wrappers
 - CI smoke checks that need stronger backward-compatibility assertions
+
+The schema endpoint is especially useful for:
+
+- CI compatibility checks
+- SDK fixture validation
+- contract snapshot testing
+- generated clients that validate responses before use
 
 Current deprecation stance:
 

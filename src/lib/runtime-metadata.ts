@@ -7,6 +7,7 @@ export const RUNTIME_SERVER_INFO = {
 
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 export const RUNTIME_COMPATIBILITY_VERSION = "2026-03-17";
+export const RUNTIME_COMPATIBILITY_SCHEMA_VERSION = "2026-03-17";
 
 export interface RuntimeToolMetadata {
   name: string;
@@ -238,6 +239,154 @@ export const MCP_ERROR_CODE_CATALOG = [
   },
 ] as const;
 
+export const COMPATIBILITY_CONTRACT_SCHEMA = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  title: "Mailagents Agent Compatibility Contract",
+  type: "object",
+  required: ["contract", "discovery", "evolution", "guarantees", "mcp", "workflows", "errors", "routes"],
+  properties: {
+    contract: {
+      type: "object",
+      required: ["name", "version", "stability", "changelogPath"],
+      properties: {
+        name: { type: "string" },
+        version: { type: "string" },
+        stability: { type: "string" },
+        changelogPath: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    discovery: {
+      type: "object",
+      required: ["runtimeMetadataPath", "compatibilityPath", "compatibilitySchemaPath", "mcpInitializeEmbedsRuntimeMetadata", "toolsListScopeFiltered"],
+      properties: {
+        runtimeMetadataPath: { type: "string" },
+        compatibilityPath: { type: "string" },
+        compatibilitySchemaPath: { type: "string" },
+        mcpInitializeEmbedsRuntimeMetadata: { type: "boolean" },
+        toolsListScopeFiltered: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    evolution: {
+      type: "object",
+      required: ["versioningPolicy", "deprecationPolicy", "deprecatedFields"],
+      properties: {
+        versioningPolicy: {
+          type: "object",
+          required: ["patchSafeChanges", "compatibilityVersionBumpTriggers"],
+          properties: {
+            patchSafeChanges: { type: "array", items: { type: "string" } },
+            compatibilityVersionBumpTriggers: { type: "array", items: { type: "string" } },
+          },
+          additionalProperties: false,
+        },
+        deprecationPolicy: {
+          type: "object",
+          required: ["announcedVia", "minimumNotice", "removalRule"],
+          properties: {
+            announcedVia: { type: "array", items: { type: "string" } },
+            minimumNotice: { type: "string" },
+            removalRule: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+        deprecatedFields: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["path", "status"],
+            properties: {
+              path: { type: "string" },
+              status: { type: "string", enum: ["deprecated"] },
+              replacement: { type: "string" },
+              removalVersion: { type: "string" },
+              note: { type: "string" },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+    guarantees: {
+      type: "object",
+      required: ["stableRuntimeFields", "stableToolAnnotations", "stableErrorCodes", "idempotentOperations"],
+      properties: {
+        stableRuntimeFields: { type: "array", items: { type: "string" } },
+        stableToolAnnotations: { type: "array", items: { type: "string" } },
+        stableErrorCodes: { type: "array", items: { type: "string" } },
+        idempotentOperations: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    },
+    mcp: {
+      type: "object",
+      required: ["protocolVersion", "methods", "tools"],
+      properties: {
+        protocolVersion: { type: "string" },
+        methods: { type: "array", items: { type: "string" } },
+        tools: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["name", "requiredScopes", "sendAdditionalScopes", "composite", "supportsPartialAuthorization", "riskLevel", "sideEffecting", "humanReviewRequired"],
+            properties: {
+              name: { type: "string" },
+              requiredScopes: { type: "array", items: { type: "string" } },
+              sendAdditionalScopes: { type: "array", items: { type: "string" } },
+              composite: { type: "boolean" },
+              supportsPartialAuthorization: { type: "boolean" },
+              riskLevel: { type: "string", enum: ["read", "write", "high_risk", "privileged"] },
+              sideEffecting: { type: "boolean" },
+              humanReviewRequired: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+    workflows: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["name", "compositeTool", "sideEffects"],
+        properties: {
+          name: { type: "string" },
+          compositeTool: { type: ["string", "null"] },
+          sideEffects: { type: "array", items: { type: "string" } },
+        },
+        additionalProperties: false,
+      },
+    },
+    errors: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["code", "category", "retryable", "description"],
+        properties: {
+          code: { type: "string" },
+          category: { type: "string" },
+          retryable: { type: "boolean" },
+          description: { type: "string" },
+        },
+        additionalProperties: false,
+      },
+    },
+    routes: {
+      type: "object",
+      required: ["adminEnabled", "debugEnabled"],
+      properties: {
+        adminEnabled: { type: "boolean" },
+        debugEnabled: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+} as const;
+
 function serializeToolCatalog() {
   return RUNTIME_TOOL_CATALOG.map((tool) => ({
     name: tool.name,
@@ -261,6 +410,7 @@ export function buildRuntimeMetadata(env: Env) {
     api: {
       metaRuntimePath: "/v2/meta/runtime",
       compatibilityPath: "/v2/meta/compatibility",
+      compatibilitySchemaPath: "/v2/meta/compatibility/schema",
       mcpPath: "/mcp",
       supportedHttpVersions: ["v1", "v2"],
     },
@@ -301,6 +451,7 @@ export function buildCompatibilityContract(env: Env) {
     discovery: {
       runtimeMetadataPath: runtime.api.metaRuntimePath,
       compatibilityPath: runtime.api.compatibilityPath,
+      compatibilitySchemaPath: runtime.api.compatibilitySchemaPath,
       mcpInitializeEmbedsRuntimeMetadata: true,
       toolsListScopeFiltered: true,
     },
