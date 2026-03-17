@@ -124,3 +124,39 @@ To continue execution, I need:
 - the final production hostname
 - a Cloudflare token with permission to deploy Workers and write Worker secrets
 - confirmation of the production secret values to install
+
+## 8. Minimum Cloudflare Permissions
+
+The current token can read some account resources, including:
+
+- D1 database list
+- R2 bucket list
+- Workers Queue list
+- existing `dev` Worker deployment and secret names
+
+It is still missing the write path needed for rollout.
+
+The next token should be able to:
+
+- deploy or update Workers
+- write Worker secrets
+- create or update D1 bindings through deploy
+- create or confirm production queues and R2 buckets if they do not exist
+- manage the final API hostname binding
+
+Practical minimum access:
+
+- Workers Scripts: Edit
+- Workers Routes or Custom Domains: Edit
+- D1: Edit
+- Queues: Edit
+- R2: Edit
+- Zone DNS: Edit for the zone that will host the API domain
+
+If you prefer narrower access:
+
+- pre-create the production D1 database, R2 bucket, queues, and DNS record yourself
+- then I only need a token that can:
+  - deploy Workers
+  - update Worker secrets
+  - attach the Worker to the already prepared route or custom domain
