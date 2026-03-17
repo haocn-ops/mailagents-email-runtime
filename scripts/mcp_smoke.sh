@@ -54,7 +54,11 @@ curl -sS "$BASE_URL/mcp" \
     "id": 1,
     "method": "initialize",
     "params": {}
-  }' | jq -e '.result.serverInfo.name == "mailagents-runtime"' >/dev/null
+  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.metaRuntimePath == "/v2/meta/runtime"' >/dev/null
+
+echo "Checking runtime metadata endpoint..."
+curl -sS "$BASE_URL/v2/meta/runtime" \
+  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime"' >/dev/null
 
 echo "Listing scoped MCP tools..."
 TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \

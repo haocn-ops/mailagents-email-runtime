@@ -6,6 +6,12 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
+import {
+  buildRuntimeMetadata,
+  MCP_PROTOCOL_VERSION,
+  RUNTIME_SERVER_INFO,
+  RUNTIME_TOOL_CATALOG,
+} from "../lib/runtime-metadata";
 import { Router } from "../lib/router";
 import {
   bindMailbox,
@@ -58,9 +64,7 @@ const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
   {
-    name: "create_agent",
-    description: "Provision a new agent for a tenant.",
-    requiredScopes: ["agent:create"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "create_agent")!,
     inputSchema: {
       type: "object",
       required: ["tenantId", "name", "mode"],
@@ -74,9 +78,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "bind_mailbox",
-    description: "Attach a mailbox to an agent.",
-    requiredScopes: ["agent:bind"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "bind_mailbox")!,
     inputSchema: {
       type: "object",
       required: ["agentId", "tenantId", "mailboxId", "role"],
@@ -90,9 +92,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "upsert_agent_policy",
-    description: "Set reply and delivery policy controls for an agent.",
-    requiredScopes: ["agent:update"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "upsert_agent_policy")!,
     inputSchema: {
       type: "object",
       required: ["agentId", "autoReplyEnabled", "humanReviewRequired", "confidenceThreshold", "maxAutoRepliesPerThread"],
@@ -110,9 +110,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "reply_to_inbound_email",
-    description: "Read inbound message context, construct a reply draft with proper headers, and optionally send it.",
-    requiredScopes: ["mail:read", "draft:create"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "reply_to_inbound_email")!,
     inputSchema: {
       type: "object",
       required: ["agentId", "messageId"],
@@ -128,9 +126,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "list_agent_tasks",
-    description: "Fetch current tasks for an agent.",
-    requiredScopes: ["task:read"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "list_agent_tasks")!,
     inputSchema: {
       type: "object",
       required: ["agentId"],
@@ -145,9 +141,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "get_message",
-    description: "Fetch message metadata.",
-    requiredScopes: ["mail:read"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "get_message")!,
     inputSchema: {
       type: "object",
       required: ["messageId"],
@@ -158,9 +152,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "get_message_content",
-    description: "Fetch normalized message content and attachment metadata.",
-    requiredScopes: ["mail:read"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "get_message_content")!,
     inputSchema: {
       type: "object",
       required: ["messageId"],
@@ -171,9 +163,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "get_thread",
-    description: "Fetch thread context for reply generation.",
-    requiredScopes: ["mail:read"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "get_thread")!,
     inputSchema: {
       type: "object",
       required: ["threadId"],
@@ -184,9 +174,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "create_draft",
-    description: "Create a proposed outbound email draft.",
-    requiredScopes: ["draft:create"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "create_draft")!,
     inputSchema: {
       type: "object",
       required: ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
@@ -210,9 +198,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "get_draft",
-    description: "Inspect draft metadata before send.",
-    requiredScopes: ["draft:read"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "get_draft")!,
     inputSchema: {
       type: "object",
       required: ["draftId"],
@@ -223,9 +209,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "send_draft",
-    description: "Enqueue a draft for outbound delivery.",
-    requiredScopes: ["draft:send"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "send_draft")!,
     inputSchema: {
       type: "object",
       required: ["draftId"],
@@ -237,9 +221,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
-    name: "replay_message",
-    description: "Replay message normalization or rerun agent execution.",
-    requiredScopes: ["mail:replay"],
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "replay_message")!,
     inputSchema: {
       type: "object",
       required: ["messageId", "mode"],
@@ -981,15 +963,14 @@ router.on("POST", "/mcp", async (request, env) => {
   }
 
   if (rpc.method === "initialize") {
+    const runtime = buildRuntimeMetadata(env);
     return jsonRpcResult(rpc.id ?? null, {
-      protocolVersion: "2025-03-26",
-      serverInfo: {
-        name: "mailagents-runtime",
-        version: "0.1.0",
-      },
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      serverInfo: RUNTIME_SERVER_INFO,
       capabilities: {
         tools: {},
       },
+      meta: runtime,
     });
   }
 

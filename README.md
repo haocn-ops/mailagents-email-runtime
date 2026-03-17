@@ -60,6 +60,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-debug.md`
 - `docs/mcp-tooling-draft.md`
 - `docs/mcp-local.md`
+- `docs/runtime-metadata.md`
 - `docs/agent-workflow-packs.md`
 - `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
@@ -93,6 +94,12 @@ See [`docs/ai-onboarding.md`](docs/ai-onboarding.md) and
 - authentication and scope boundaries
 - replay, retry, and send safety rules
 - recommended API call sequences
+
+See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
+
+- the versioned `/v2/meta/runtime` discovery endpoint
+- MCP capability discovery details
+- runtime-exposed workflow and idempotency metadata
 
 ## Repo Hygiene
 
