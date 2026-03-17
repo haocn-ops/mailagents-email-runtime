@@ -4,3 +4,24 @@ compatibility_date = "2026-03-16"
 
 [observability]
 enabled = true
+
+[[d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-dev"
+database_id = "ac48363e-4537-4e22-8d95-983b52f05729"
+
+[[r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-dev-email"
+
+[[queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-dev-outbound-send"
+
+[vars]
+CLOUDFLARE_ZONE_ID = "b6ff05475c44f13b926af9f7d71312e8"
+CLOUDFLARE_EMAIL_DOMAIN = "mailagents.net"
+CLOUDFLARE_EMAIL_WORKER = "mailagents-dev"
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "mailagents.net"
+SES_CONFIGURATION_SET = "mailagents-dev"

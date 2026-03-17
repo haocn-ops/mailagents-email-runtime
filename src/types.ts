@@ -6,6 +6,14 @@ export type MessageStatus = "received" | "normalized" | "tasked" | "replied" | "
 export type OutboundJobStatus = "queued" | "sending" | "sent" | "retry" | "failed";
 export type DeliveryEventType = "delivery" | "bounce" | "complaint" | "reject";
 
+export interface MailboxRecord {
+  id: string;
+  tenantId: string;
+  address: string;
+  status: string;
+  createdAt: string;
+}
+
 export interface Env {
   D1_DB: D1Database;
   R2_EMAIL: R2Bucket;
@@ -25,6 +33,10 @@ export interface Env {
   ADMIN_API_SECRET?: string;
   ADMIN_ROUTES_ENABLED?: string;
   DEBUG_ROUTES_ENABLED?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ZONE_ID?: string;
+  CLOUDFLARE_EMAIL_DOMAIN?: string;
+  CLOUDFLARE_EMAIL_WORKER?: string;
 }
 
 export interface AgentRecord {

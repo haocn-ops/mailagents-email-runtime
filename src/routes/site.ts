@@ -1,4 +1,28 @@
+import { requireAdminSecret } from "../lib/auth";
+import {
+  deleteEmailRoutingRule,
+  listEmailRoutingRules,
+  requireCloudflareEmailConfig,
+  upsertWorkerRule,
+} from "../lib/cloudflare-email";
+import { badRequest, json } from "../lib/http";
 import { Router } from "../lib/router";
+import { ensureMailbox, listMailboxes } from "../repositories/agents";
+import {
+  createDraft,
+  enqueueDraftSend,
+  getDraft,
+  getMessage,
+  getMessageContent,
+  getOutboundJob,
+  getOutboundJobByMessageId,
+  getThread,
+  listDeliveryEventsByMessageId,
+  listDrafts,
+  listMessages,
+  listOutboundJobs,
+  updateOutboundJobStatus,
+} from "../repositories/mail";
 import type { Env } from "../types";
 
 const site = new Router<Env>();
@@ -11,6 +35,397 @@ site.on("GET", "/terms", () => html(layout("terms", "Terms of Service", renderTe
 site.on("HEAD", "/terms", () => html(layout("terms", "Terms of Service", renderTerms())));
 site.on("GET", "/contact", () => html(layout("contact", "Contact", renderContact())));
 site.on("HEAD", "/contact", () => html(layout("contact", "Contact", renderContact())));
+site.on("GET", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
+site.on("HEAD", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
+site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const configError = requireCloudflareEmailConfig(env);
+  if (configError) {
+    return configError;
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const aliases = ["hello", "security", "privacy", "dmarc"].map((alias) => {
+      const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+      const rule = rules.find((entry) =>
+        entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
+      );
+      const forwardAction = rule?.actions.find((action) => action.type === "forward");
+      const workerAction = rule?.actions.find((action) => action.type === "worker");
+      return {
+        alias,
+        address,
+        configured: Boolean(rule),
+        enabled: rule?.enabled ?? false,
+        mode: workerAction ? "internal" : forwardAction ? "forward" : null,
+        destination: forwardAction?.value?.[0] ?? null,
+        worker: workerAction?.value?.[0] ?? null,
+        ruleId: rule?.id ?? null,
+      };
+    });
+
+    return json({
+      domain: env.CLOUDFLARE_EMAIL_DOMAIN,
+      aliases,
+      rules,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load aliases" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const configError = requireCloudflareEmailConfig(env);
+  if (configError) {
+    return configError;
+  }
+
+  const body = await request.json<{ alias?: string }>();
+  const alias = body.alias?.trim().toLowerCase();
+
+  if (!alias || !/^[a-z0-9._+-]+$/.test(alias)) {
+    return badRequest("alias is required");
+  }
+
+  if (!env.CLOUDFLARE_EMAIL_WORKER) {
+    return json({ error: "CLOUDFLARE_EMAIL_WORKER is not configured" }, { status: 500 });
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+    const existing = rules.find((entry) =>
+      entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
+    );
+    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+    const mailbox = await ensureMailbox(env, {
+      tenantId: "t_demo",
+      address,
+    });
+    return json({ ok: true, rule, mailbox });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to save alias" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const configError = requireCloudflareEmailConfig(env);
+  if (configError) {
+    return configError;
+  }
+
+  const body = await request.json<{
+    overwrite?: boolean;
+  }>();
+  if (!env.CLOUDFLARE_EMAIL_WORKER) {
+    return json({ error: "CLOUDFLARE_EMAIL_WORKER is not configured" }, { status: 500 });
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const aliases = ["hello", "security", "privacy", "dmarc"];
+    const results = [];
+
+    for (const alias of aliases) {
+      const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+      const existing = rules.find((entry) =>
+        entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
+      );
+
+      if (existing && !body.overwrite) {
+        results.push({ alias, skipped: true, reason: "exists" });
+        continue;
+      }
+
+      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+      const mailbox = await ensureMailbox(env, {
+        tenantId: "t_demo",
+        address,
+      });
+      results.push({ alias, skipped: false, ruleId: rule.id, mailboxId: mailbox.id });
+    }
+
+    return json({ ok: true, results });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to bootstrap aliases" }, { status: 502 });
+  }
+});
+site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const configError = requireCloudflareEmailConfig(env);
+  if (configError) {
+    return configError;
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const address = `${route.params.alias.toLowerCase()}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+    const existing = rules.find((entry) =>
+      entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
+    );
+
+    if (!existing) {
+      return json({ ok: true, deleted: false });
+    }
+
+    await deleteEmailRoutingRule(env, existing.id);
+    return json({ ok: true, deleted: true });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to delete alias" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/mailboxes", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    return json({ items: await listMailboxes(env) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load mailboxes" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/messages", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const url = new URL(request.url);
+    const mailboxId = url.searchParams.get("mailboxId") ?? undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const search = url.searchParams.get("search")?.trim() || undefined;
+    const direction = (url.searchParams.get("direction")?.trim() as "inbound" | "outbound" | null) ?? undefined;
+    const status = (url.searchParams.get("status")?.trim() as
+      | "received"
+      | "normalized"
+      | "tasked"
+      | "replied"
+      | "ignored"
+      | "failed"
+      | null) ?? undefined;
+    return json({ items: await listMessages(env, { mailboxId, limit, search, direction, status }) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load messages" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
+    return json(message);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load message" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/messages/:messageId/content", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    return json(await getMessageContent(env, route.params.messageId));
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load message content" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const thread = await getThread(env, route.params.threadId);
+    if (!thread) {
+      return json({ error: "Thread not found" }, { status: 404 });
+    }
+    return json(thread);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load thread" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/messages/:messageId/events", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    return json({ items: await listDeliveryEventsByMessageId(env, route.params.messageId) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load delivery events" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const url = new URL(request.url);
+    const status = (url.searchParams.get("status")?.trim() as
+      | "queued"
+      | "sending"
+      | "sent"
+      | "retry"
+      | "failed"
+      | null) ?? undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+    return json({ items: await listOutboundJobs(env, { status, limit }) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load outbound jobs" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const job = await getOutboundJob(env, route.params.outboundJobId);
+    if (!job) {
+      return json({ error: "Outbound job not found" }, { status: 404 });
+    }
+
+    await updateOutboundJobStatus(env, {
+      outboundJobId: job.id,
+      status: "queued",
+      lastError: null,
+      nextRetryAt: null,
+    });
+    await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId: job.id });
+
+    return json({ ok: true, outboundJobId: job.id, status: "queued" });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to retry outbound job" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/drafts", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const url = new URL(request.url);
+    const mailboxId = url.searchParams.get("mailboxId") ?? undefined;
+    const status = (url.searchParams.get("status")?.trim() as
+      | "draft"
+      | "approved"
+      | "queued"
+      | "sent"
+      | "cancelled"
+      | "failed"
+      | null) ?? undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+    return json({ items: await listDrafts(env, { mailboxId, status, limit }) });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load drafts" }, { status: 502 });
+  }
+});
+site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const draft = await getDraft(env, route.params.draftId);
+    if (!draft) {
+      return json({ error: "Draft not found" }, { status: 404 });
+    }
+    return json(draft);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load draft" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/send", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const body = await request.json<{
+    mailboxId?: string;
+    tenantId?: string;
+    from?: string;
+    to?: string[];
+    cc?: string[];
+    bcc?: string[];
+    subject?: string;
+    text?: string;
+    html?: string;
+    threadId?: string;
+    sourceMessageId?: string;
+    inReplyTo?: string;
+    references?: string[];
+  }>();
+
+  if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
+    return badRequest("mailboxId, tenantId, from, to, and subject are required");
+  }
+
+  try {
+    const draft = await createDraft(env, {
+      tenantId: body.tenantId,
+      agentId: "admin_console",
+      mailboxId: body.mailboxId,
+      threadId: body.threadId,
+      sourceMessageId: body.sourceMessageId,
+      payload: {
+        from: body.from,
+        to: body.to,
+        cc: body.cc ?? [],
+        bcc: body.bcc ?? [],
+        subject: body.subject,
+        text: body.text ?? "",
+        html: body.html ?? "",
+        inReplyTo: body.inReplyTo,
+        references: body.references ?? [],
+        attachments: [],
+      },
+    });
+    const result = await enqueueDraftSend(env, draft.id);
+    return json({
+      ok: true,
+      draftId: draft.id,
+      outboundJobId: result.outboundJobId,
+      status: result.status,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to send message" }, { status: 502 });
+  }
+});
 
 export async function handleSiteRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   return await site.handle(request, env, ctx);
@@ -296,14 +711,18 @@ function layout(active: string, title: string, content: string): string {
       grid-template-columns: 1fr 1fr;
     }
     .faq-item {
+      min-width: 0;
       padding: 20px;
       border-radius: var(--radius-lg);
       background: rgba(255, 255, 255, 0.46);
       border: 1px solid rgba(28, 25, 22, 0.08);
+      overflow: hidden;
     }
     .faq-item h3 {
       margin: 0 0 10px;
       font-size: 18px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .legal {
       display: grid;
@@ -686,6 +1105,1337 @@ function renderContact(): string {
       </section>
     </div>
   </section>`;
+}
+
+function renderAdmin(url: URL): string {
+  const domain = escapeHtml(url.host);
+  return `<style>
+    .admin-login-shell {
+      min-height: calc(100vh - 220px);
+      display: grid;
+      place-items: center;
+      padding: 32px 0 48px;
+    }
+    .admin-login-card {
+      width: min(100%, 640px);
+      padding: 36px;
+      border-radius: 32px;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background:
+        radial-gradient(circle at top right, rgba(193, 120, 53, 0.16), transparent 32%),
+        rgba(255, 251, 245, 0.88);
+      box-shadow: 0 30px 80px rgba(58, 41, 26, 0.12);
+    }
+    .admin-login-grid {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: 1.2fr 0.8fr;
+      margin-top: 24px;
+    }
+    .admin-input,
+    .admin-select,
+    .admin-textarea {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(28, 25, 22, 0.12);
+      font: inherit;
+      background: rgba(255, 255, 255, 0.95);
+      color: inherit;
+      box-sizing: border-box;
+    }
+    .admin-textarea {
+      min-height: 220px;
+      resize: vertical;
+    }
+    .admin-note {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .admin-app-shell {
+      display: none;
+      gap: 24px;
+      grid-template-columns: 280px minmax(0, 1fr);
+      align-items: start;
+      padding: 28px 0 52px;
+    }
+    .admin-app-shell.ready {
+      display: grid;
+    }
+    .admin-sidebar {
+      position: sticky;
+      top: 96px;
+      display: grid;
+      gap: 18px;
+      padding: 24px;
+      border-radius: 28px;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background:
+        linear-gradient(180deg, rgba(255, 247, 238, 0.96), rgba(255, 255, 255, 0.78));
+      box-shadow: 0 18px 60px rgba(58, 41, 26, 0.1);
+    }
+    .admin-sidebar nav {
+      display: grid;
+      gap: 10px;
+    }
+    .admin-nav-button {
+      width: 100%;
+      text-align: left;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+    .admin-nav-button.active {
+      background: rgba(193, 120, 53, 0.14);
+      border-color: rgba(193, 120, 53, 0.24);
+      transform: translateX(4px);
+    }
+    .admin-nav-button strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+    .admin-nav-button span {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .admin-main {
+      min-width: 0;
+      display: grid;
+      gap: 18px;
+    }
+    .admin-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 22px 26px;
+      border-radius: 28px;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background: rgba(255, 255, 255, 0.7);
+    }
+    .admin-topbar-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .admin-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(61, 130, 90, 0.12);
+      color: #26573b;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .admin-status-pill::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+    .admin-view {
+      display: none;
+      gap: 18px;
+    }
+    .admin-view.active {
+      display: grid;
+    }
+    .admin-hero-card {
+      padding: 28px;
+      border-radius: 28px;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background:
+        radial-gradient(circle at top right, rgba(193, 120, 53, 0.12), transparent 28%),
+        rgba(255, 255, 255, 0.74);
+    }
+    .admin-kpi-grid,
+    .admin-two-column,
+    .admin-three-column {
+      display: grid;
+      gap: 18px;
+    }
+    .admin-kpi-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    .admin-two-column {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .admin-three-column {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .admin-three-column > *,
+    .admin-two-column > *,
+    .admin-kpi-grid > * {
+      min-width: 0;
+    }
+    .admin-kpi {
+      padding: 22px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(28, 25, 22, 0.08);
+    }
+    .admin-kpi .label {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .admin-kpi strong {
+      font-size: 32px;
+      line-height: 1;
+    }
+    .admin-card {
+      min-width: 0;
+      padding: 24px;
+      border-radius: 24px;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .admin-card h3 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .admin-card-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+    .admin-card-header p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .admin-list {
+      display: grid;
+      gap: 12px;
+    }
+    .admin-muted {
+      color: var(--muted);
+    }
+    .admin-stack {
+      display: grid;
+      gap: 12px;
+    }
+    .admin-inline {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .admin-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .admin-hidden {
+      display: none;
+    }
+    @media (max-width: 1100px) {
+      .admin-app-shell {
+        grid-template-columns: 1fr;
+      }
+      .admin-sidebar {
+        position: static;
+      }
+      .admin-kpi-grid,
+      .admin-three-column,
+      .admin-two-column,
+      .admin-login-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
+  <section id="admin-login-view" class="admin-login-shell">
+    <div class="admin-login-card">
+      <div class="eyebrow">Admin Access</div>
+      <h1 style="font-size:52px; margin: 10px 0 14px;">Mailagents Control Room</h1>
+      <p class="lead" style="max-width: 52ch;">先登錄，再進入後台。這個入口只給運營和管理員使用，會連到你現在已經在跑的郵件資料與轉發規則。</p>
+      <div class="admin-login-grid">
+        <section class="card">
+          <h3>Sign in</h3>
+          <p>使用 Worker 上配置的管理密鑰。密鑰只會保存在你當前這台瀏覽器的 localStorage。</p>
+          <form id="auth-form">
+            <p><input id="admin-secret" class="admin-input" type="password" placeholder="Admin secret" /></p>
+            <p><button class="button primary" type="submit">Enter Dashboard</button></p>
+          </form>
+          <p id="auth-status" class="admin-note">Dashboard is locked.</p>
+        </section>
+        <section class="card">
+          <h3>Current scope</h3>
+          <p>Domain: <strong>${domain}</strong></p>
+          <p>The dashboard manages live mailbox data, outbound queue state, and the public contact aliases shown on the site.</p>
+          <div class="code">hello · security · privacy · dmarc</div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <section id="admin-app-shell" class="admin-app-shell">
+    <aside class="admin-sidebar">
+      <div>
+        <div class="eyebrow">Mailagents Admin</div>
+        <h2 style="margin:8px 0 10px;">Operations Dashboard</h2>
+        <p class="admin-note">郵件管理、轉發別名、發件與隊列狀態都放到這個工作台裡。</p>
+      </div>
+      <nav aria-label="Admin sections">
+        <button class="admin-nav-button active" data-view="overview" type="button">
+          <strong>Overview</strong>
+          <span>系統概況與快速入口</span>
+        </button>
+        <button class="admin-nav-button" data-view="messages" type="button">
+          <strong>Messages</strong>
+          <span>郵箱與消息明細</span>
+        </button>
+        <button class="admin-nav-button" data-view="contact" type="button">
+          <strong>Contact Inboxes</strong>
+          <span>hello / security / privacy / dmarc</span>
+        </button>
+        <button class="admin-nav-button" data-view="threads" type="button">
+          <strong>Threads & Delivery</strong>
+          <span>線程、投遞事件、Outbox</span>
+        </button>
+        <button class="admin-nav-button" data-view="aliases" type="button">
+          <strong>Contact Aliases</strong>
+          <span>公共郵箱轉發規則</span>
+        </button>
+        <button class="admin-nav-button" data-view="compose" type="button">
+          <strong>Compose</strong>
+          <span>後台發件與快速回覆</span>
+        </button>
+      </nav>
+    </aside>
+
+    <div class="admin-main">
+      <section class="admin-topbar">
+        <div>
+          <div class="eyebrow">Workspace</div>
+          <h2 id="admin-view-title" style="margin: 6px 0 8px;">Overview</h2>
+          <div id="admin-runtime-status" class="admin-status-pill">Connected to live runtime</div>
+        </div>
+        <div class="admin-topbar-actions">
+          <button id="refresh-dashboard" class="button secondary" type="button">Refresh</button>
+          <button id="logout-dashboard" class="button secondary" type="button">Log Out</button>
+        </div>
+      </section>
+
+      <section id="admin-view-overview" class="admin-view active">
+        <article class="admin-hero-card">
+          <div class="eyebrow">Overview</div>
+          <h2 style="margin:8px 0 10px;">分區式後台已就位</h2>
+          <p>現在的後台先進入登錄頁，解鎖後再進入左側導航的管理界面。右側內容會跟隨模塊切換，不再把所有工具堆在一個長頁裡。</p>
+        </article>
+        <div class="admin-kpi-grid">
+          <div class="admin-kpi">
+            <span class="label">Mailboxes</span>
+            <strong id="stat-mailboxes">0</strong>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">Visible Messages</span>
+            <strong id="stat-messages">0</strong>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">Outbound Jobs</span>
+            <strong id="stat-jobs">0</strong>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">Configured Aliases</span>
+            <strong id="stat-aliases">0</strong>
+          </div>
+        </div>
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Mail runtime</h3>
+                <p>讀取現有郵箱與消息，不改動你現有收發鏈路。</p>
+              </div>
+            </div>
+            <div id="overview-mail-runtime" class="admin-list admin-muted">Unlock the dashboard to inspect runtime status.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Contact aliases</h3>
+                <p>面向官網展示的三個公共地址。</p>
+              </div>
+            </div>
+            <div id="overview-alias-status" class="admin-list admin-muted">Unlock the dashboard to inspect alias status.</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-view-messages" class="admin-view">
+        <div class="admin-three-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Mailboxes</h3>
+                <p>選擇一個郵箱載入最近消息。</p>
+              </div>
+            </div>
+            <div id="mailbox-list" class="admin-list">Unlock the dashboard to load mailboxes.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Recent messages</h3>
+                <p>按關鍵詞或方向快速縮小範圍。</p>
+              </div>
+            </div>
+            <div class="admin-stack">
+              <input id="message-search" class="admin-input" type="text" placeholder="Search subject, sender, recipient" />
+              <select id="message-direction" class="admin-select">
+                <option value="">All directions</option>
+                <option value="inbound">Inbound</option>
+                <option value="outbound">Outbound</option>
+              </select>
+            </div>
+            <div id="message-list" class="admin-list" style="margin-top:16px;">Select a mailbox to load messages.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Message detail</h3>
+                <p>查看正文、附件與回覆上下文。</p>
+              </div>
+            </div>
+            <div id="message-detail" class="admin-list">Choose a message to inspect headers and content.</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-view-contact" class="admin-view">
+        <article class="admin-hero-card">
+          <div class="eyebrow">Contact Inboxes</div>
+          <h2 style="margin:8px 0 10px;">站点公共邮箱的专属工作台</h2>
+          <p>这里单独展示 <code>hello@mailagents.net</code>、<code>security@mailagents.net</code>、<code>privacy@mailagents.net</code>、<code>dmarc@mailagents.net</code>，方便直接查看这些对外入口的来信，不用在普通邮箱列表里切换。</p>
+        </article>
+        <div class="admin-three-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Inbox shortcuts</h3>
+                <p>快速打开三个公共收件箱。</p>
+              </div>
+            </div>
+            <div id="contact-mailbox-list" class="admin-list">Unlock the dashboard to load contact inboxes.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3 id="contact-messages-title">Recent contact messages</h3>
+                <p>查看公共邮箱最近收到的邮件。</p>
+              </div>
+            </div>
+            <div id="contact-message-list" class="admin-list">Select a contact inbox to load messages.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Quick inspection</h3>
+                <p>先快速看内容，需要深挖再进 Thread & Delivery。</p>
+              </div>
+            </div>
+            <div id="contact-message-detail" class="admin-list">Choose a contact inbox message to inspect it.</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-view-threads" class="admin-view">
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Thread view</h3>
+                <p>沿著同一會話線程追蹤上下文。</p>
+              </div>
+            </div>
+            <div id="thread-view" class="admin-list">Choose a message with a thread to inspect the conversation.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Delivery events</h3>
+                <p>查看投遞事件與 provider message id。</p>
+              </div>
+            </div>
+            <div id="delivery-events" class="admin-list">Select an outbound message to inspect delivery events.</div>
+          </section>
+        </div>
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Outbound jobs</h3>
+                <p>觀察發件任務並重試失敗項。</p>
+              </div>
+            </div>
+            <select id="job-status" class="admin-select">
+              <option value="">All job statuses</option>
+              <option value="queued">Queued</option>
+              <option value="sending">Sending</option>
+              <option value="sent">Sent</option>
+              <option value="retry">Retry</option>
+              <option value="failed">Failed</option>
+            </select>
+            <div id="outbound-jobs" class="admin-list" style="margin-top:16px;">Unlock the dashboard to load outbound jobs.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Drafts & outbox detail</h3>
+                <p>草稿、發件箱與單條發件狀態。</p>
+              </div>
+            </div>
+            <select id="draft-status" class="admin-select">
+              <option value="">All draft statuses</option>
+              <option value="draft">Draft</option>
+              <option value="queued">Queued</option>
+              <option value="sent">Sent</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+            <div id="draft-list" class="admin-list" style="margin-top:16px;">Unlock the dashboard to load drafts.</div>
+            <div id="outbox-detail" class="admin-list" style="margin-top:16px;">Select a message or draft to inspect its outbound state.</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="admin-view-aliases" class="admin-view">
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Create inbox alias</h3>
+                <p>把別名接到你自己的 Mailagents 收件箱，不做外部轉發。</p>
+              </div>
+            </div>
+            <form id="alias-form" class="admin-stack">
+              <input id="alias-name" class="admin-input" type="text" placeholder="Alias, for example hello" />
+              <div class="admin-actions">
+                <button class="button primary" type="submit">Create Inbox Alias</button>
+              </div>
+            </form>
+            <p id="alias-status" class="admin-note">No changes submitted yet.</p>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Bootstrap standard aliases</h3>
+                <p>一鍵初始化 hello / security / privacy / dmarc，全部直接進後台收件箱。</p>
+              </div>
+            </div>
+            <form id="alias-bootstrap-form" class="admin-stack">
+              <label class="admin-inline"><input id="alias-bootstrap-overwrite" type="checkbox" /> overwrite existing alias rules</label>
+              <div class="admin-actions">
+                <button class="button secondary" type="submit">Create Internal Inboxes</button>
+              </div>
+            </form>
+            <p id="alias-bootstrap-status" class="admin-note">No bootstrap action run yet.</p>
+          </section>
+        </div>
+        <section class="admin-card">
+          <div class="admin-card-header">
+            <div>
+              <h3>Managed aliases</h3>
+              <p>公共聯繫郵箱的實際轉發狀態。</p>
+            </div>
+          </div>
+          <div id="alias-list" class="admin-list">Unlock the dashboard to load aliases.</div>
+        </section>
+      </section>
+
+      <section id="admin-view-compose" class="admin-view">
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Compose</h3>
+                <p>沿用現有 draft 和 outbound queue 鏈路。</p>
+              </div>
+            </div>
+            <form id="send-form" class="admin-stack">
+              <select id="send-mailbox" class="admin-select">
+                <option value="">Choose mailbox</option>
+              </select>
+              <input id="send-to" class="admin-input" type="text" placeholder="Recipient email, comma separated" />
+              <input id="send-subject" class="admin-input" type="text" placeholder="Subject" />
+              <textarea id="send-text" class="admin-textarea" rows="10" placeholder="Plain text body"></textarea>
+              <div class="admin-actions">
+                <button class="button primary" type="submit">Queue Send</button>
+              </div>
+            </form>
+            <p id="send-status" class="admin-note">No outgoing message queued yet.</p>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Quick reply</h3>
+                <p>從消息詳情裡帶入回覆上下文。</p>
+              </div>
+            </div>
+            <p id="reply-hint">No reply draft prepared.</p>
+          </section>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <script>
+    const secretKey = "mailagents_admin_secret";
+    const authForm = document.getElementById("auth-form");
+    const aliasForm = document.getElementById("alias-form");
+    const secretInput = document.getElementById("admin-secret");
+    const authStatus = document.getElementById("auth-status");
+    const aliasStatus = document.getElementById("alias-status");
+    const aliasList = document.getElementById("alias-list");
+    const aliasName = document.getElementById("alias-name");
+    const aliasBootstrapForm = document.getElementById("alias-bootstrap-form");
+    const aliasBootstrapOverwrite = document.getElementById("alias-bootstrap-overwrite");
+    const aliasBootstrapStatus = document.getElementById("alias-bootstrap-status");
+    const mailboxList = document.getElementById("mailbox-list");
+    const messageList = document.getElementById("message-list");
+    const messageDetail = document.getElementById("message-detail");
+    const messageSearch = document.getElementById("message-search");
+    const messageDirection = document.getElementById("message-direction");
+    const contactMailboxList = document.getElementById("contact-mailbox-list");
+    const contactMessageList = document.getElementById("contact-message-list");
+    const contactMessageDetail = document.getElementById("contact-message-detail");
+    const contactMessagesTitle = document.getElementById("contact-messages-title");
+    const sendForm = document.getElementById("send-form");
+    const sendMailbox = document.getElementById("send-mailbox");
+    const sendTo = document.getElementById("send-to");
+    const sendSubject = document.getElementById("send-subject");
+    const sendText = document.getElementById("send-text");
+    const sendStatus = document.getElementById("send-status");
+    const replyHint = document.getElementById("reply-hint");
+    const threadView = document.getElementById("thread-view");
+    const deliveryEvents = document.getElementById("delivery-events");
+    const outboundJobs = document.getElementById("outbound-jobs");
+    const jobStatus = document.getElementById("job-status");
+    const draftStatus = document.getElementById("draft-status");
+    const draftList = document.getElementById("draft-list");
+    const outboxDetail = document.getElementById("outbox-detail");
+    const loginView = document.getElementById("admin-login-view");
+    const appShell = document.getElementById("admin-app-shell");
+    const viewTitle = document.getElementById("admin-view-title");
+    const refreshDashboard = document.getElementById("refresh-dashboard");
+    const logoutDashboard = document.getElementById("logout-dashboard");
+    const runtimeStatus = document.getElementById("admin-runtime-status");
+    const overviewMailRuntime = document.getElementById("overview-mail-runtime");
+    const overviewAliasStatus = document.getElementById("overview-alias-status");
+    const statMailboxes = document.getElementById("stat-mailboxes");
+    const statMessages = document.getElementById("stat-messages");
+    const statJobs = document.getElementById("stat-jobs");
+    const statAliases = document.getElementById("stat-aliases");
+    const viewMeta = {
+      overview: "Overview",
+      messages: "Messages",
+      contact: "Contact Inboxes",
+      threads: "Threads & Delivery",
+      aliases: "Contact Aliases",
+      compose: "Compose",
+    };
+    let currentMailboxId = null;
+    let currentContactMailboxId = null;
+    let mailboxIndex = [];
+    let currentReplyContext = null;
+    let latestAliases = [];
+    let latestMessages = [];
+    let latestJobs = [];
+
+    secretInput.value = window.localStorage.getItem(secretKey) || "";
+
+    async function api(path, init = {}) {
+      const secret = window.localStorage.getItem(secretKey) || "";
+      const headers = new Headers(init.headers || {});
+      headers.set("x-admin-secret", secret);
+      if (!headers.has("content-type") && init.body) {
+        headers.set("content-type", "application/json");
+      }
+
+      const response = await fetch(path, { ...init, headers });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Request failed");
+      }
+      return payload;
+    }
+
+    function setView(viewName) {
+      document.querySelectorAll(".admin-nav-button").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-view") === viewName);
+      });
+      document.querySelectorAll(".admin-view").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === "admin-view-" + viewName);
+      });
+      if (viewTitle && viewMeta[viewName]) {
+        viewTitle.textContent = viewMeta[viewName];
+      }
+    }
+
+    function setAuthenticated(isAuthenticated) {
+      loginView.style.display = isAuthenticated ? "none" : "grid";
+      appShell.classList.toggle("ready", isAuthenticated);
+    }
+
+    function updateOverview() {
+      statMailboxes.textContent = String(mailboxIndex.length);
+      statMessages.textContent = String(latestMessages.length);
+      statJobs.textContent = String(latestJobs.length);
+      statAliases.textContent = String(latestAliases.filter((item) => item.configured).length);
+
+      overviewMailRuntime.innerHTML = [
+        '<div class="faq-item"><h3>Active domain</h3><p>${domain}</p></div>',
+        '<div class="faq-item"><h3>Mailbox source</h3><p>' + (mailboxIndex.length ? mailboxIndex.length + ' live mailboxes loaded.' : 'No mailbox loaded yet.') + '</p></div>',
+        '<div class="faq-item"><h3>Reply workflow</h3><p>' + (currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
+      ].join("");
+
+      overviewAliasStatus.innerHTML = latestAliases.length
+        ? latestAliases.map((item) =>
+            '<div class="faq-item">' +
+              '<h3>' + item.address + '</h3>' +
+              '<p>' + (item.configured ? 'Configured' : 'Missing') + '</p>' +
+              '<p>' + (item.mode === 'internal'
+                ? 'Internal inbox via worker ' + (item.worker || 'n/a')
+                : item.destination || 'No inbox rule yet') + '</p>' +
+            '</div>'
+          ).join("")
+        : 'Unlock the dashboard to inspect alias status.';
+    }
+
+    function renderAliases(aliases) {
+      latestAliases = aliases;
+      aliasList.innerHTML = aliases.map((item) => {
+        const target = item.mode === "internal"
+          ? 'Internal inbox via worker <strong>' + (item.worker || 'n/a') + '</strong>'
+          : item.destination || "<em>Not configured</em>";
+        const action = item.configured
+          ? '<button data-alias="' + item.alias + '" class="button secondary delete-alias" type="button">Delete</button>'
+          : "";
+        return '<div class="faq-item">' +
+          '<h3>' + item.address + '</h3>' +
+          '<p>Status: ' + (item.configured ? 'Configured' : 'Missing') + '</p>' +
+          '<p>Route: ' + target + '</p>' +
+          '<p style="margin-top:12px;">' + action + '</p>' +
+        '</div>';
+      }).join("");
+
+      document.querySelectorAll(".delete-alias").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const alias = button.getAttribute("data-alias");
+          if (!alias || !window.confirm('Delete forwarding rule for ' + alias + '?')) {
+            return;
+          }
+          try {
+            await api('/admin/api/contact-aliases/' + encodeURIComponent(alias), { method: 'DELETE' });
+            aliasStatus.textContent = 'Deleted alias ' + alias + '.';
+            await loadAliases();
+          } catch (error) {
+            aliasStatus.textContent = error.message;
+          }
+        });
+      });
+
+      updateOverview();
+    }
+
+    async function loadAliases() {
+      try {
+        const payload = await api('/admin/api/contact-aliases');
+        authStatus.textContent = 'Dashboard unlocked.';
+        renderAliases(payload.aliases);
+      } catch (error) {
+        authStatus.textContent = error.message;
+        aliasList.textContent = 'Unable to load aliases.';
+      }
+    }
+
+    function renderMailboxes(items) {
+      mailboxIndex = items;
+      mailboxList.innerHTML = items.map((item) =>
+        '<div class="faq-item">' +
+          '<h3>' + item.address + '</h3>' +
+          '<p>Status: ' + item.status + '</p>' +
+          '<p style="margin-top:12px;"><button data-mailbox="' + item.id + '" class="button secondary mailbox-button" type="button">Open Mailbox</button></p>' +
+        '</div>'
+      ).join("");
+
+      sendMailbox.innerHTML = '<option value="">Choose mailbox</option>' + items.map((item) =>
+        '<option value="' + item.id + '">' + item.address + '</option>'
+      ).join("");
+
+      document.querySelectorAll(".mailbox-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          currentMailboxId = button.getAttribute("data-mailbox");
+          setView("messages");
+          await loadMessages();
+        });
+      });
+
+      updateOverview();
+      renderContactInboxes();
+    }
+
+    function getContactMailboxes() {
+      return mailboxIndex.filter((item) =>
+        item.address === "hello@mailagents.net" ||
+        item.address === "security@mailagents.net" ||
+        item.address === "privacy@mailagents.net" ||
+        item.address === "dmarc@mailagents.net"
+      );
+    }
+
+    function renderContactInboxes() {
+      const items = getContactMailboxes();
+      contactMailboxList.innerHTML = items.length
+        ? items.map((item) =>
+            '<div class="faq-item">' +
+              '<h3>' + item.address + '</h3>' +
+              '<p>Status: ' + item.status + '</p>' +
+              '<p style="margin-top:12px;">' +
+                '<button data-contact-mailbox="' + item.id + '" class="button secondary contact-mailbox-button" type="button">Open Inbox</button> ' +
+                '<button data-main-mailbox="' + item.id + '" class="button secondary jump-mailbox-button" type="button">Open In Messages</button>' +
+              '</p>' +
+            '</div>'
+          ).join("")
+        : 'No contact inboxes are configured yet.';
+
+      document.querySelectorAll(".contact-mailbox-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const mailboxId = button.getAttribute("data-contact-mailbox");
+          if (!mailboxId) {
+            return;
+          }
+          currentContactMailboxId = mailboxId;
+          await loadContactMessages();
+        });
+      });
+
+      document.querySelectorAll(".jump-mailbox-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const mailboxId = button.getAttribute("data-main-mailbox");
+          if (!mailboxId) {
+            return;
+          }
+          currentMailboxId = mailboxId;
+          setView("messages");
+          await loadMessages();
+        });
+      });
+    }
+
+    function renderMessages(items) {
+      messageList.innerHTML = items.length
+        ? items.map((item) =>
+            '<div class="faq-item">' +
+              '<h3>' + (item.subject || '(No subject)') + '</h3>' +
+              '<p>From: ' + item.fromAddr + '</p>' +
+              '<p>To: ' + item.toAddr + '</p>' +
+              '<p>Status: ' + item.status + ' · ' + item.direction + '</p>' +
+              '<p style="margin-top:12px;"><button data-message="' + item.id + '" class="button secondary message-button" type="button">View Message</button></p>' +
+            '</div>'
+          ).join("")
+        : 'No messages found for this mailbox.';
+
+      document.querySelectorAll(".message-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const id = button.getAttribute("data-message");
+          if (id) {
+            await loadMessageDetail(id);
+          }
+        });
+      });
+    }
+
+    async function loadMailboxes() {
+      try {
+        const payload = await api('/admin/api/mailboxes');
+        renderMailboxes(payload.items);
+      } catch (error) {
+        mailboxList.textContent = error.message;
+        contactMailboxList.textContent = error.message;
+      }
+    }
+
+    function renderContactMessages(items) {
+      contactMessageList.innerHTML = items.length
+        ? items.map((item) =>
+            '<div class="faq-item">' +
+              '<h3>' + (item.subject || '(No subject)') + '</h3>' +
+              '<p>From: ' + item.fromAddr + '</p>' +
+              '<p>Received: ' + (item.receivedAt || item.createdAt) + '</p>' +
+              '<p style="margin-top:12px;">' +
+                '<button data-contact-message="' + item.id + '" class="button secondary contact-message-button" type="button">Inspect</button>' +
+              '</p>' +
+            '</div>'
+          ).join("")
+        : 'No messages found for this contact inbox yet.';
+
+      document.querySelectorAll(".contact-message-button").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const messageId = button.getAttribute("data-contact-message");
+          if (!messageId) {
+            return;
+          }
+          await loadContactMessageDetail(messageId);
+        });
+      });
+    }
+
+    async function loadContactMessages() {
+      if (!currentContactMailboxId) {
+        contactMessageList.textContent = 'Select a contact inbox to load messages.';
+        return;
+      }
+
+      const mailbox = mailboxIndex.find((item) => item.id === currentContactMailboxId);
+      if (mailbox) {
+        contactMessagesTitle.textContent = 'Recent messages for ' + mailbox.address;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          mailboxId: currentContactMailboxId,
+          limit: '20',
+        });
+        const payload = await api('/admin/api/messages?' + params.toString());
+        renderContactMessages(payload.items);
+      } catch (error) {
+        contactMessageList.textContent = error.message;
+      }
+    }
+
+    async function loadContactMessageDetail(messageId) {
+      try {
+        const [message, content] = await Promise.all([
+          api('/admin/api/messages/' + encodeURIComponent(messageId)),
+          api('/admin/api/messages/' + encodeURIComponent(messageId) + '/content'),
+        ]);
+        const text = content.text || content.html || 'No content extracted.';
+        contactMessageDetail.innerHTML =
+          '<div class="faq-item">' +
+            '<h3>' + (message.subject || '(No subject)') + '</h3>' +
+            '<p><strong>From:</strong> ' + message.fromAddr + '</p>' +
+            '<p><strong>To:</strong> ' + message.toAddr + '</p>' +
+            '<p><strong>Status:</strong> ' + message.status + '</p>' +
+            '<div class="code" style="margin-top:12px;">' + text + '</div>' +
+            '<p style="margin-top:12px;"><button data-thread-message="' + message.id + '" class="button secondary contact-thread-button" type="button">Open Thread & Delivery</button></p>' +
+          '</div>';
+
+        const openThreadButton = document.querySelector(".contact-thread-button");
+        if (openThreadButton) {
+          openThreadButton.addEventListener("click", async () => {
+            await loadMessageDetail(message.id);
+          });
+        }
+      } catch (error) {
+        contactMessageDetail.textContent = error.message;
+      }
+    }
+
+    function renderOutboundJobs(items) {
+      latestJobs = items;
+      outboundJobs.innerHTML = items.length
+        ? items.map((job) =>
+            '<div class="faq-item">' +
+              '<h3>' + job.id + '</h3>' +
+              '<p>Status: ' + job.status + '</p>' +
+              '<p>Message: ' + job.messageId + '</p>' +
+              '<p>Updated: ' + job.updatedAt + '</p>' +
+              '<p>' + (job.lastError || 'No error') + '</p>' +
+              '<p style="margin-top:12px;">' + ((job.status === 'failed' || job.status === 'retry')
+                ? '<button data-job="' + job.id + '" class="button secondary retry-job" type="button">Retry Job</button>'
+                : '') + '</p>' +
+            '</div>'
+          ).join('')
+        : 'No outbound jobs found.';
+
+      document.querySelectorAll('.retry-job').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.getAttribute('data-job');
+          if (!id) {
+            return;
+          }
+          try {
+            await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
+            await loadOutboundJobs();
+            outboxDetail.textContent = 'Retried outbound job ' + id + '.';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+
+      updateOverview();
+    }
+
+    async function loadOutboundJobs() {
+      try {
+        const params = new URLSearchParams({ limit: '50' });
+        if (jobStatus.value) {
+          params.set('status', jobStatus.value);
+        }
+        const payload = await api('/admin/api/outbound-jobs?' + params.toString());
+        renderOutboundJobs(payload.items);
+      } catch (error) {
+        outboundJobs.textContent = error.message;
+      }
+    }
+
+    function renderDrafts(items) {
+      draftList.innerHTML = items.length
+        ? items.map((draft) =>
+            '<div class="faq-item">' +
+              '<h3>' + draft.id + '</h3>' +
+              '<p>Status: ' + draft.status + '</p>' +
+              '<p>Mailbox: ' + draft.mailboxId + '</p>' +
+              '<p>Updated: ' + draft.updatedAt + '</p>' +
+              '<p style="margin-top:12px;"><button data-draft="' + draft.id + '" class="button secondary draft-button" type="button">Inspect Draft</button></p>' +
+            '</div>'
+          ).join('')
+        : 'No drafts found.';
+
+      document.querySelectorAll('.draft-button').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const draftId = button.getAttribute('data-draft');
+          if (!draftId) {
+            return;
+          }
+          try {
+            const draft = await api('/admin/api/drafts/' + encodeURIComponent(draftId));
+            outboxDetail.innerHTML =
+              '<div class="faq-item">' +
+                '<h3>Draft ' + draft.id + '</h3>' +
+                '<p>Status: ' + draft.status + '</p>' +
+                '<p>Mailbox: ' + draft.mailboxId + '</p>' +
+                '<p>Thread: ' + (draft.threadId || 'n/a') + '</p>' +
+                '<p>Updated: ' + draft.updatedAt + '</p>' +
+              '</div>';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+    }
+
+    async function loadDrafts() {
+      try {
+        const params = new URLSearchParams({ limit: '50' });
+        if (currentMailboxId) {
+          params.set('mailboxId', currentMailboxId);
+        }
+        if (draftStatus.value) {
+          params.set('status', draftStatus.value);
+        }
+        const payload = await api('/admin/api/drafts?' + params.toString());
+        renderDrafts(payload.items);
+      } catch (error) {
+        draftList.textContent = error.message;
+      }
+    }
+
+    async function loadMessages() {
+      if (!currentMailboxId) {
+        messageList.textContent = 'Select a mailbox to load messages.';
+        latestMessages = [];
+        updateOverview();
+        return;
+      }
+
+      try {
+        const params = new URLSearchParams({
+          mailboxId: currentMailboxId,
+          limit: '50',
+        });
+        const search = messageSearch.value.trim();
+        const direction = messageDirection.value;
+        if (search) {
+          params.set('search', search);
+        }
+        if (direction) {
+          params.set('direction', direction);
+        }
+        const payload = await api('/admin/api/messages?' + params.toString());
+        latestMessages = payload.items;
+        renderMessages(payload.items);
+        updateOverview();
+      } catch (error) {
+        messageList.textContent = error.message;
+      }
+    }
+
+    async function loadMessageDetail(messageId) {
+      try {
+        const [message, content] = await Promise.all([
+          api('/admin/api/messages/' + encodeURIComponent(messageId)),
+          api('/admin/api/messages/' + encodeURIComponent(messageId) + '/content'),
+        ]);
+
+        const text = content.text || '';
+        const html = content.html || '';
+        const attachments = (content.attachments || []).map((item) =>
+          '<li>' + (item.filename || item.id) + ' · ' + item.sizeBytes + ' bytes</li>'
+        ).join('');
+        currentReplyContext = {
+          mailboxId: message.mailboxId,
+          tenantId: message.tenantId,
+          from: message.toAddr.split(',')[0] || '',
+          to: message.fromAddr,
+          subject: message.subject && message.subject.toLowerCase().startsWith('re:') ? message.subject : 'Re: ' + (message.subject || ''),
+          threadId: message.threadId || '',
+          sourceMessageId: message.id,
+          inReplyTo: message.internetMessageId || '',
+          references: message.internetMessageId ? [message.internetMessageId] : [],
+        };
+        replyHint.innerHTML = 'Reply ready for <strong>' + message.fromAddr + '</strong>. <button id="use-reply" class="button secondary" type="button">Use Reply Draft</button>';
+
+        messageDetail.innerHTML =
+          '<div class="faq-item">' +
+            '<h3>' + (message.subject || '(No subject)') + '</h3>' +
+            '<p><strong>From:</strong> ' + message.fromAddr + '</p>' +
+            '<p><strong>To:</strong> ' + message.toAddr + '</p>' +
+            '<p><strong>Status:</strong> ' + message.status + '</p>' +
+            '<p><strong>Received:</strong> ' + (message.receivedAt || message.createdAt) + '</p>' +
+            '<div class="code" style="margin-top:12px;">' + (text || html || 'No content extracted.') + '</div>' +
+            '<div style="margin-top:12px;"><strong>Attachments</strong><ul>' + (attachments || '<li>None</li>') + '</ul></div>' +
+          '</div>';
+
+        const replyButton = document.getElementById('use-reply');
+        if (replyButton) {
+          replyButton.addEventListener('click', () => {
+            sendMailbox.value = currentReplyContext.mailboxId;
+            sendTo.value = currentReplyContext.to;
+            sendSubject.value = currentReplyContext.subject;
+            sendText.value = '';
+            sendStatus.textContent = 'Reply draft loaded. Add your message and queue send.';
+          });
+        }
+
+        if (message.threadId) {
+          const thread = await api('/admin/api/threads/' + encodeURIComponent(message.threadId));
+          threadView.innerHTML = thread.messages.length
+            ? thread.messages.map((item) =>
+                '<div class="faq-item">' +
+                  '<h3>' + (item.subject || '(No subject)') + '</h3>' +
+                  '<p>' + item.direction + ' · ' + item.status + '</p>' +
+                  '<p>From: ' + item.fromAddr + '</p>' +
+                  '<p>To: ' + item.toAddr + '</p>' +
+                '</div>'
+              ).join('')
+            : 'Thread found but no messages were returned.';
+        } else {
+          threadView.textContent = 'This message is not attached to a thread yet.';
+        }
+        setView("threads");
+
+        const events = await api('/admin/api/messages/' + encodeURIComponent(messageId) + '/events');
+        deliveryEvents.innerHTML = events.items.length
+          ? events.items.map((event) =>
+              '<div class="faq-item">' +
+                '<h3>' + event.eventType + '</h3>' +
+                '<p>Provider message id: ' + (event.providerMessageId || 'n/a') + '</p>' +
+                '<p>Created: ' + event.createdAt + '</p>' +
+              '</div>'
+            ).join('')
+          : 'No delivery events recorded for this message yet.';
+
+        if (message.direction === 'outbound') {
+          const job = await api('/admin/api/outbound-jobs?limit=50');
+          const match = (job.items || []).find((item) => item.messageId === message.id);
+          outboxDetail.innerHTML = match
+            ? '<div class="faq-item">' +
+                '<h3>Outbound job ' + match.id + '</h3>' +
+                '<p>Status: ' + match.status + '</p>' +
+                '<p>Retry count: ' + match.retryCount + '</p>' +
+                '<p>Next retry: ' + (match.nextRetryAt || 'n/a') + '</p>' +
+                '<p>Last error: ' + (match.lastError || 'none') + '</p>' +
+              '</div>'
+            : 'No outbound job found for this message.';
+        } else {
+          outboxDetail.textContent = 'Select an outbound message or draft to inspect its delivery state.';
+        }
+      } catch (error) {
+        messageDetail.textContent = error.message;
+        threadView.textContent = 'Unable to load thread.';
+        deliveryEvents.textContent = 'Unable to load delivery events.';
+        outboxDetail.textContent = 'Unable to load outbound state.';
+      }
+    }
+
+    async function bootstrapDashboard() {
+      runtimeStatus.textContent = 'Connecting to live runtime';
+      await loadAliases();
+      await loadMailboxes();
+      if (!currentMailboxId && mailboxIndex[0]) {
+        currentMailboxId = mailboxIndex[0].id;
+      }
+      if (!currentContactMailboxId) {
+        const firstContactMailbox = getContactMailboxes()[0];
+        if (firstContactMailbox) {
+          currentContactMailboxId = firstContactMailbox.id;
+        }
+      }
+      if (currentMailboxId) {
+        await loadMessages();
+        sendMailbox.value = currentMailboxId;
+      }
+      if (currentContactMailboxId) {
+        await loadContactMessages();
+      }
+      await loadOutboundJobs();
+      await loadDrafts();
+      runtimeStatus.textContent = 'Connected to live runtime';
+      updateOverview();
+    }
+
+    authForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      window.localStorage.setItem(secretKey, secretInput.value);
+      try {
+        await bootstrapDashboard();
+        setAuthenticated(true);
+        setView("overview");
+      } catch (error) {
+        authStatus.textContent = error.message;
+        runtimeStatus.textContent = 'Authentication failed';
+        setAuthenticated(false);
+      }
+    });
+
+    aliasForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await api('/admin/api/contact-aliases', {
+          method: 'POST',
+          body: JSON.stringify({
+            alias: aliasName.value,
+          }),
+        });
+        aliasStatus.textContent = 'Internal inbox alias saved successfully.';
+        aliasName.value = '';
+        await loadAliases();
+        await loadMailboxes();
+      } catch (error) {
+        aliasStatus.textContent = error.message;
+      }
+    });
+
+    aliasBootstrapForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      try {
+        const result = await api('/admin/api/contact-aliases/bootstrap', {
+          method: 'POST',
+          body: JSON.stringify({
+            overwrite: aliasBootstrapOverwrite.checked,
+          }),
+        });
+        aliasBootstrapStatus.textContent = 'Internal inbox setup complete for ' + result.results.length + ' aliases.';
+        await loadAliases();
+        await loadMailboxes();
+      } catch (error) {
+        aliasBootstrapStatus.textContent = error.message;
+      }
+    });
+
+    messageSearch.addEventListener('change', loadMessages);
+    messageDirection.addEventListener('change', loadMessages);
+    jobStatus.addEventListener('change', loadOutboundJobs);
+    draftStatus.addEventListener('change', loadDrafts);
+    document.querySelectorAll(".admin-nav-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const viewName = button.getAttribute("data-view");
+        if (viewName) {
+          setView(viewName);
+        }
+      });
+    });
+
+    refreshDashboard.addEventListener("click", async () => {
+      try {
+        await bootstrapDashboard();
+      } catch (error) {
+        runtimeStatus.textContent = error.message;
+      }
+    });
+
+    logoutDashboard.addEventListener("click", () => {
+      window.localStorage.removeItem(secretKey);
+      secretInput.value = "";
+      authStatus.textContent = "Dashboard is locked.";
+      runtimeStatus.textContent = "Disconnected";
+      setAuthenticated(false);
+    });
+
+    sendForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const mailbox = mailboxIndex.find((item) => item.id === sendMailbox.value);
+      if (!mailbox) {
+        sendStatus.textContent = 'Choose a mailbox first.';
+        return;
+      }
+
+      try {
+        const result = await api('/admin/api/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            mailboxId: mailbox.id,
+            tenantId: mailbox.tenantId,
+            from: mailbox.address,
+            to: sendTo.value.split(',').map((item) => item.trim()).filter(Boolean),
+            subject: sendSubject.value,
+            text: sendText.value,
+            threadId: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.threadId || undefined : undefined,
+            sourceMessageId: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.sourceMessageId || undefined : undefined,
+            inReplyTo: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.inReplyTo || undefined : undefined,
+            references: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.references || [] : [],
+          }),
+        });
+        sendStatus.textContent = 'Queued outbound job ' + result.outboundJobId + '.';
+        sendTo.value = '';
+        sendSubject.value = '';
+        sendText.value = '';
+        currentReplyContext = null;
+        replyHint.textContent = 'No reply draft prepared.';
+        await loadMessages();
+        await loadDrafts();
+        await loadOutboundJobs();
+      } catch (error) {
+        sendStatus.textContent = error.message;
+      }
+    });
+
+    if (secretInput.value) {
+      bootstrapDashboard()
+        .then(() => {
+          setAuthenticated(true);
+          setView("overview");
+        })
+        .catch((error) => {
+          authStatus.textContent = error.message;
+          runtimeStatus.textContent = "Authentication failed";
+          setAuthenticated(false);
+        });
+    } else {
+      setAuthenticated(false);
+    }
+  </script>`;
 }
 
 function escapeHtml(value: string): string {

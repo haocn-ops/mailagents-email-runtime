@@ -1,7 +1,7 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { nowIso } from "../lib/time";
-import type { AgentMailboxBindingRecord, AgentPolicyRecord, AgentRecord, Env } from "../types";
+import type { AgentMailboxBindingRecord, AgentPolicyRecord, AgentRecord, Env, MailboxRecord } from "../types";
 
 interface MailboxRow {
   id: string;
@@ -9,6 +9,16 @@ interface MailboxRow {
   address: string;
   status: string;
   created_at: string;
+}
+
+function mapMailboxRecord(row: MailboxRow): MailboxRecord {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    address: row.address,
+    status: row.status,
+    createdAt: row.created_at,
+  };
 }
 
 interface AgentRow {
@@ -276,4 +286,49 @@ export async function getMailboxById(env: Env, mailboxId: string): Promise<Mailb
        WHERE id = ?`
     ).bind(mailboxId)
   );
+}
+
+export async function listMailboxes(env: Env): Promise<MailboxRecord[]> {
+  const rows = await allRows<MailboxRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, address, status, created_at
+       FROM mailboxes
+       ORDER BY created_at DESC`
+    )
+  );
+
+  return rows.map(mapMailboxRecord);
+}
+
+export async function ensureMailbox(env: Env, input: {
+  tenantId: string;
+  address: string;
+  status?: string;
+}): Promise<MailboxRecord> {
+  const normalizedAddress = input.address.trim().toLowerCase();
+  const existing = await getMailboxByAddress(env, normalizedAddress);
+  if (existing) {
+    return mapMailboxRecord(existing);
+  }
+
+  const id = createId("mbx");
+  const createdAt = nowIso();
+  await execute(env.D1_DB.prepare(
+    `INSERT INTO mailboxes (id, tenant_id, address, status, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    normalizedAddress,
+    input.status ?? "active",
+    createdAt
+  ));
+
+  return {
+    id,
+    tenantId: input.tenantId,
+    address: normalizedAddress,
+    status: input.status ?? "active",
+    createdAt,
+  };
 }

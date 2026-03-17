@@ -225,6 +225,53 @@ export async function getMessage(env: Env, messageId: string): Promise<MessageRe
   return row ? mapMessageRow(row) : null;
 }
 
+export async function listMessages(env: Env, input?: {
+  mailboxId?: string;
+  limit?: number;
+  search?: string;
+  direction?: MessageRecord["direction"];
+  status?: MessageRecord["status"];
+}): Promise<MessageRecord[]> {
+  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const conditions: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (input?.mailboxId) {
+    conditions.push("mailbox_id = ?");
+    values.push(input.mailboxId);
+  }
+
+  if (input?.direction) {
+    conditions.push("direction = ?");
+    values.push(input.direction);
+  }
+
+  if (input?.status) {
+    conditions.push("status = ?");
+    values.push(input.status);
+  }
+
+  if (input?.search) {
+    conditions.push("(subject LIKE ? OR snippet LIKE ? OR from_addr LIKE ? OR to_addr LIKE ?)");
+    const search = `%${input.search}%`;
+    values.push(search, search, search, search);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const query = env.D1_DB.prepare(
+    `SELECT id, tenant_id, mailbox_id, thread_id, direction, provider, internet_message_id,
+            provider_message_id, from_addr, to_addr, subject, snippet, status, raw_r2_key,
+            normalized_r2_key, received_at, sent_at, created_at
+     FROM messages
+     ${whereClause}
+     ORDER BY created_at DESC
+     LIMIT ?`
+  ).bind(...values, limit);
+
+  const rows = await allRows<MessageRow>(query);
+  return rows.map(mapMessageRow);
+}
+
 export async function getMessageContent(env: Env, messageId: string): Promise<MessageContentRecord> {
   const message = requireRow(await getMessage(env, messageId), "Message not found");
   const normalizedObject = message.normalizedR2Key ? await env.R2_EMAIL.get(message.normalizedR2Key) : null;
@@ -283,6 +330,32 @@ export async function getThread(env: Env, threadId: string): Promise<ThreadRecor
     status: thread.status ?? undefined,
     messages: messageRows.map(mapMessageRow),
   };
+}
+
+export async function listOutboundJobs(env: Env, input?: {
+  limit?: number;
+  status?: OutboundJobRecord["status"];
+}): Promise<OutboundJobRecord[]> {
+  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const query = input?.status
+    ? env.D1_DB.prepare(
+        `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+                last_error, draft_r2_key, created_at, updated_at
+         FROM outbound_jobs
+         WHERE status = ?
+         ORDER BY created_at DESC
+         LIMIT ?`
+      ).bind(input.status, limit)
+    : env.D1_DB.prepare(
+        `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+                last_error, draft_r2_key, created_at, updated_at
+         FROM outbound_jobs
+         ORDER BY created_at DESC
+         LIMIT ?`
+      ).bind(limit);
+
+  const rows = await allRows<OutboundJobRow>(query);
+  return rows.map(mapOutboundJobRow);
 }
 
 export async function getOrCreateThread(env: Env, input: {
@@ -382,6 +455,40 @@ export async function getDraft(env: Env, draftId: string): Promise<DraftRecord |
   return row ? mapDraftRow(row) : null;
 }
 
+export async function listDrafts(env: Env, input?: {
+  mailboxId?: string;
+  status?: DraftRecord["status"];
+  limit?: number;
+}): Promise<DraftRecord[]> {
+  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const conditions: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (input?.mailboxId) {
+    conditions.push("mailbox_id = ?");
+    values.push(input.mailboxId);
+  }
+
+  if (input?.status) {
+    conditions.push("status = ?");
+    values.push(input.status);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await allRows<DraftRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+              status, draft_r2_key, created_at, updated_at
+       FROM drafts
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT ?`
+    ).bind(...values, limit)
+  );
+
+  return rows.map(mapDraftRow);
+}
+
 export async function getDraftByR2Key(env: Env, draftR2Key: string): Promise<DraftRecord | null> {
   const row = await firstRow<DraftRow>(
     env.D1_DB.prepare(
@@ -461,6 +568,21 @@ export async function getOutboundJob(env: Env, outboundJobId: string): Promise<O
        FROM outbound_jobs
        WHERE id = ?`
     ).bind(outboundJobId)
+  );
+
+  return row ? mapOutboundJobRow(row) : null;
+}
+
+export async function getOutboundJobByMessageId(env: Env, messageId: string): Promise<OutboundJobRecord | null> {
+  const row = await firstRow<OutboundJobRow>(
+    env.D1_DB.prepare(
+      `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+              last_error, draft_r2_key, created_at, updated_at
+       FROM outbound_jobs
+       WHERE message_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(messageId)
   );
 
   return row ? mapOutboundJobRow(row) : null;
