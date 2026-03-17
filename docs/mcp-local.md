@@ -93,6 +93,27 @@ curl -sS http://127.0.0.1:8787/mcp \
   }'
 ```
 
+Example: run the composite reply workflow without sending
+
+```bash
+curl -sS http://127.0.0.1:8787/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4.5,
+    "method": "tools/call",
+    "params": {
+      "name": "reply_to_inbound_email",
+      "arguments": {
+        "agentId": "agt_demo",
+        "messageId": "REPLACE_WITH_MESSAGE_ID",
+        "replyText": "Thanks for your message. We are looking into it now."
+      }
+    }
+  }'
+```
+
 Example: send a draft idempotently
 
 ```bash
@@ -115,6 +136,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 
 ## Supported tools
 
+- `reply_to_inbound_email`
 - `list_agent_tasks`
 - `get_message`
 - `get_message_content`
@@ -129,6 +151,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `tools/list` only shows tools allowed by the current token scopes
 - `tools/call` reuses the same access checks as the HTTP API
 - `send_draft` and `replay_message` support `idempotencyKey`
+- `reply_to_inbound_email` can create a reply draft and optionally send when `send: true`
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
 
 ## Error codes

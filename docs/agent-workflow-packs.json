@@ -6,6 +6,7 @@
       "name": "reply_to_inbound_email",
       "goal": "Read inbound mail, gather context, draft a reply, and send only when delivery is explicitly intended.",
       "inputs": ["agentId", "messageId", "threadId?", "sendIdempotencyKey?"],
+      "compositeTool": "reply_to_inbound_email",
       "steps": [
         { "tool": "get_message", "mode": "read" },
         { "tool": "get_message_content", "mode": "read" },

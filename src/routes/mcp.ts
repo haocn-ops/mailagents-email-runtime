@@ -51,6 +51,24 @@ const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
   {
+    name: "reply_to_inbound_email",
+    description: "Read inbound message context, construct a reply draft with proper headers, and optionally send it.",
+    requiredScopes: ["mail:read", "draft:create"],
+    inputSchema: {
+      type: "object",
+      required: ["agentId", "messageId"],
+      properties: {
+        agentId: { type: "string" },
+        messageId: { type: "string" },
+        replyText: { type: "string" },
+        replyHtml: { type: "string" },
+        send: { type: "boolean" },
+        idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_agent_tasks",
     description: "Fetch current tasks for an agent.",
     requiredScopes: ["task:read"],
@@ -317,6 +335,143 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
 }
 
 async function callTool(request: Request, env: Env, toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  if (toolName === "reply_to_inbound_email") {
+    const auth = await requireClaimsStrict(request, env, ["mail:read", "draft:create"]);
+    const agentId = requireString(args.agentId, "agentId");
+    const messageId = requireString(args.messageId, "messageId");
+    const replyText = optionalString(args.replyText);
+    const replyHtml = optionalString(args.replyHtml);
+    if (!replyText && !replyHtml) {
+      throw new McpToolError("invalid_arguments", "replyText or replyHtml is required");
+    }
+
+    const send = args.send === true;
+    if (send) {
+      const sendAuth = await requireClaims(request, env, ["draft:send"]);
+      if (sendAuth instanceof Response) {
+        await throwIfResponseError(sendAuth);
+      }
+    }
+
+    const message = await getMessage(env, messageId);
+    if (!message) {
+      throw new McpToolError("resource_message_not_found", "Message not found");
+    }
+    if (message.direction !== "inbound") {
+      throw new McpToolError("invalid_arguments", "reply_to_inbound_email only supports inbound messages");
+    }
+
+    const tenantError = enforceTenantAccess(auth, message.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+    const agentError = enforceAgentAccess(auth, agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+
+    const thread = message.threadId ? await getThread(env, message.threadId) : null;
+    const references = Array.from(new Set(
+      (thread?.messages ?? [])
+        .map((item) => item.internetMessageId)
+        .filter((item): item is string => Boolean(item))
+    ));
+    if (message.internetMessageId && !references.includes(message.internetMessageId)) {
+      references.push(message.internetMessageId);
+    }
+
+    const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
+      ? message.subject
+      : `Re: ${message.subject ?? ""}`.trim();
+    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+    const draft = await createDraft(env, {
+      tenantId: message.tenantId,
+      agentId,
+      mailboxId: message.mailboxId,
+      threadId: message.threadId,
+      sourceMessageId: message.id,
+      payload: {
+        from: replyFrom,
+        to: [message.fromAddr],
+        cc: [],
+        bcc: [],
+        subject: replySubject || "Re:",
+        text: replyText ?? "",
+        html: replyHtml ?? "",
+        inReplyTo: message.internetMessageId,
+        references,
+        attachments: [],
+      },
+    });
+
+    if (!send) {
+      return {
+        draft,
+        sourceMessage: message,
+        usedThreadContext: Boolean(thread),
+      };
+    }
+
+    const idempotencyKey = optionalString(args.idempotencyKey);
+    if (!idempotencyKey) {
+      throw new McpToolError("invalid_arguments", "idempotencyKey is required when send is true");
+    }
+
+    const reservation = await reserveIdempotencyKey(env, {
+      operation: "draft_send",
+      tenantId: draft.tenantId,
+      idempotencyKey,
+      requestFingerprint: JSON.stringify({ draftId: draft.id }),
+      resourceId: draft.id,
+    });
+
+    if (reservation.status === "conflict") {
+      throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different draft send request");
+    }
+    if (reservation.status === "pending") {
+      throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
+    }
+
+    let sendResult: unknown;
+    if (reservation.status === "completed") {
+      sendResult = reservation.record.response ?? {
+        draftId: draft.id,
+        outboundJobId: reservation.record.resourceId,
+        status: "queued",
+      };
+    } else {
+      try {
+        const result = await enqueueDraftSend(env, draft.id);
+        sendResult = {
+          draftId: draft.id,
+          outboundJobId: result.outboundJobId,
+          status: result.status,
+        };
+        await completeIdempotencyKey(env, {
+          operation: "draft_send",
+          tenantId: draft.tenantId,
+          idempotencyKey,
+          resourceId: result.outboundJobId,
+          response: sendResult,
+        });
+      } catch (error) {
+        await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+        throw error;
+      }
+    }
+
+    return {
+      draft,
+      sendResult,
+      sourceMessage: message,
+      usedThreadContext: Boolean(thread),
+    };
+  }
+
   if (toolName === "list_agent_tasks") {
     const auth = await requireClaimsStrict(request, env, ["task:read"]);
 
