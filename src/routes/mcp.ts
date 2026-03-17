@@ -8,6 +8,11 @@ import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
 import { Router } from "../lib/router";
 import {
+  bindMailbox,
+  createAgent,
+  upsertAgentPolicy,
+} from "../repositories/agents";
+import {
   completeIdempotencyKey,
   createDraft,
   enqueueDraftSend,
@@ -50,6 +55,58 @@ class McpToolError extends Error {
 const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
+  {
+    name: "create_agent",
+    description: "Provision a new agent for a tenant.",
+    requiredScopes: ["agent:create"],
+    inputSchema: {
+      type: "object",
+      required: ["tenantId", "name", "mode"],
+      properties: {
+        tenantId: { type: "string" },
+        name: { type: "string" },
+        mode: { type: "string", enum: ["assistant", "autonomous", "review_only"] },
+        config: { type: "object" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "bind_mailbox",
+    description: "Attach a mailbox to an agent.",
+    requiredScopes: ["agent:bind"],
+    inputSchema: {
+      type: "object",
+      required: ["agentId", "tenantId", "mailboxId", "role"],
+      properties: {
+        agentId: { type: "string" },
+        tenantId: { type: "string" },
+        mailboxId: { type: "string" },
+        role: { type: "string", enum: ["primary", "shared", "send_only", "receive_only"] },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "upsert_agent_policy",
+    description: "Set reply and delivery policy controls for an agent.",
+    requiredScopes: ["agent:update"],
+    inputSchema: {
+      type: "object",
+      required: ["agentId", "autoReplyEnabled", "humanReviewRequired", "confidenceThreshold", "maxAutoRepliesPerThread"],
+      properties: {
+        agentId: { type: "string" },
+        autoReplyEnabled: { type: "boolean" },
+        humanReviewRequired: { type: "boolean" },
+        confidenceThreshold: { type: "number" },
+        maxAutoRepliesPerThread: { type: "number" },
+        allowedRecipientDomains: { type: "array", items: { type: "string" } },
+        blockedSenderDomains: { type: "array", items: { type: "string" } },
+        allowedTools: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    },
+  },
   {
     name: "reply_to_inbound_email",
     description: "Read inbound message context, construct a reply draft with proper headers, and optionally send it.",
@@ -335,6 +392,92 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
 }
 
 async function callTool(request: Request, env: Env, toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  if (toolName === "create_agent") {
+    const auth = await requireClaimsStrict(request, env, ["agent:create"]);
+    const tenantId = requireString(args.tenantId, "tenantId");
+    const name = requireString(args.name, "name");
+    const mode = requireString(args.mode, "mode");
+    if (mode !== "assistant" && mode !== "autonomous" && mode !== "review_only") {
+      throw new McpToolError("invalid_arguments", "mode must be assistant, autonomous, or review_only");
+    }
+
+    const tenantError = enforceTenantAccess(auth, tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+
+    return await createAgent(env, {
+      tenantId,
+      name,
+      mode,
+      config: args.config ?? {},
+    });
+  }
+
+  if (toolName === "bind_mailbox") {
+    const auth = await requireClaimsStrict(request, env, ["agent:bind"]);
+    const agentId = requireString(args.agentId, "agentId");
+    const tenantId = requireString(args.tenantId, "tenantId");
+    const mailboxId = requireString(args.mailboxId, "mailboxId");
+    const role = requireString(args.role, "role");
+    if (role !== "primary" && role !== "shared" && role !== "send_only" && role !== "receive_only") {
+      throw new McpToolError("invalid_arguments", "role must be primary, shared, send_only, or receive_only");
+    }
+
+    const tenantError = enforceTenantAccess(auth, tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const agentError = enforceAgentAccess(auth, agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+
+    return await bindMailbox(env, {
+      tenantId,
+      agentId,
+      mailboxId,
+      role,
+    });
+  }
+
+  if (toolName === "upsert_agent_policy") {
+    const auth = await requireClaimsStrict(request, env, ["agent:update"]);
+    const agentId = requireString(args.agentId, "agentId");
+    const agentError = enforceAgentAccess(auth, agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+
+    if (typeof args.autoReplyEnabled !== "boolean") {
+      throw new McpToolError("invalid_arguments", "autoReplyEnabled must be boolean");
+    }
+    if (typeof args.humanReviewRequired !== "boolean") {
+      throw new McpToolError("invalid_arguments", "humanReviewRequired must be boolean");
+    }
+    if (typeof args.confidenceThreshold !== "number") {
+      throw new McpToolError("invalid_arguments", "confidenceThreshold must be number");
+    }
+    if (typeof args.maxAutoRepliesPerThread !== "number") {
+      throw new McpToolError("invalid_arguments", "maxAutoRepliesPerThread must be number");
+    }
+
+    return await upsertAgentPolicy(env, {
+      agentId,
+      autoReplyEnabled: args.autoReplyEnabled,
+      humanReviewRequired: args.humanReviewRequired,
+      confidenceThreshold: args.confidenceThreshold,
+      maxAutoRepliesPerThread: args.maxAutoRepliesPerThread,
+      allowedRecipientDomains: optionalStringArray(args.allowedRecipientDomains) ?? [],
+      blockedSenderDomains: optionalStringArray(args.blockedSenderDomains) ?? [],
+      allowedTools: optionalStringArray(args.allowedTools) ?? [],
+    });
+  }
+
   if (toolName === "reply_to_inbound_email") {
     const auth = await requireClaimsStrict(request, env, ["mail:read", "draft:create"]);
     const agentId = requireString(args.agentId, "agentId");

@@ -136,6 +136,9 @@ curl -sS http://127.0.0.1:8787/mcp \
 
 ## Supported tools
 
+- `create_agent`
+- `bind_mailbox`
+- `upsert_agent_policy`
 - `reply_to_inbound_email`
 - `list_agent_tasks`
 - `get_message`
