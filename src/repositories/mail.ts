@@ -1,7 +1,7 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { nowIso } from "../lib/time";
-import type { DeliveryEventType, DraftRecord, Env, MessageContentRecord, MessageRecord, OutboundJobRecord, TaskRecord, ThreadRecord } from "../types";
+import type { DeliveryEventType, DraftRecord, Env, IdempotencyRecord, MessageContentRecord, MessageRecord, OutboundJobRecord, TaskRecord, ThreadRecord } from "../types";
 
 interface TaskRow {
   id: string;
@@ -99,6 +99,18 @@ interface SuppressionRow {
   created_at: string;
 }
 
+interface IdempotencyRow {
+  operation: string;
+  tenant_id: string;
+  idempotency_key: string;
+  request_fingerprint: string;
+  status: "pending" | "completed";
+  resource_id: string | null;
+  response_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 function mapTaskRow(row: TaskRow): TaskRecord {
   return {
     id: row.id,
@@ -187,6 +199,20 @@ function mapSuppressionRow(row: SuppressionRow) {
     reason: row.reason,
     source: row.source,
     createdAt: row.created_at,
+  };
+}
+
+function mapIdempotencyRow<T>(row: IdempotencyRow): IdempotencyRecord<T> {
+  return {
+    operation: row.operation,
+    tenantId: row.tenant_id,
+    idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint,
+    status: row.status,
+    resourceId: row.resource_id ?? undefined,
+    response: row.response_json ? JSON.parse(row.response_json) as T : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -558,6 +584,160 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     outboundJobId,
     status: "queued",
   };
+}
+
+export async function getIdempotencyRecord<T>(env: Env, operation: string, tenantId: string, idempotencyKey: string): Promise<IdempotencyRecord<T> | null> {
+  const row = await firstRow<IdempotencyRow>(
+    env.D1_DB.prepare(
+      `SELECT operation, tenant_id, idempotency_key, request_fingerprint, status, resource_id,
+              response_json, created_at, updated_at
+       FROM idempotency_keys
+       WHERE operation = ? AND tenant_id = ? AND idempotency_key = ?`
+    ).bind(operation, tenantId, idempotencyKey)
+  );
+
+  return row ? mapIdempotencyRow<T>(row) : null;
+}
+
+export async function reserveIdempotencyKey(env: Env, input: {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  resourceId?: string;
+}): Promise<
+  | { status: "reserved" }
+  | { status: "completed"; record: IdempotencyRecord }
+  | { status: "pending"; record: IdempotencyRecord }
+  | { status: "conflict"; record: IdempotencyRecord }
+> {
+  const existing = await getIdempotencyRecord(env, input.operation, input.tenantId, input.idempotencyKey);
+  if (existing) {
+    if (existing.requestFingerprint !== input.requestFingerprint) {
+      return { status: "conflict", record: existing };
+    }
+    if (existing.status === "completed") {
+      return { status: "completed", record: existing };
+    }
+    return { status: "pending", record: existing };
+  }
+
+  const timestamp = nowIso();
+  const result = await env.D1_DB.prepare(
+    `INSERT OR IGNORE INTO idempotency_keys (
+       operation, tenant_id, idempotency_key, request_fingerprint, status, resource_id, response_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    input.operation,
+    input.tenantId,
+    input.idempotencyKey,
+    input.requestFingerprint,
+    "pending",
+    input.resourceId ?? null,
+    null,
+    timestamp,
+    timestamp
+  ).run();
+
+  if ((result.meta?.changes ?? 0) > 0) {
+    return { status: "reserved" };
+  }
+
+  const current = requireRow(
+    await getIdempotencyRecord(env, input.operation, input.tenantId, input.idempotencyKey),
+    "Idempotency reservation lookup failed"
+  );
+
+  if (current.requestFingerprint !== input.requestFingerprint) {
+    return { status: "conflict", record: current };
+  }
+  if (current.status === "completed") {
+    return { status: "completed", record: current };
+  }
+  return { status: "pending", record: current };
+}
+
+export async function completeIdempotencyKey(env: Env, input: {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  response: unknown;
+  resourceId?: string;
+}): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE idempotency_keys
+     SET status = ?, response_json = ?, resource_id = COALESCE(?, resource_id), updated_at = ?
+     WHERE operation = ? AND tenant_id = ? AND idempotency_key = ?`
+  ).bind(
+    "completed",
+    JSON.stringify(input.response),
+    input.resourceId ?? null,
+    nowIso(),
+    input.operation,
+    input.tenantId,
+    input.idempotencyKey
+  ));
+}
+
+export async function releaseIdempotencyKey(env: Env, operation: string, tenantId: string, idempotencyKey: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM idempotency_keys
+     WHERE operation = ? AND tenant_id = ? AND idempotency_key = ? AND status = ?`
+  ).bind(operation, tenantId, idempotencyKey, "pending"));
+}
+
+export async function pruneIdempotencyKeys(env: Env, input: {
+  completedBefore: string;
+  pendingBefore: string;
+}): Promise<{ deleted: number }> {
+  const result = await execute(env.D1_DB.prepare(
+    `DELETE FROM idempotency_keys
+     WHERE (status = ? AND updated_at < ?)
+        OR (status = ? AND updated_at < ?)`
+  ).bind(
+    "completed",
+    input.completedBefore,
+    "pending",
+    input.pendingBefore
+  ));
+
+  return {
+    deleted: result.meta?.changes ?? 0,
+  };
+}
+
+export async function listIdempotencyRecords(env: Env, input?: {
+  operation?: string;
+  status?: "pending" | "completed";
+  limit?: number;
+}): Promise<IdempotencyRecord[]> {
+  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const conditions: string[] = [];
+  const values: Array<string | number> = [];
+
+  if (input?.operation) {
+    conditions.push("operation = ?");
+    values.push(input.operation);
+  }
+
+  if (input?.status) {
+    conditions.push("status = ?");
+    values.push(input.status);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await allRows<IdempotencyRow>(
+    env.D1_DB.prepare(
+      `SELECT operation, tenant_id, idempotency_key, request_fingerprint, status, resource_id,
+              response_json, created_at, updated_at
+       FROM idempotency_keys
+       ${whereClause}
+       ORDER BY updated_at DESC
+       LIMIT ?`
+    ).bind(...values, limit)
+  );
+
+  return rows.map((row) => mapIdempotencyRow(row));
 }
 
 export async function getOutboundJob(env: Env, outboundJobId: string): Promise<OutboundJobRecord | null> {

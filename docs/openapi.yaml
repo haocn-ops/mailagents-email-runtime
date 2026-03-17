@@ -83,6 +83,36 @@ paths:
       responses:
         '200':
           description: Agent state
+  /v1/debug/mailboxes/{mailboxId}:
+    get:
+      tags: [Debug]
+      summary: Inspect mailbox state
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/MailboxId'
+      responses:
+        '200':
+          description: Mailbox state
+  /v1/debug/messages/{messageId}:
+    get:
+      tags: [Debug]
+      summary: Inspect message state and delivery events
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message state and delivery events
   /v1/debug/drafts/{draftId}:
     get:
       tags: [Debug]
@@ -117,6 +147,25 @@ paths:
       responses:
         '200':
           description: Outbound job state
+  /v1/debug/suppressions/{email}:
+    get:
+      tags: [Debug]
+      summary: Inspect suppression state for an email address
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: email
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Suppression state
   /v1/agents:
     post:
       tags: [Agents]
@@ -238,13 +287,6 @@ paths:
           in: query
           schema:
             $ref: '#/components/schemas/TaskStatus'
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
       responses:
         '200':
           description: Tasks
@@ -408,6 +450,12 @@ components:
       required: true
       schema:
         type: string
+    MailboxId:
+      name: mailboxId
+      in: path
+      required: true
+      schema:
+        type: string
     ThreadId:
       name: threadId
       in: path
@@ -463,8 +511,10 @@ components:
           format: date-time
     CreateAgentRequest:
       type: object
-      required: [name, mode, config]
+      required: [tenantId, name, mode]
       properties:
+        tenantId:
+          type: string
         name:
           type: string
         mode:
@@ -505,8 +555,10 @@ components:
           format: date-time
     BindMailboxRequest:
       type: object
-      required: [mailboxId, role]
+      required: [tenantId, mailboxId, role]
       properties:
+        tenantId:
+          type: string
         mailboxId:
           type: string
         role:
@@ -726,8 +778,10 @@ components:
           format: date-time
     CreateDraftRequest:
       type: object
-      required: [mailboxId, from, to, subject]
+      required: [tenantId, mailboxId, from, to, subject]
       properties:
+        tenantId:
+          type: string
         mailboxId:
           type: string
         threadId:
@@ -766,6 +820,7 @@ components:
             $ref: '#/components/schemas/DraftAttachment'
     SendDraftRequest:
       type: object
+      description: Optional request body. Reusing the same `idempotencyKey` for the same draft send request returns the original accepted response instead of enqueueing another send.
       properties:
         idempotencyKey:
           type: string
@@ -782,6 +837,7 @@ components:
     ReplayMessageRequest:
       type: object
       required: [mode]
+      description: Reusing the same `idempotencyKey` for the same replay request returns the original accepted response instead of enqueueing another replay.
       properties:
         mode:
           type: string

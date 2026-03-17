@@ -9,7 +9,7 @@ import {
   requireAuth,
   requireDebugRoutesEnabled,
 } from "../lib/auth";
-import { accepted, badRequest, json, readJson } from "../lib/http";
+import { accepted, badRequest, json, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
@@ -24,6 +24,7 @@ import {
 import {
   createDraft,
   enqueueDraftSend,
+  completeIdempotencyKey,
   getDraft,
   getMessage,
   getMessageByProviderMessageId,
@@ -34,6 +35,8 @@ import {
   insertDeliveryEvent,
   listTasks,
   listDeliveryEventsByMessageId,
+  releaseIdempotencyKey,
+  reserveIdempotencyKey,
   addSuppression,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
@@ -420,7 +423,7 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     return auth;
   }
 
-  const body = await readJson<{ mode?: "normalize" | "rerun_agent"; agentId?: string }>(request);
+  const body = await readJson<{ mode?: "normalize" | "rerun_agent"; agentId?: string; idempotencyKey?: string }>(request);
   if (!body.mode) {
     return badRequest("mode is required");
   }
@@ -435,6 +438,69 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   const mailboxError = enforceMailboxAccess(auth, existingMessage.mailboxId);
   if (mailboxError) {
     return mailboxError;
+  }
+
+  const idempotencyKey = body.idempotencyKey?.trim();
+  if (body.idempotencyKey !== undefined && !idempotencyKey) {
+    return badRequest("idempotencyKey must be a non-empty string");
+  }
+
+  const replayResponse = {
+    messageId: route.params.messageId,
+    mode: body.mode,
+    status: "accepted" as const,
+  };
+
+  if (idempotencyKey) {
+    const reservation = await reserveIdempotencyKey(env, {
+      operation: "message_replay",
+      tenantId: existingMessage.tenantId,
+      idempotencyKey,
+      requestFingerprint: JSON.stringify({
+        messageId: route.params.messageId,
+        mode: body.mode,
+        agentId: body.agentId ?? null,
+      }),
+      resourceId: route.params.messageId,
+    });
+
+    if (reservation.status === "conflict") {
+      return json({ error: "Idempotency key is already used for a different replay request" }, { status: 409 });
+    }
+    if (reservation.status === "pending") {
+      return json({ error: "A replay request with this idempotency key is already in progress" }, { status: 409 });
+    }
+    if (reservation.status === "completed") {
+      return accepted(reservation.record.response ?? replayResponse);
+    }
+
+    try {
+      if (body.mode === "normalize") {
+        await env.EMAIL_INGEST_QUEUE.send({
+          messageId: route.params.messageId,
+          tenantId: existingMessage.tenantId,
+          mailboxId: existingMessage.mailboxId,
+          rawR2Key: existingMessage.rawR2Key ?? `raw/replay/${route.params.messageId}.eml`,
+        });
+      } else {
+        await env.AGENT_EXECUTE_QUEUE.send({
+          taskId: createId("tsk"),
+          agentId: body.agentId ?? "agt_demo",
+        });
+      }
+
+      await completeIdempotencyKey(env, {
+        operation: "message_replay",
+        tenantId: existingMessage.tenantId,
+        idempotencyKey,
+        resourceId: route.params.messageId,
+        response: replayResponse,
+      });
+      return accepted(replayResponse);
+    } catch (error) {
+      await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
+      throw error;
+    }
   }
 
   if (body.mode === "normalize") {
@@ -579,6 +645,57 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
   if (mailboxError) {
     return mailboxError;
+  }
+
+  const body = await readOptionalJson<{ idempotencyKey?: string }>(request);
+  const idempotencyKey = body?.idempotencyKey?.trim();
+  if (body?.idempotencyKey !== undefined && !idempotencyKey) {
+    return badRequest("idempotencyKey must be a non-empty string");
+  }
+
+  if (idempotencyKey) {
+    const reservation = await reserveIdempotencyKey(env, {
+      operation: "draft_send",
+      tenantId: draft.tenantId,
+      idempotencyKey,
+      requestFingerprint: JSON.stringify({ draftId: route.params.draftId }),
+      resourceId: route.params.draftId,
+    });
+
+    if (reservation.status === "conflict") {
+      return json({ error: "Idempotency key is already used for a different draft send request" }, { status: 409 });
+    }
+    if (reservation.status === "pending") {
+      return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
+    }
+    if (reservation.status === "completed") {
+      return accepted(reservation.record.response ?? {
+        draftId: route.params.draftId,
+        outboundJobId: reservation.record.resourceId,
+        status: "queued",
+      });
+    }
+
+    try {
+      const result = await enqueueDraftSend(env, route.params.draftId);
+      const response = {
+        draftId: route.params.draftId,
+        outboundJobId: result.outboundJobId,
+        status: result.status,
+      };
+
+      await completeIdempotencyKey(env, {
+        operation: "draft_send",
+        tenantId: draft.tenantId,
+        idempotencyKey,
+        resourceId: result.outboundJobId,
+        response,
+      });
+      return accepted(response);
+    } catch (error) {
+      await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+      throw error;
+    }
   }
 
   const result = await enqueueDraftSend(env, route.params.draftId);

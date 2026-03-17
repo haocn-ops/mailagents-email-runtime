@@ -1,6 +1,7 @@
 import { notFound } from "./lib/http";
 import { handleEmail } from "./handlers/email";
 import { handleQueue } from "./handlers/queues";
+import { handleScheduled } from "./handlers/scheduled";
 import { handleApiRequest } from "./routes/api";
 import { handleSiteRequest } from "./routes/site";
 import type { Env } from "./types";
@@ -22,5 +23,9 @@ export default {
 
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     await handleQueue(batch, env);
+  },
+
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    await handleScheduled(event, env);
   },
 };

@@ -36,6 +36,8 @@ Update [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler
 - set the correct `SES_FROM_DOMAIN` per environment
 - set the correct `SES_CONFIGURATION_SET` per environment
 - set `ADMIN_ROUTES_ENABLED` and `DEBUG_ROUTES_ENABLED` appropriately
+- confirm the hourly cron trigger is enabled for idempotency cleanup
+- set `IDEMPOTENCY_COMPLETED_RETENTION_HOURS` and `IDEMPOTENCY_PENDING_RETENTION_HOURS` as needed
 
 Suggested naming:
 
@@ -119,11 +121,13 @@ Important split:
   - queue names
   - bucket names
   - D1 bindings
+  - cron triggers
   - `SES_REGION`
   - `SES_FROM_DOMAIN`
   - `SES_CONFIGURATION_SET`
   - `ADMIN_ROUTES_ENABLED`
   - `DEBUG_ROUTES_ENABLED`
+  - idempotency retention windows
 - Worker secrets
   - AWS access keys
   - webhook shared secret
@@ -200,6 +204,10 @@ npm run deploy:production
 ```
 
 Before deploy, make sure the corresponding Worker secrets were set for that environment.
+
+The default deployment also schedules the Worker every hour to prune stale
+idempotency keys. Operators can manually verify or trigger cleanup through the
+admin maintenance endpoints in controlled environments.
 
 ## GitHub Actions
 

@@ -33,6 +33,8 @@ export interface Env {
   ADMIN_API_SECRET?: string;
   ADMIN_ROUTES_ENABLED?: string;
   DEBUG_ROUTES_ENABLED?: string;
+  IDEMPOTENCY_COMPLETED_RETENTION_HOURS?: string;
+  IDEMPOTENCY_PENDING_RETENTION_HOURS?: string;
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ZONE_ID?: string;
   CLOUDFLARE_EMAIL_DOMAIN?: string;
@@ -151,6 +153,18 @@ export interface OutboundJobRecord {
   nextRetryAt?: string;
   lastError?: string;
   draftR2Key: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IdempotencyRecord<T = unknown> {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  status: "pending" | "completed";
+  resourceId?: string;
+  response?: T;
   createdAt: string;
   updatedAt: string;
 }

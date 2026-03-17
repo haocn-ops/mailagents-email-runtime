@@ -52,11 +52,19 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 ## Key Files
 
 - `docs/mvp-spec.md`
+- `docs/ai-onboarding.md`
+- `docs/ai-decision-rules.md`
+- `docs/ai-auth.md`
+- `docs/ai-agents.md`
+- `docs/ai-mail-workflows.md`
+- `docs/ai-debug.md`
+- `docs/mcp-tooling-draft.md`
 - `docs/local-dev.md`
 - `docs/dev-bootstrap.md`
 - `docs/deployment.md`
 - `docs/testing.md`
 - `docs/openapi.yaml`
+- `llms-full.txt`
 - `fixtures/ses/delivery.json`
 - `migrations/0001_initial.sql`
 - `seeds/0001_demo.sql`
@@ -74,6 +82,14 @@ See [`docs/local-dev.md`](docs/local-dev.md) for:
 - seed commands
 - `.dev.vars` usage
 - demo API calls
+
+See [`docs/ai-onboarding.md`](docs/ai-onboarding.md) and
+[`docs/ai-decision-rules.md`](docs/ai-decision-rules.md) for:
+
+- agent-focused setup guidance
+- authentication and scope boundaries
+- replay, retry, and send safety rules
+- recommended API call sequences
 
 ## Repo Hygiene
 

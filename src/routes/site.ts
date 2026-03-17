@@ -7,8 +7,10 @@ import {
 } from "../lib/cloudflare-email";
 import { badRequest, json } from "../lib/http";
 import { Router } from "../lib/router";
+import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import { ensureMailbox, listMailboxes } from "../repositories/agents";
 import {
+  completeIdempotencyKey,
   createDraft,
   enqueueDraftSend,
   getDraft,
@@ -17,10 +19,13 @@ import {
   getOutboundJob,
   getOutboundJobByMessageId,
   getThread,
+  listIdempotencyRecords,
   listDeliveryEventsByMessageId,
   listDrafts,
   listMessages,
   listOutboundJobs,
+  releaseIdempotencyKey,
+  reserveIdempotencyKey,
   updateOutboundJobStatus,
 } from "../repositories/mail";
 import type { Env } from "../types";
@@ -389,13 +394,52 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     sourceMessageId?: string;
     inReplyTo?: string;
     references?: string[];
+    idempotencyKey?: string;
   }>();
 
   if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
     return badRequest("mailboxId, tenantId, from, to, and subject are required");
   }
 
+  const idempotencyKey = body.idempotencyKey?.trim();
+  if (body.idempotencyKey !== undefined && !idempotencyKey) {
+    return badRequest("idempotencyKey must be a non-empty string");
+  }
+
   try {
+    if (idempotencyKey) {
+      const reservation = await reserveIdempotencyKey(env, {
+        operation: "admin_send",
+        tenantId: body.tenantId,
+        idempotencyKey,
+        requestFingerprint: JSON.stringify({
+          mailboxId: body.mailboxId,
+          tenantId: body.tenantId,
+          from: body.from,
+          to: body.to,
+          cc: body.cc ?? [],
+          bcc: body.bcc ?? [],
+          subject: body.subject,
+          text: body.text ?? "",
+          html: body.html ?? "",
+          threadId: body.threadId ?? null,
+          sourceMessageId: body.sourceMessageId ?? null,
+          inReplyTo: body.inReplyTo ?? null,
+          references: body.references ?? [],
+        }),
+      });
+
+      if (reservation.status === "conflict") {
+        return json({ error: "Idempotency key is already used for a different admin send request" }, { status: 409 });
+      }
+      if (reservation.status === "pending") {
+        return json({ error: "An admin send request with this idempotency key is already in progress" }, { status: 409 });
+      }
+      if (reservation.status === "completed") {
+        return json(reservation.record.response ?? { ok: true });
+      }
+    }
+
     const draft = await createDraft(env, {
       tenantId: body.tenantId,
       agentId: "admin_console",
@@ -416,14 +460,73 @@ site.on("POST", "/admin/api/send", async (request, env) => {
       },
     });
     const result = await enqueueDraftSend(env, draft.id);
-    return json({
+    const response = {
       ok: true,
       draftId: draft.id,
       outboundJobId: result.outboundJobId,
       status: result.status,
+    };
+
+    if (idempotencyKey) {
+      await completeIdempotencyKey(env, {
+        operation: "admin_send",
+        tenantId: body.tenantId,
+        idempotencyKey,
+        resourceId: result.outboundJobId,
+        response,
+      });
+    }
+
+    return json(response);
+  } catch (error) {
+    if (idempotencyKey) {
+      await releaseIdempotencyKey(env, "admin_send", body.tenantId, idempotencyKey).catch(() => undefined);
+    }
+    return json({ error: error instanceof Error ? error.message : "Unable to send message" }, { status: 502 });
+  }
+});
+
+site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const result = await runIdempotencyCleanupNow(env);
+    return json({
+      ok: true,
+      deleted: result.deleted,
+      completedRetentionHours: result.completedRetentionHours,
+      pendingRetentionHours: result.pendingRetentionHours,
     });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unable to send message" }, { status: 502 });
+    return json({ error: error instanceof Error ? error.message : "Unable to clean idempotency keys" }, { status: 502 });
+  }
+});
+
+site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  try {
+    const url = new URL(request.url);
+    const operation = url.searchParams.get("operation")?.trim() || undefined;
+    const statusParam = url.searchParams.get("status")?.trim();
+    const status = statusParam === "pending" || statusParam === "completed" ? statusParam : undefined;
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+
+    return json({
+      items: await listIdempotencyRecords(env, {
+        operation,
+        status,
+        limit,
+      }),
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load idempotency keys" }, { status: 502 });
   }
 });
 
@@ -1418,6 +1521,10 @@ function renderAdmin(url: URL): string {
           <strong>Compose</strong>
           <span>後台發件與快速回覆</span>
         </button>
+        <button class="admin-nav-button" data-view="idempotency" type="button">
+          <strong>Idempotency</strong>
+          <span>重試鍵、衝突與清理</span>
+        </button>
       </nav>
     </aside>
 
@@ -1694,6 +1801,49 @@ function renderAdmin(url: URL): string {
           </section>
         </div>
       </section>
+
+      <section id="admin-view-idempotency" class="admin-view">
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Recent idempotency keys</h3>
+                <p>查看最近的 send / replay / admin send 記錄，排查重複提交與衝突。</p>
+              </div>
+            </div>
+            <div class="admin-inline">
+              <select id="idempotency-operation" class="admin-select">
+                <option value="">All operations</option>
+                <option value="draft_send">draft_send</option>
+                <option value="message_replay">message_replay</option>
+                <option value="admin_send">admin_send</option>
+              </select>
+              <select id="idempotency-status" class="admin-select">
+                <option value="">All statuses</option>
+                <option value="pending">pending</option>
+                <option value="completed">completed</option>
+              </select>
+              <button id="idempotency-refresh" class="button secondary" type="button">Refresh Keys</button>
+            </div>
+            <div id="idempotency-list" class="admin-list" style="margin-top:16px;">Unlock the dashboard to load idempotency records.</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>Maintenance</h3>
+                <p>立即清掉過期記錄，確認 retention 設置是否符合預期。</p>
+              </div>
+            </div>
+            <div class="admin-stack">
+              <p class="admin-note">預設會每小時自動清理一次。這裡可以手動觸發，適合做變更後驗證。</p>
+              <div class="admin-actions">
+                <button id="idempotency-cleanup" class="button primary" type="button">Run Cleanup Now</button>
+              </div>
+            </div>
+            <div id="idempotency-maintenance" class="admin-list" style="margin-top:16px;">No maintenance action run yet.</div>
+          </section>
+        </div>
+      </section>
     </div>
   </section>
 
@@ -1725,6 +1875,12 @@ function renderAdmin(url: URL): string {
     const sendText = document.getElementById("send-text");
     const sendStatus = document.getElementById("send-status");
     const replyHint = document.getElementById("reply-hint");
+    const idempotencyOperation = document.getElementById("idempotency-operation");
+    const idempotencyStatus = document.getElementById("idempotency-status");
+    const idempotencyRefresh = document.getElementById("idempotency-refresh");
+    const idempotencyCleanup = document.getElementById("idempotency-cleanup");
+    const idempotencyList = document.getElementById("idempotency-list");
+    const idempotencyMaintenance = document.getElementById("idempotency-maintenance");
     const threadView = document.getElementById("thread-view");
     const deliveryEvents = document.getElementById("delivery-events");
     const outboundJobs = document.getElementById("outbound-jobs");
@@ -1751,6 +1907,7 @@ function renderAdmin(url: URL): string {
       threads: "Threads & Delivery",
       aliases: "Contact Aliases",
       compose: "Compose",
+      idempotency: "Idempotency",
     };
     let currentMailboxId = null;
     let currentContactMailboxId = null;
@@ -2086,6 +2243,37 @@ function renderAdmin(url: URL): string {
       updateOverview();
     }
 
+    function renderIdempotencyRecords(items) {
+      idempotencyList.innerHTML = items.length
+        ? items.map((item) =>
+            '<div class="faq-item">' +
+              '<h3>' + item.operation + '</h3>' +
+              '<p>Status: ' + item.status + '</p>' +
+              '<p>Tenant: ' + item.tenantId + '</p>' +
+              '<p>Key: <code>' + item.idempotencyKey + '</code></p>' +
+              '<p>Resource: ' + (item.resourceId || 'n/a') + '</p>' +
+              '<p>Updated: ' + item.updatedAt + '</p>' +
+            '</div>'
+          ).join('')
+        : 'No idempotency records found for the current filters.';
+    }
+
+    async function loadIdempotencyRecords() {
+      try {
+        const params = new URLSearchParams({ limit: '50' });
+        if (idempotencyOperation.value) {
+          params.set('operation', idempotencyOperation.value);
+        }
+        if (idempotencyStatus.value) {
+          params.set('status', idempotencyStatus.value);
+        }
+        const payload = await api('/admin/api/maintenance/idempotency-keys?' + params.toString());
+        renderIdempotencyRecords(payload.items);
+      } catch (error) {
+        idempotencyList.textContent = error.message;
+      }
+    }
+
     async function loadOutboundJobs() {
       try {
         const params = new URLSearchParams({ limit: '50' });
@@ -2301,6 +2489,7 @@ function renderAdmin(url: URL): string {
       }
       await loadOutboundJobs();
       await loadDrafts();
+      await loadIdempotencyRecords();
       runtimeStatus.textContent = 'Connected to live runtime';
       updateOverview();
     }
@@ -2358,6 +2547,24 @@ function renderAdmin(url: URL): string {
     messageDirection.addEventListener('change', loadMessages);
     jobStatus.addEventListener('change', loadOutboundJobs);
     draftStatus.addEventListener('change', loadDrafts);
+    idempotencyOperation.addEventListener('change', loadIdempotencyRecords);
+    idempotencyStatus.addEventListener('change', loadIdempotencyRecords);
+    idempotencyRefresh.addEventListener('click', loadIdempotencyRecords);
+    idempotencyCleanup.addEventListener('click', async () => {
+      try {
+        const result = await api('/admin/api/maintenance/idempotency-cleanup', { method: 'POST' });
+        idempotencyMaintenance.innerHTML =
+          '<div class="faq-item">' +
+            '<h3>Cleanup complete</h3>' +
+            '<p>Deleted: ' + result.deleted + '</p>' +
+            '<p>Completed retention: ' + result.completedRetentionHours + ' hours</p>' +
+            '<p>Pending retention: ' + result.pendingRetentionHours + ' hours</p>' +
+          '</div>';
+        await loadIdempotencyRecords();
+      } catch (error) {
+        idempotencyMaintenance.textContent = error.message;
+      }
+    });
     document.querySelectorAll(".admin-nav-button").forEach((button) => {
       button.addEventListener("click", () => {
         const viewName = button.getAttribute("data-view");
@@ -2392,6 +2599,7 @@ function renderAdmin(url: URL): string {
       }
 
       try {
+        const adminSendIdempotencyKey = 'admin-send-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         const result = await api('/admin/api/send', {
           method: 'POST',
           body: JSON.stringify({
@@ -2405,6 +2613,7 @@ function renderAdmin(url: URL): string {
             sourceMessageId: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.sourceMessageId || undefined : undefined,
             inReplyTo: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.inReplyTo || undefined : undefined,
             references: currentReplyContext?.mailboxId === mailbox.id ? currentReplyContext.references || [] : [],
+            idempotencyKey: adminSendIdempotencyKey,
           }),
         });
         sendStatus.textContent = 'Queued outbound job ' + result.outboundJobId + '.';

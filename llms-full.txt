@@ -1,0 +1,168 @@
+Mailagents Email Runtime
+
+Mailagents is an email-first AI agent runtime built on Cloudflare Workers,
+Cloudflare Email Routing, Cloudflare Queues, Cloudflare R2, Cloudflare D1, and
+Amazon SES.
+
+Purpose
+
+It provides a control plane and data plane for AI agents that receive email,
+normalize inbound messages, create tasks, draft replies, and send outbound mail
+through SES.
+
+Core objects
+
+- tenant: isolation boundary for data and auth
+- agent: configured runtime actor
+- mailbox: inbound and outbound email identity
+- message: inbound or outbound email record
+- thread: conversation grouping
+- task: work item produced from mail
+- draft: outbound email candidate before send
+- outbound_job: async send lifecycle state
+
+Runtime flow
+
+1. inbound email is accepted for a mailbox
+2. raw email is stored in R2 and a message row is created in D1
+3. an ingest queue job parses and normalizes the email
+4. the runtime finds or creates a thread
+5. attachments are stored in R2
+6. a task is created for the assigned agent
+7. the agent may create a draft
+8. explicit draft send enqueues outbound delivery through SES
+9. delivery or bounce events are written back to message lifecycle state
+
+Authentication
+
+Normal APIs use signed bearer tokens. A token includes:
+
+- sub
+- tenantId
+- scopes
+- optional agentId
+- optional mailboxIds
+- exp
+
+Access rules:
+
+- token must be valid and not expired
+- required scopes must be present
+- tenantId must match the target tenant
+- if agentId is present, the target agent must match
+- if mailboxIds are present, the target mailbox must be allowed
+
+Admin and debug behavior
+
+- POST /v1/auth/tokens requires x-admin-secret
+- debug endpoints require x-admin-secret
+- admin and debug routes may be disabled by environment flags
+- do not treat debug routes as standard integration APIs
+
+Minimum useful scopes for a reply agent
+
+- mail:read
+- task:read
+- draft:create
+- draft:read
+- draft:send
+
+Higher-privilege scopes should be granted only when needed:
+
+- agent:create
+- agent:read
+- agent:update
+- agent:bind
+- mail:replay
+
+Primary API areas
+
+- auth: token minting
+- agents: create, get, update
+- mailboxes: bind and list agent mailboxes
+- tasks: list agent tasks
+- messages: inspect message state and content
+- threads: inspect thread context
+- drafts: create, inspect, send
+- webhooks: SES event ingestion
+- debug: inspect internal state in controlled environments
+
+Recommended workflow for a new integration
+
+1. mint a bearer token using POST /v1/auth/tokens and x-admin-secret
+2. create an agent with POST /v1/agents
+3. bind a mailbox with POST /v1/agents/{agentId}/mailboxes
+4. read tasks or messages for that mailbox
+5. create a draft with POST /v1/agents/{agentId}/drafts
+6. explicitly send with POST /v1/drafts/{draftId}/send
+
+Decision rules
+
+Read before write when state is unclear.
+
+Create a draft before sending. Drafts are the main control point for outbound
+side effects.
+
+Send only when:
+
+- mailbox identity is correct
+- recipients are correct
+- draft payload is complete
+- the workflow explicitly intends delivery
+
+Replay only when:
+
+- re-normalizing a stored raw email
+- rerunning agent execution for debugging or recovery
+
+Replay must not:
+
+- silently create duplicate outbound email
+- overwrite original raw artifacts
+
+Replay should:
+
+- preserve traceability
+- create a fresh execution record
+- require explicit send if it results in a new draft
+
+Operational rules
+
+- assume queue messages and callbacks are at-least-once
+- avoid duplicate sends when outbound status is uncertain
+- keep queue handlers fast and side-effect minimal
+- use mailbox-scoped tokens where possible
+- keep admin and debug access out of standard agent flows
+
+Outbound send behavior
+
+- outbound delivery is asynchronous
+- outbound jobs can be queued, sending, sent, retry, or failed
+- if a draft includes reply headers or attachments, the runtime uses SES Raw
+  MIME send
+- otherwise it can use the simpler SES send path
+
+When outbound state is uncertain:
+
+1. inspect the draft
+2. inspect the outbound job
+3. inspect delivery events
+4. avoid another send until duplication risk is understood
+
+What an AI agent should do by default
+
+- use the narrowest possible scopes
+- prefer read APIs first
+- create drafts before send
+- require explicit send after replay
+- avoid admin/debug endpoints unless the workflow is clearly operational
+
+Primary references in this repository
+
+- README.md
+- docs/openapi.yaml
+- docs/ai-onboarding.md
+- docs/ai-decision-rules.md
+- docs/local-dev.md
+- docs/testing.md
+- docs/mvp-spec.md
