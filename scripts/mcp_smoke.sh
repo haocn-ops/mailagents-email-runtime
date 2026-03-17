@@ -123,7 +123,15 @@ INVALID_BIND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
       }
     }
   }")"
-echo "$INVALID_BIND_RESPONSE" | jq -e '.result.isError == true and .result.structuredContent.error.code == "resource_mailbox_not_found"' >/dev/null
+# Depending on token mailbox scope, the runtime may reject the request at the
+# auth layer before it reaches mailbox existence validation.
+echo "$INVALID_BIND_RESPONSE" | jq -e '
+  .result.isError == true and
+  (
+    .result.structuredContent.error.code == "resource_mailbox_not_found" or
+    .result.structuredContent.error.code == "access_mailbox_denied"
+  )
+' >/dev/null
 
 echo "Binding mailbox through MCP..."
 curl -sS "$BASE_URL/mcp" \
