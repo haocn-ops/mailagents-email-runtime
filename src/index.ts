@@ -2,10 +2,16 @@ import { notFound } from "./lib/http";
 import { handleEmail } from "./handlers/email";
 import { handleQueue } from "./handlers/queues";
 import { handleApiRequest } from "./routes/api";
+import { handleSiteRequest } from "./routes/site";
 import type { Env } from "./types";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const siteResponse = await handleSiteRequest(request, env, ctx);
+    if (siteResponse) {
+      return siteResponse;
+    }
+
     const response = await handleApiRequest(request, env, ctx);
     return response ?? notFound();
   },

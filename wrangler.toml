@@ -199,7 +199,7 @@ max_batch_timeout = 5
 
 [env.production.vars]
 SES_REGION = "us-east-1"
-SES_FROM_DOMAIN = "mail.example.com"
+SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-production"
 ADMIN_ROUTES_ENABLED = "false"
 DEBUG_ROUTES_ENABLED = "false"
