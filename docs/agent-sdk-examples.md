@@ -299,6 +299,11 @@ async function listTools(baseUrl: string, token: string) {
 If you want a copyable wrapper instead of starting from raw `fetch`, see
 [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md).
 
+If you want runnable repository examples, use:
+
+- `npm run example:agent:discover`
+- `npm run example:agent:reply-draft`
+
 ## 9. Recommended External-Agent Pattern
 
 For long-lived integrations:

@@ -54,6 +54,8 @@ Use these as deeper references:
 - [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
 - [docs/mcp-local.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mcp-local.md)
 - [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
+- `npm run example:agent:discover`
+- `npm run example:agent:reply-draft`
 
 ## Capability Discovery
 

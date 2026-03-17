@@ -51,6 +51,17 @@ const tools = await client.listTools();
 console.log(contract, tools);
 ```
 
+Runnable repository examples:
+
+- `npm run example:agent:discover`
+- `npm run example:agent:reply-draft`
+
+Expected environment variables:
+
+- `MAILAGENTS_TOKEN`
+- optional `MAILAGENTS_BASE_URL`
+- `MAILAGENTS_AGENT_ID` for the reply example
+
 ## Suggested Next Step
 
 If this helper proves useful, the next natural evolution is:
