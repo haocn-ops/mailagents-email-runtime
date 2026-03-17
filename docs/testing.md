@@ -24,6 +24,7 @@ The MCP smoke flow exercises:
 - MCP provisioning tools
 - MCP draft creation and send
 - MCP idempotent send replay
+- MCP composite reply workflow success path against seeded inbound mail
 - MCP machine-readable error codes
 
 ## Prerequisites
@@ -60,6 +61,11 @@ Or:
 ```bash
 npm run smoke:mcp:local
 ```
+
+The MCP smoke script expects the demo seed to include:
+
+- seeded inbound message `msg_demo_inbound`
+- seeded thread `thr_demo_inbound`
 
 ## Sample SES fixtures
 

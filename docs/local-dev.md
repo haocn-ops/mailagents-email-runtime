@@ -69,6 +69,8 @@ This inserts:
 - demo tenant `t_demo`
 - demo mailbox `mbx_demo`
 - demo agent `agt_demo`
+- seeded inbound thread `thr_demo_inbound`
+- seeded inbound message `msg_demo_inbound`
 - mailbox binding and basic policy
 
 The SQL lives in [seeds/0001_demo.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/seeds/0001_demo.sql).
