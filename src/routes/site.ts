@@ -923,6 +923,7 @@ function layout(active: string, title: string, content: string): string {
 
 function renderHome(url: URL): string {
   const site = `${url.protocol}//${url.host}`;
+  const isMarketingSite = url.host === "mailagents.net" || url.host === "www.mailagents.net";
   const agentDocs = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md";
   const sdkExamples = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/agent-sdk-examples.md";
   const compatibilityDoc = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/runtime-compatibility.md";
@@ -934,7 +935,7 @@ function renderHome(url: URL): string {
       <h1>Email infrastructure for products that ship with agents.</h1>
       <p class="lead">Mailagents helps teams provision inboxes, route inbound mail, trigger workflow execution, and deliver transactional email with clear operator controls. The platform is built for application-driven messaging, not bulk campaigns or list blasting.</p>
       <div class="hero-actions">
-        <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>
+        ${isMarketingSite ? `<a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>` : ""}
         <a class="button primary" href="/contact">Talk to Mailagents</a>
         <a class="button secondary" href="/privacy">Read Privacy Policy</a>
         <a class="button secondary" href="/terms">Read Terms</a>
@@ -966,7 +967,7 @@ function renderHome(url: URL): string {
     </aside>
   </section>
 
-  <section class="panel section">
+  ${isMarketingSite ? `<section class="panel section">
     <div class="section-head">
       <div>
         <div class="eyebrow">AI Agent Quickstart</div>
@@ -1001,7 +1002,7 @@ function renderHome(url: URL): string {
         <p><a href="${compatibilityDoc}" target="_blank" rel="noreferrer">Open compatibility docs</a></p>
       </div>
     </div>
-  </section>
+  </section>` : ""}
 
   <section class="panel section">
     <div class="section-head">
