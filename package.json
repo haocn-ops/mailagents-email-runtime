@@ -10,6 +10,7 @@
     "check": "tsc --noEmit",
     "check:agent-client": "npm --workspace @mailagents/agent-client run check",
     "build:agent-client": "npm --workspace @mailagents/agent-client run build",
+    "pack:agent-client:dry-run": "npm --workspace @mailagents/agent-client run pack:dry-run",
     "deploy": "wrangler deploy --env production",
     "deploy:dev": "wrangler deploy --env dev",
     "deploy:staging": "wrangler deploy --env staging",

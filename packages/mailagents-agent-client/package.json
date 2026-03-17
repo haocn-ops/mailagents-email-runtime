@@ -4,6 +4,26 @@
   "private": true,
   "type": "module",
   "description": "Lightweight Mailagents agent client for runtime discovery and MCP tool calls.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haocn-ops/mailagents-email-runtime.git",
+    "directory": "packages/mailagents-agent-client"
+  },
+  "homepage": "https://github.com/haocn-ops/mailagents-email-runtime/tree/main/packages/mailagents-agent-client",
+  "bugs": {
+    "url": "https://github.com/haocn-ops/mailagents-email-runtime/issues"
+  },
+  "keywords": [
+    "mailagents",
+    "agent",
+    "mcp",
+    "email",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -17,6 +37,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "pack:dry-run": "npm pack --dry-run"
   }
 }

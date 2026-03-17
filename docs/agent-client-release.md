@@ -14,6 +14,7 @@ Current package skeleton:
 - package name reserved in repo as `@mailagents/agent-client`
 - workspace-aware root scripts available
 - package-local `build` and `check` scripts available
+- package-local dry-run pack script available
 - not published
 - still marked `private: true`
 
@@ -23,9 +24,9 @@ Before publishing:
 
 1. remove `"private": true` from the package
 2. confirm the package name and npm scope are correct
-3. add license metadata if needed
-4. add repository metadata
-5. add homepage and bugs links if desired
+3. confirm license metadata
+4. confirm repository metadata
+5. confirm homepage and bugs links
 6. confirm the public API surface in `src/index.ts`
 7. decide whether to keep `unknown` result types or introduce typed models
 
@@ -36,11 +37,13 @@ Run:
 ```bash
 npm run check:agent-client
 npm run build:agent-client
+npm run pack:agent-client:dry-run
 ```
 
 Then verify:
 
 - `dist/` contains `index.js` and `index.d.ts`
+- `npm pack --dry-run` includes only the expected files
 - README examples still match the exported API
 - the package works against:
   - `/v2/meta/runtime`
@@ -48,6 +51,13 @@ Then verify:
   - `/v2/meta/compatibility/schema`
   - MCP `tools/list`
   - at least one MCP `tools/call` happy path
+
+If local npm cache permissions get in the way of `npm pack --dry-run`, a
+temporary cache override is a safe workaround:
+
+```bash
+npm_config_cache=/tmp/mailagents-npm-cache npm run pack:agent-client:dry-run
+```
 
 ## Recommended First Release Scope
 
