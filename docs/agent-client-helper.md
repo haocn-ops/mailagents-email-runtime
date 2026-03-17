@@ -4,10 +4,11 @@ This repository includes a minimal TypeScript helper for external agent
 integrations:
 
 - [tools/agent_client.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/tools/agent_client.ts)
+- [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
 
 It is intentionally lightweight:
 
-- no package publishing
+- package skeleton included
 - no generated types
 - no build step required inside this repository
 - just a small wrapper around `fetch`
@@ -34,6 +35,7 @@ It is best treated as:
 - a reference implementation
 - a copyable starting point
 - a basis for a future published SDK
+- a package skeleton you can promote into a real npm client
 
 ## Example
 
@@ -63,6 +65,12 @@ Expected environment variables:
 - optional `MAILAGENTS_BASE_URL`
 - `MAILAGENTS_AGENT_ID` for the reply example
 - `MAILAGENTS_AGENT_ID` for the operator-send example
+
+Package skeleton:
+
+- [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
+- [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
+- run `npx tsc -p packages/mailagents-agent-client/tsconfig.json --noEmit` to check it
 
 ## Suggested Next Step
 
