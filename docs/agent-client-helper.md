@@ -71,6 +71,8 @@ Package skeleton:
 - [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
 - [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
 - run `npx tsc -p packages/mailagents-agent-client/tsconfig.json --noEmit` to check it
+- or use `npm run check:agent-client`
+- or use `npm run build:agent-client`
 
 ## Suggested Next Step
 
@@ -79,3 +81,6 @@ If this helper proves useful, the next natural evolution is:
 - split types into a dedicated package
 - add typed result models for common MCP tools
 - publish a small npm client for external integrators
+
+For the release-oriented next step, see
+[docs/agent-client-release.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-release.md).

@@ -1,0 +1,76 @@
+# Agent Client Release Checklist
+
+This page describes the minimum work needed to turn the repository package
+skeleton into a real published npm package.
+
+Current package skeleton:
+
+- [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
+- [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
+- [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
+
+## Current State
+
+- package name reserved in repo as `@mailagents/agent-client`
+- workspace-aware root scripts available
+- package-local `build` and `check` scripts available
+- not published
+- still marked `private: true`
+
+## Pre-Publish Changes
+
+Before publishing:
+
+1. remove `"private": true` from the package
+2. confirm the package name and npm scope are correct
+3. add license metadata if needed
+4. add repository metadata
+5. add homepage and bugs links if desired
+6. confirm the public API surface in `src/index.ts`
+7. decide whether to keep `unknown` result types or introduce typed models
+
+## Validation Steps
+
+Run:
+
+```bash
+npm run check:agent-client
+npm run build:agent-client
+```
+
+Then verify:
+
+- `dist/` contains `index.js` and `index.d.ts`
+- README examples still match the exported API
+- the package works against:
+  - `/v2/meta/runtime`
+  - `/v2/meta/compatibility`
+  - `/v2/meta/compatibility/schema`
+  - MCP `tools/list`
+  - at least one MCP `tools/call` happy path
+
+## Recommended First Release Scope
+
+Keep the first published version small:
+
+- runtime discovery
+- compatibility contract lookup
+- compatibility schema lookup
+- MCP `tools/list`
+- generic MCP `callTool`
+- a few high-value convenience helpers
+
+Avoid in v1:
+
+- trying to type every runtime object
+- code generation
+- auth token minting helpers tied to admin secrets
+- opinionated retry loops
+
+## Suggested Future Enhancements
+
+- typed result models for the highest-traffic tools
+- helper methods for error-code branching
+- ESM and CJS packaging strategy if needed
+- published examples package or starter repo
+- integration tests that exercise the shared `dev` environment

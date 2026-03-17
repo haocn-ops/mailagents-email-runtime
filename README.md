@@ -67,6 +67,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/agent-sdk-examples.md`
 - `docs/agent-capabilities.json`
 - `docs/agent-client-helper.md`
+- `docs/agent-client-release.md`
 - `docs/agent-workflow-packs.md`
 - `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
@@ -127,6 +128,12 @@ See [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for:
 - a lightweight TypeScript client wrapper
 - a copyable starting point for external SDKs
 - a path toward a future published client
+
+See [`docs/agent-client-release.md`](docs/agent-client-release.md) for:
+
+- the package publish checklist
+- pre-release validation steps
+- recommended first-release scope
 
 See [`docs/agent-capabilities.json`](docs/agent-capabilities.json) for:
 

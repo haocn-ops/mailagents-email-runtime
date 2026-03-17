@@ -3,8 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "check": "tsc --noEmit",
+    "check:agent-client": "npm --workspace @mailagents/agent-client run check",
+    "build:agent-client": "npm --workspace @mailagents/agent-client run build",
     "deploy": "wrangler deploy --env production",
     "deploy:dev": "wrangler deploy --env dev",
     "deploy:staging": "wrangler deploy --env staging",
