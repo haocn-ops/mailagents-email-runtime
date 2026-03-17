@@ -5,11 +5,17 @@ runtime to the real production environment and binding a custom domain.
 
 Current blockers as of 2026-03-17:
 
-- production D1 config in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml) still contains placeholders
-- `mailagents-production` Worker does not exist yet
-- production Worker secrets are not set
 - `dev` remote smoke cannot complete until the remote admin secret is aligned or updated
 - `mailagents.net` resolves, but `api.mailagents.net` does not currently resolve in DNS
+
+Resolved during this rollout:
+
+- production D1 database created: `mailagents-production`
+- production R2 bucket created: `mailagents-production-email`
+- production queues created
+- `mailagents-production` Worker deployed
+- production secrets installed
+- production route attached: `api.mailagents.net/*`
 
 ## 1. Cloudflare Production Resources
 
@@ -23,7 +29,8 @@ Provide or create:
 Observed current state:
 
 - root site `mailagents.net` is live
-- likely API hostname `api.mailagents.net` is not currently resolvable
+- production Worker route is attached to `api.mailagents.net/*`
+- `api.mailagents.net` is still not currently resolvable in DNS
 
 Expected defaults in this repo:
 
@@ -120,10 +127,7 @@ After the production Worker exists:
 
 To continue execution, I need:
 
-- the real production D1 database id
-- the final production hostname
-- a Cloudflare token with permission to deploy Workers and write Worker secrets
-- confirmation of the production secret values to install
+- a Cloudflare credential with `DNS: Edit` for `mailagents.net`
 
 ## 8. Minimum Cloudflare Permissions
 

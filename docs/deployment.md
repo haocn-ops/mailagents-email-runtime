@@ -32,9 +32,11 @@ Important:
 
 Current production status as of 2026-03-17:
 
-- `mailagents-production` Worker does not exist yet
+- `mailagents-production` Worker is now deployed
 - `env.production` in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml)
-  still contains placeholder D1 config
+  now points at the real production D1 database
+- production route is attached as `api.mailagents.net/*`
+- DNS for `api.mailagents.net` is still the remaining blocker
 - see [docs/production-rollout-checklist.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/production-rollout-checklist.md)
   before attempting a production deploy or domain bind
 

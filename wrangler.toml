@@ -171,6 +171,9 @@ IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
 
 [env.production]
 name = "mailagents-production"
+routes = [
+  { pattern = "api.mailagents.net/*", zone_name = "mailagents.net" }
+]
 
 [env.production.triggers]
 crons = ["0 * * * *"]
@@ -178,7 +181,7 @@ crons = ["0 * * * *"]
 [[env.production.d1_databases]]
 binding = "D1_DB"
 database_name = "mailagents-production"
-database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+database_id = "2c3e9c0a-8551-48b6-b256-97761de3e3f1"
 
 [[env.production.r2_buckets]]
 binding = "R2_EMAIL"
