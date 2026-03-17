@@ -61,6 +61,9 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/mcp-tooling-draft.md`
 - `docs/mcp-local.md`
 - `docs/runtime-metadata.md`
+- `docs/runtime-compatibility.md`
+- `docs/runtime-compatibility.schema.json`
+- `docs/agent-sdk-examples.md`
 - `docs/agent-workflow-packs.md`
 - `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
@@ -101,6 +104,13 @@ See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
 - the versioned `/v2/meta/compatibility` compatibility contract
 - MCP capability discovery details
 - runtime-exposed workflow and idempotency metadata
+
+See [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) for:
+
+- copyable HTTP and MCP integration examples
+- compatibility contract usage
+- stable error-handling patterns
+- a minimal TypeScript integration snippet
 
 ## Repo Hygiene
 
