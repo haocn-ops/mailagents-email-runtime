@@ -16,6 +16,7 @@ Current scope:
 - package skeleton only
 - not published
 - intended as a starting point for a future npm package
+- package-local changelog available in `CHANGELOG.md`
 
 ## Example
 
@@ -48,3 +49,7 @@ Typed helpers currently cover:
 - `sendDraft()`
 - `replyToInboundEmail()`
 - `operatorManualSend()`
+
+Release tracking:
+
+- [CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)

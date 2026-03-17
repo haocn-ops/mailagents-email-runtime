@@ -8,6 +8,7 @@ Current package skeleton:
 - [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
 - [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
 - [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
+- [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
 
 ## Current State
 
@@ -16,6 +17,7 @@ Current package skeleton:
 - package-local `build` and `check` scripts available
 - package-local dry-run pack script available
 - typed models added for discovery and high-value draft/send flows
+- package-local changelog added
 - not published
 - still marked `private: true`
 
@@ -28,9 +30,10 @@ Before publishing:
 3. confirm license metadata
 4. confirm repository metadata
 5. confirm homepage and bugs links
-6. confirm the public API surface in `src/index.ts`
-7. decide whether the current typed surface is enough for a first release
-8. decide which additional tool results deserve first-class types
+6. confirm `publishConfig` is appropriate for the intended npm scope
+7. confirm the public API surface in `src/index.ts`
+8. decide whether the current typed surface is enough for a first release
+9. update the package-local changelog for the release cut
 
 ## Validation Steps
 
