@@ -58,6 +58,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-agents.md`
 - `docs/ai-mail-workflows.md`
 - `docs/ai-debug.md`
+- `docs/llms-agent-guide.md`
 - `docs/mcp-tooling-draft.md`
 - `docs/mcp-local.md`
 - `docs/runtime-metadata.md`
@@ -97,6 +98,13 @@ See [`docs/ai-onboarding.md`](docs/ai-onboarding.md) and
 - authentication and scope boundaries
 - replay, retry, and send safety rules
 - recommended API call sequences
+
+See [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for:
+
+- the single best agent-first starting point
+- capability discovery order
+- stable error-handling guidance
+- the recommended external-agent startup sequence
 
 See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
 
