@@ -130,3 +130,23 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `tools/call` reuses the same access checks as the HTTP API
 - `send_draft` and `replay_message` support `idempotencyKey`
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
+
+## Error codes
+
+Tool failures now return stable machine-readable error codes inside
+`result.structuredContent.error.code`.
+
+Current codes include:
+
+- `auth_unauthorized`
+- `auth_missing_scope`
+- `access_tenant_denied`
+- `access_agent_denied`
+- `access_mailbox_denied`
+- `invalid_arguments`
+- `resource_message_not_found`
+- `resource_thread_not_found`
+- `resource_draft_not_found`
+- `idempotency_conflict`
+- `idempotency_in_progress`
+- `tool_internal_error`

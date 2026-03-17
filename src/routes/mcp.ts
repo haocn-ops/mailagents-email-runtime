@@ -37,6 +37,16 @@ interface ToolDescriptor {
   requiredScopes: string[];
 }
 
+class McpToolError extends Error {
+  constructor(
+    readonly errorCode: string,
+    message: string,
+    readonly data?: unknown
+  ) {
+    super(message);
+  }
+}
+
 const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
@@ -212,7 +222,7 @@ function filterToolsForClaims(claims: AccessTokenClaims): ToolDescriptor[] {
 
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("params must be an object");
+    throw new McpToolError("invalid_arguments", "params must be an object");
   }
 
   return value as Record<string, unknown>;
@@ -220,7 +230,7 @@ function asObject(value: unknown): Record<string, unknown> {
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${field} must be a non-empty string`);
+    throw new McpToolError("invalid_arguments", `${field} must be a non-empty string`);
   }
 
   return value.trim();
@@ -228,7 +238,7 @@ function requireString(value: unknown, field: string): string {
 
 function requireStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new Error(`${field} must be a non-empty string array`);
+    throw new McpToolError("invalid_arguments", `${field} must be a non-empty string array`);
   }
 
   return value.map((item) => item.trim());
@@ -243,7 +253,7 @@ function optionalStringArray(value: unknown): string[] | undefined {
     return undefined;
   }
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error("array fields must contain strings");
+    throw new McpToolError("invalid_arguments", "array fields must contain strings");
   }
 
   return value.map((item) => item.trim()).filter(Boolean);
@@ -253,89 +263,127 @@ async function requireClaims(request: Request, env: Env, scopes: string[]): Prom
   return await requireAuth(request, env, scopes);
 }
 
+async function requireClaimsStrict(request: Request, env: Env, scopes: string[]): Promise<AccessTokenClaims> {
+  const auth = await requireClaims(request, env, scopes);
+  if (auth instanceof Response) {
+    await throwIfResponseError(auth);
+  }
+
+  return auth as AccessTokenClaims;
+}
+
+async function throwIfResponseError(response: Response): Promise<never> {
+  let payload: { error?: string } | null = null;
+  try {
+    payload = await response.clone().json<{ error?: string }>();
+  } catch {
+    payload = null;
+  }
+
+  const message = payload?.error ?? `HTTP ${response.status}`;
+  if (response.status === 401) {
+    throw new McpToolError("auth_unauthorized", message);
+  }
+  if (response.status === 403 && message.startsWith("Missing scopes:")) {
+    throw new McpToolError("auth_missing_scope", message);
+  }
+  if (response.status === 403 && message === "Tenant access denied") {
+    throw new McpToolError("access_tenant_denied", message);
+  }
+  if (response.status === 403 && message === "Agent access denied") {
+    throw new McpToolError("access_agent_denied", message);
+  }
+  if (response.status === 403 && message === "Mailbox access denied") {
+    throw new McpToolError("access_mailbox_denied", message);
+  }
+  if (response.status === 409 && message.includes("Idempotency key")) {
+    throw new McpToolError("idempotency_conflict", message);
+  }
+  if (response.status === 409 && message.includes("already in progress")) {
+    throw new McpToolError("idempotency_in_progress", message);
+  }
+
+  throw new McpToolError("http_error", message, { status: response.status });
+}
+
+function toolErrorPayload(errorCode: string, message: string, details?: unknown) {
+  return {
+    error: {
+      code: errorCode,
+      message,
+      details,
+    },
+  };
+}
+
 async function callTool(request: Request, env: Env, toolName: string, args: Record<string, unknown>): Promise<unknown> {
   if (toolName === "list_agent_tasks") {
-    const auth = await requireClaims(request, env, ["task:read"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["task:read"]);
 
     const agentId = requireString(args.agentId, "agentId");
     const agentError = enforceAgentAccess(auth, agentId);
     if (agentError) {
-      throw agentError;
+      await throwIfResponseError(agentError);
     }
     const status = optionalString(args.status) as TaskStatus | undefined;
     return { items: await listTasks(env, agentId, status) };
   }
 
   if (toolName === "get_message") {
-    const auth = await requireClaims(request, env, ["mail:read"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["mail:read"]);
 
     const messageId = requireString(args.messageId, "messageId");
     const message = await getMessage(env, messageId);
     if (!message) {
-      throw json({ error: "Message not found" }, { status: 404 });
+      throw new McpToolError("resource_message_not_found", "Message not found");
     }
     const tenantError = enforceTenantAccess(auth, message.tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
     return message;
   }
 
   if (toolName === "get_message_content") {
-    const auth = await requireClaims(request, env, ["mail:read"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["mail:read"]);
 
     const messageId = requireString(args.messageId, "messageId");
     const message = await getMessage(env, messageId);
     if (!message) {
-      throw json({ error: "Message not found" }, { status: 404 });
+      throw new McpToolError("resource_message_not_found", "Message not found");
     }
     const tenantError = enforceTenantAccess(auth, message.tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
     return await getMessageContent(env, messageId);
   }
 
   if (toolName === "get_thread") {
-    const auth = await requireClaims(request, env, ["mail:read"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["mail:read"]);
 
     const threadId = requireString(args.threadId, "threadId");
     const thread = await getThread(env, threadId);
     if (!thread) {
-      throw json({ error: "Thread not found" }, { status: 404 });
+      throw new McpToolError("resource_thread_not_found", "Thread not found");
     }
     const mailboxError = enforceMailboxAccess(auth, thread.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
     return thread;
   }
 
   if (toolName === "create_draft") {
-    const auth = await requireClaims(request, env, ["draft:create"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["draft:create"]);
 
     const agentId = requireString(args.agentId, "agentId");
     const tenantId = requireString(args.tenantId, "tenantId");
@@ -345,15 +393,15 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     const subject = requireString(args.subject, "subject");
     const tenantError = enforceTenantAccess(auth, tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const agentError = enforceAgentAccess(auth, agentId);
     if (agentError) {
-      throw agentError;
+      await throwIfResponseError(agentError);
     }
     const mailboxError = enforceMailboxAccess(auth, mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
 
     return await createDraft(env, {
@@ -378,53 +426,47 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
   }
 
   if (toolName === "get_draft") {
-    const auth = await requireClaims(request, env, ["draft:read"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["draft:read"]);
 
     const draftId = requireString(args.draftId, "draftId");
     const draft = await getDraft(env, draftId);
     if (!draft) {
-      throw json({ error: "Draft not found" }, { status: 404 });
+      throw new McpToolError("resource_draft_not_found", "Draft not found");
     }
     const tenantError = enforceTenantAccess(auth, draft.tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const agentError = enforceAgentAccess(auth, draft.agentId);
     if (agentError) {
-      throw agentError;
+      await throwIfResponseError(agentError);
     }
     const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
     return draft;
   }
 
   if (toolName === "send_draft") {
-    const auth = await requireClaims(request, env, ["draft:send"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["draft:send"]);
 
     const draftId = requireString(args.draftId, "draftId");
     const draft = await getDraft(env, draftId);
     if (!draft) {
-      throw json({ error: "Draft not found" }, { status: 404 });
+      throw new McpToolError("resource_draft_not_found", "Draft not found");
     }
     const tenantError = enforceTenantAccess(auth, draft.tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const agentError = enforceAgentAccess(auth, draft.agentId);
     if (agentError) {
-      throw agentError;
+      await throwIfResponseError(agentError);
     }
     const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
 
     const idempotencyKey = optionalString(args.idempotencyKey);
@@ -438,10 +480,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       });
 
       if (reservation.status === "conflict") {
-        throw json({ error: "Idempotency key is already used for a different draft send request" }, { status: 409 });
+        throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different draft send request");
       }
       if (reservation.status === "pending") {
-        throw json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
+        throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
         return reservation.record.response ?? {
@@ -481,27 +523,24 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
   }
 
   if (toolName === "replay_message") {
-    const auth = await requireClaims(request, env, ["mail:replay"]);
-    if (auth instanceof Response) {
-      throw auth;
-    }
+    const auth = await requireClaimsStrict(request, env, ["mail:replay"]);
 
     const messageId = requireString(args.messageId, "messageId");
     const mode = requireString(args.mode, "mode");
     if (mode !== "normalize" && mode !== "rerun_agent") {
-      throw new Error("mode must be normalize or rerun_agent");
+      throw new McpToolError("invalid_arguments", "mode must be normalize or rerun_agent");
     }
     const message = await getMessage(env, messageId);
     if (!message) {
-      throw json({ error: "Message not found" }, { status: 404 });
+      throw new McpToolError("resource_message_not_found", "Message not found");
     }
     const tenantError = enforceTenantAccess(auth, message.tenantId);
     if (tenantError) {
-      throw tenantError;
+      await throwIfResponseError(tenantError);
     }
     const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
     if (mailboxError) {
-      throw mailboxError;
+      await throwIfResponseError(mailboxError);
     }
 
     const agentId = optionalString(args.agentId);
@@ -526,10 +565,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       });
 
       if (reservation.status === "conflict") {
-        throw json({ error: "Idempotency key is already used for a different replay request" }, { status: 409 });
+        throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different replay request");
       }
       if (reservation.status === "pending") {
-        throw json({ error: "A replay request with this idempotency key is already in progress" }, { status: 409 });
+        throw new McpToolError("idempotency_in_progress", "A replay request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
         return reservation.record.response ?? response;
@@ -615,7 +654,11 @@ router.on("POST", "/mcp", async (request, env) => {
   if (rpc.method === "tools/list") {
     const auth = await requireAuth(request, env, []);
     if (auth instanceof Response) {
-      return jsonRpcError(rpc.id ?? null, -32001, "Unauthorized", await auth.json());
+      const authPayload = await auth.clone().json().catch(() => ({ error: "Unauthorized" }));
+      return jsonRpcError(rpc.id ?? null, -32001, "Unauthorized", {
+        errorCode: "auth_unauthorized",
+        details: authPayload,
+      });
     }
 
     return jsonRpcResult(rpc.id ?? null, {
@@ -649,22 +692,19 @@ router.on("POST", "/mcp", async (request, env) => {
       const result = await callTool(request, env, toolName, asObject(params.arguments ?? {}));
       return jsonRpcResult(rpc.id ?? null, toToolContent(result));
     } catch (error) {
-      if (error instanceof Response) {
-        let data: unknown;
-        try {
-          data = await error.json();
-        } catch {
-          data = { error: "Tool call failed" };
-        }
+      if (error instanceof McpToolError) {
         return jsonRpcResult(rpc.id ?? null, {
           isError: true,
-          ...toToolContent(data),
+          ...toToolContent(toolErrorPayload(error.errorCode, error.message, error.data)),
         });
       }
 
       return jsonRpcResult(rpc.id ?? null, {
         isError: true,
-        ...toToolContent({ error: error instanceof Error ? error.message : "Tool call failed" }),
+        ...toToolContent(toolErrorPayload(
+          "tool_internal_error",
+          error instanceof Error ? error.message : "Tool call failed"
+        )),
       });
     }
   }
