@@ -56,6 +56,7 @@ Use these as deeper references:
 - [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
 - `npm run example:agent:discover`
 - `npm run example:agent:reply-draft`
+- `npm run example:agent:operator-send`
 
 ## Capability Discovery
 

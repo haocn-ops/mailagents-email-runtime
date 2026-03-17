@@ -55,12 +55,14 @@ Runnable repository examples:
 
 - `npm run example:agent:discover`
 - `npm run example:agent:reply-draft`
+- `npm run example:agent:operator-send`
 
 Expected environment variables:
 
 - `MAILAGENTS_TOKEN`
 - optional `MAILAGENTS_BASE_URL`
 - `MAILAGENTS_AGENT_ID` for the reply example
+- `MAILAGENTS_AGENT_ID` for the operator-send example
 
 ## Suggested Next Step
 

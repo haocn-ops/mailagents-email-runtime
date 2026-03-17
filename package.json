@@ -26,7 +26,8 @@
     "smoke:local": "bash ./scripts/local_smoke.sh",
     "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh",
     "example:agent:discover": "node ./examples/discover_agent_capabilities.mjs",
-    "example:agent:reply-draft": "node ./examples/reply_draft_only.mjs"
+    "example:agent:reply-draft": "node ./examples/reply_draft_only.mjs",
+    "example:agent:operator-send": "node ./examples/operator_manual_send.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260308.0",

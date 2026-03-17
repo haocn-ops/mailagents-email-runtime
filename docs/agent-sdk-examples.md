@@ -303,6 +303,7 @@ If you want runnable repository examples, use:
 
 - `npm run example:agent:discover`
 - `npm run example:agent:reply-draft`
+- `npm run example:agent:operator-send`
 
 ## 9. Recommended External-Agent Pattern
 
