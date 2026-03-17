@@ -9,6 +9,7 @@ Current package skeleton:
 - [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
 - [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
 - [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
+- [docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
 
 ## Current State
 
@@ -84,6 +85,12 @@ Avoid in v1:
 - code generation
 - auth token minting helpers tied to admin secrets
 - opinionated retry loops
+
+## Versioning Guidance
+
+Use the package policy in
+[docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
+when deciding whether a change is patch, minor, or major.
 
 ## Suggested Future Enhancements
 

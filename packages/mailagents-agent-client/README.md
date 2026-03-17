@@ -88,3 +88,4 @@ try {
 Release tracking:
 
 - [CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
+- [docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
