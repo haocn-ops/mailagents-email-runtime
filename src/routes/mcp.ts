@@ -1161,6 +1161,8 @@ router.on("POST", "/mcp", async (request, env) => {
           sideEffecting: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sideEffecting ?? false,
           humanReviewRequired: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.humanReviewRequired ?? false,
           composite: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.composite),
+          supportsPartialAuthorization: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.supportsPartialAuthorization),
+          sendAdditionalScopes: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sendAdditionalScopes ?? [],
         },
       })),
     });

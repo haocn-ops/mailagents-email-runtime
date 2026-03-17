@@ -54,7 +54,7 @@ curl -sS "$BASE_URL/mcp" \
     "id": 1,
     "method": "initialize",
     "params": {}
-  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.metaRuntimePath == "/v2/meta/runtime" and (.result.meta.mcp.tools | any(.name == "send_draft" and .riskLevel == "high_risk" and .humanReviewRequired == true))' >/dev/null
+  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.metaRuntimePath == "/v2/meta/runtime" and (.result.meta.mcp.tools | any(.name == "send_draft" and .riskLevel == "high_risk" and .humanReviewRequired == true)) and (.result.meta.mcp.tools | any(.name == "reply_to_inbound_email" and .supportsPartialAuthorization == true and (.sendAdditionalScopes | index("draft:send"))))' >/dev/null
 
 echo "Checking runtime metadata endpoint..."
 curl -sS "$BASE_URL/v2/meta/runtime" \
@@ -75,6 +75,8 @@ echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "create_agent")' >/
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_draft" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "get_message" and .annotations.riskLevel == "read" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == false)' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
 
 echo "Creating agent through MCP..."
 CREATE_AGENT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \

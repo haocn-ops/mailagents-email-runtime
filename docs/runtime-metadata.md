@@ -39,6 +39,16 @@ For each MCP tool, the metadata includes:
 - `sideEffecting`
 - `humanReviewRequired`
 - `composite`
+- `supportsPartialAuthorization`
+- `sendAdditionalScopes`
+
+For composite tools that can either draft-only or draft-and-send:
+
+- `requiredScopes` describes the minimum scopes needed to use the tool at all
+- `sendAdditionalScopes` describes the extra scopes needed when the call will
+  trigger delivery
+- `supportsPartialAuthorization` indicates that a token may be allowed to use
+  only the lower-risk subset of the tool behavior
 
 The MCP `initialize` response also includes the same metadata under
 `result.meta`, so agents can discover capabilities from either entry point.

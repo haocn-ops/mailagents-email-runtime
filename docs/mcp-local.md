@@ -153,7 +153,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 ## Notes
 
 - `tools/list` only shows tools allowed by the current token scopes
-- `tools/list` also returns tool annotations for `riskLevel`, `sideEffecting`, `humanReviewRequired`, and `composite`
+- `tools/list` also returns tool annotations for `riskLevel`, `sideEffecting`, `humanReviewRequired`, `composite`, `supportsPartialAuthorization`, and `sendAdditionalScopes`
 - `tools/call` reuses the same access checks as the HTTP API
 - `bind_mailbox` now validates that both the agent and mailbox exist and belong to the declared tenant
 - `send_draft` and `replay_message` support `idempotencyKey`
@@ -161,6 +161,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - when `reply_to_inbound_email` sends, the `idempotencyKey` is bound to the logical reply request so safe retries return the original workflow result instead of creating a second draft
 - `operator_manual_send` can create an operator-guided draft and optionally send when `send: true`
 - when `operator_manual_send` sends, the `idempotencyKey` is bound to the logical send request so safe retries return the original draft and outbound job
+- composite send tools may be listed for draft-only usage even when the token lacks `draft:send`; check `sendAdditionalScopes` before planning a delivery step
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
 
 ## Error codes

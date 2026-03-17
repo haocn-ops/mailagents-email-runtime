@@ -11,7 +11,9 @@ export interface RuntimeToolMetadata {
   name: string;
   description: string;
   requiredScopes: string[];
+  sendAdditionalScopes?: string[];
   composite?: boolean;
+  supportsPartialAuthorization?: boolean;
   riskLevel: "read" | "write" | "high_risk" | "privileged";
   sideEffecting: boolean;
   humanReviewRequired: boolean;
@@ -46,7 +48,9 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     name: "reply_to_inbound_email",
     description: "Read inbound message context, construct a reply draft with proper headers, and optionally send it.",
     requiredScopes: ["mail:read", "draft:create"],
+    sendAdditionalScopes: ["draft:send"],
     composite: true,
+    supportsPartialAuthorization: true,
     riskLevel: "high_risk",
     sideEffecting: true,
     humanReviewRequired: true,
@@ -55,7 +59,9 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     name: "operator_manual_send",
     description: "Create an operator-approved draft and optionally send it through the normal queue path.",
     requiredScopes: ["draft:create"],
+    sendAdditionalScopes: ["draft:send"],
     composite: true,
+    supportsPartialAuthorization: true,
     riskLevel: "high_risk",
     sideEffecting: true,
     humanReviewRequired: true,
@@ -164,7 +170,9 @@ export function buildRuntimeMetadata(env: Env) {
       tools: RUNTIME_TOOL_CATALOG.map((tool) => ({
         name: tool.name,
         requiredScopes: tool.requiredScopes,
+        sendAdditionalScopes: tool.sendAdditionalScopes ?? [],
         composite: Boolean(tool.composite),
+        supportsPartialAuthorization: Boolean(tool.supportsPartialAuthorization),
         riskLevel: tool.riskLevel,
         sideEffecting: tool.sideEffecting,
         humanReviewRequired: tool.humanReviewRequired,
