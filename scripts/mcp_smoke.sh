@@ -95,6 +95,26 @@ if [[ -z "$AGENT_ID" || "$AGENT_ID" == "null" ]]; then
   exit 1
 fi
 
+echo "Checking mailbox validation through MCP..."
+INVALID_BIND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 31,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"bind_mailbox\",
+      \"arguments\": {
+        \"agentId\": \"$AGENT_ID\",
+        \"tenantId\": \"$TENANT_ID\",
+        \"mailboxId\": \"mbx_missing_for_mcp_smoke\",
+        \"role\": \"primary\"
+      }
+    }
+  }")"
+echo "$INVALID_BIND_RESPONSE" | jq -e '.result.isError == true and .result.structuredContent.error.code == "resource_mailbox_not_found"' >/dev/null
+
 echo "Binding mailbox through MCP..."
 curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
