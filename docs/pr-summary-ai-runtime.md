@@ -11,10 +11,13 @@ It adds:
 - a repository-level `llms-full.txt`
 - page-level AI docs for auth, agents, mail workflows, and debug usage
 - a draft MCP tool catalog and JSON schema
+- a minimal HTTP MCP endpoint with scoped tools
 - OpenAPI updates to better match current implementation
 - runtime idempotency for draft send, replay, and admin send flows
 - hourly idempotency cleanup with configurable retention windows
 - admin maintenance endpoints and dashboard visibility for idempotency records
+- workflow packs for MCP orchestration
+- local MCP smoke coverage
 
 ## Why
 
@@ -36,15 +39,31 @@ This PR closes those gaps and moves the project closer to a Resend-style
 - Added onboarding, decision rules, auth, agents, mail workflow, and debug docs
 - Added MCP/tooling drafts for future agent tooling work
 - Added `llms-full.txt` as a single-file AI context source
+- Added reusable agent workflow packs in markdown and JSON form
 
-### 2. OpenAPI and integration surface alignment
+### 2. MCP runtime surface
+
+- Added a minimal `/mcp` endpoint
+- Added scoped primitive tools for:
+  - agent provisioning
+  - mailbox binding
+  - policy updates
+  - task listing
+  - message and thread reads
+  - draft creation and send
+  - replay
+- Added one composite workflow tool:
+  - `reply_to_inbound_email`
+- Added stable machine-readable MCP error codes
+
+### 3. OpenAPI and integration surface alignment
 
 - Added missing debug routes to the OpenAPI doc
 - Removed unsupported task list query options from the spec
 - Added missing `tenantId` requirements to request schemas
 - Documented current idempotency behavior for replay and send
 
-### 3. Runtime idempotency
+### 4. Runtime idempotency
 
 - Added `idempotency_keys` storage
 - Implemented reservation, completion, and release logic
@@ -59,7 +78,7 @@ Behavior:
 - same key + different request shape returns `409`
 - pending duplicate attempts return `409`
 
-### 4. Cleanup and observability
+### 5. Cleanup and observability
 
 - Added scheduled idempotency cleanup support
 - Added configurable retention vars:
@@ -70,11 +89,13 @@ Behavior:
   - trigger cleanup manually
 - Added an admin dashboard view for idempotency operations and cleanup
 
-### 5. Verification
+### 6. Verification
 
 - `npm run check`
 - `bash -n scripts/local_smoke.sh`
+- `bash -n scripts/mcp_smoke.sh`
 - local smoke script updated to verify idempotent send and replay behavior
+- local MCP smoke script added to verify MCP initialize, tools, error codes, and idempotent send behavior
 
 ## Follow-ups
 
