@@ -9,6 +9,7 @@ Current blockers as of 2026-03-17:
 - `mailagents-production` Worker does not exist yet
 - production Worker secrets are not set
 - `dev` remote smoke cannot complete until the remote admin secret is aligned or updated
+- `mailagents.net` resolves, but `api.mailagents.net` does not currently resolve in DNS
 
 ## 1. Cloudflare Production Resources
 
@@ -18,6 +19,11 @@ Provide or create:
 - production R2 bucket name
 - production queue names
 - target custom domain for the runtime
+
+Observed current state:
+
+- root site `mailagents.net` is live
+- likely API hostname `api.mailagents.net` is not currently resolvable
 
 Expected defaults in this repo:
 
