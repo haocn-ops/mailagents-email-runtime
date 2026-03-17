@@ -73,6 +73,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/local-dev.md`
 - `docs/dev-bootstrap.md`
 - `docs/deployment.md`
+- `docs/production-rollout-checklist.md`
 - `docs/testing.md`
 - `docs/openapi.yaml`
 - `llms-full.txt`
@@ -163,6 +164,12 @@ See [`docs/deployment.md`](docs/deployment.md) for:
 - admin/debug route exposure guidance
 - pre-deploy config validation
 - deploy checklist
+
+See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) for:
+
+- the current production blockers
+- the exact inputs still needed for a real rollout
+- the production deploy and domain-binding sequence
 
 See [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) for:
 

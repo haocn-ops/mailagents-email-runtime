@@ -27,6 +27,16 @@ Important:
 
 - `npm run deploy:dev` updates this existing shared `dev` environment
 - it does not create a separate, parallel `dev` worker
+- full remote smoke depends on the current remote `ADMIN_API_SECRET`,
+  `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` matching the smoke inputs
+
+Current production status as of 2026-03-17:
+
+- `mailagents-production` Worker does not exist yet
+- `env.production` in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml)
+  still contains placeholder D1 config
+- see [docs/production-rollout-checklist.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/production-rollout-checklist.md)
+  before attempting a production deploy or domain bind
 
 ## Cloudflare Resources
 
