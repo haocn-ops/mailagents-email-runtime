@@ -923,12 +923,18 @@ function layout(active: string, title: string, content: string): string {
 
 function renderHome(url: URL): string {
   const site = `${url.protocol}//${url.host}`;
+  const agentDocs = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md";
+  const sdkExamples = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/agent-sdk-examples.md";
+  const compatibilityDoc = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/runtime-compatibility.md";
+  const runtimeMetadata = "https://api.mailagents.net/v2/meta/runtime";
+  const compatibilityApi = "https://api.mailagents.net/v2/meta/compatibility";
   return `<section class="hero">
     <article class="hero-card">
       <div class="eyebrow">Agent Mail Cloud</div>
       <h1>Email infrastructure for products that ship with agents.</h1>
       <p class="lead">Mailagents helps teams provision inboxes, route inbound mail, trigger workflow execution, and deliver transactional email with clear operator controls. The platform is built for application-driven messaging, not bulk campaigns or list blasting.</p>
       <div class="hero-actions">
+        <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>
         <a class="button primary" href="/contact">Talk to Mailagents</a>
         <a class="button secondary" href="/privacy">Read Privacy Policy</a>
         <a class="button secondary" href="/terms">Read Terms</a>
@@ -958,6 +964,43 @@ function renderHome(url: URL): string {
         </div>
       </section>
     </aside>
+  </section>
+
+  <section class="panel section">
+    <div class="section-head">
+      <div>
+        <div class="eyebrow">AI Agent Quickstart</div>
+        <h2>The fastest way for agents to discover, trust, and use the runtime.</h2>
+      </div>
+      <p>If you are integrating an AI agent, start with the guide, then use the live compatibility endpoints for capability discovery and stable error handling.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <h3>LLM agent guide</h3>
+        <p>The single best starting point for external agents and builders.</p>
+        <p><a href="${agentDocs}" target="_blank" rel="noreferrer">Open the AI agent guide</a></p>
+      </div>
+      <div class="card">
+        <h3>Runtime metadata</h3>
+        <p>Discover live MCP methods, tool count, workflows, and route posture.</p>
+        <p><a href="${runtimeMetadata}" target="_blank" rel="noreferrer">Open <code>/v2/meta/runtime</code></a></p>
+      </div>
+      <div class="card">
+        <h3>Compatibility contract</h3>
+        <p>Read stable fields, idempotent operations, and machine-readable error guarantees.</p>
+        <p><a href="${compatibilityApi}" target="_blank" rel="noreferrer">Open <code>/v2/meta/compatibility</code></a></p>
+      </div>
+      <div class="card">
+        <h3>SDK examples</h3>
+        <p>Copy runnable HTTP, MCP, and TypeScript examples for common agent workflows.</p>
+        <p><a href="${sdkExamples}" target="_blank" rel="noreferrer">Open agent SDK examples</a></p>
+      </div>
+      <div class="card">
+        <h3>Contract docs</h3>
+        <p>Understand versioning, deprecation rules, and what agents can safely depend on.</p>
+        <p><a href="${compatibilityDoc}" target="_blank" rel="noreferrer">Open compatibility docs</a></p>
+      </div>
+    </div>
   </section>
 
   <section class="panel section">
