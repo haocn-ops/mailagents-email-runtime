@@ -38,6 +38,12 @@ Typed helpers currently cover:
 - `getRuntimeMetadata()`
 - `getCompatibilityContract()`
 - `listTools()`
+- `createAgent()`
+- `bindMailbox()`
+- `listAgentTasks()`
+- `getMessage()`
+- `getMessageContent()`
+- `getThread()`
 - `createDraft()`
 - `sendDraft()`
 - `replyToInboundEmail()`

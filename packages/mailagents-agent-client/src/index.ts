@@ -130,6 +130,66 @@ export interface ToolsListResult {
   tools: McpToolDefinition[];
 }
 
+export interface AgentRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  status?: string;
+  mode: string;
+}
+
+export interface AgentMailboxBinding {
+  agentId: string;
+  tenantId: string;
+  mailboxId: string;
+  role: string;
+}
+
+export interface TaskRecord {
+  id: string;
+  agentId: string;
+  tenantId: string;
+  status: string;
+  title?: string;
+}
+
+export interface MessageRecord {
+  id: string;
+  tenantId?: string;
+  mailboxId?: string;
+  threadId: string | null;
+  direction?: string;
+  subject?: string;
+  status?: string;
+}
+
+export interface MessageContentResult {
+  message: MessageRecord;
+  normalized?: {
+    text?: string;
+    html?: string;
+    subject?: string;
+    from?: string;
+    to?: string[];
+    cc?: string[];
+    attachments?: Array<{
+      filename?: string;
+      contentType?: string;
+      size?: number;
+    }>;
+  } | null;
+}
+
+export interface ThreadResult {
+  thread: {
+    id: string;
+    tenantId?: string;
+    mailboxId?: string;
+    subject?: string;
+  };
+  messages?: MessageRecord[];
+}
+
 export interface DraftRecord {
   id: string;
   tenantId: string;
@@ -257,6 +317,43 @@ export class MailagentsAgentClient {
   async listTools(): Promise<ToolsListResult> {
     const payload = await this.callMcp("tools/list", {});
     return payload.result;
+  }
+
+  async createAgent(args: {
+    tenantId: string;
+    name: string;
+    mode: string;
+    config?: Record<string, unknown>;
+  }): Promise<AgentRecord> {
+    return this.callTool<AgentRecord>("create_agent", args);
+  }
+
+  async bindMailbox(args: {
+    agentId: string;
+    tenantId: string;
+    mailboxId: string;
+    role: string;
+  }): Promise<AgentMailboxBinding> {
+    return this.callTool<AgentMailboxBinding>("bind_mailbox", args);
+  }
+
+  async listAgentTasks(args: {
+    agentId: string;
+    status?: string;
+  }): Promise<{ items: TaskRecord[] }> {
+    return this.callTool<{ items: TaskRecord[] }>("list_agent_tasks", args);
+  }
+
+  async getMessage(messageId: string): Promise<MessageRecord> {
+    return this.callTool<MessageRecord>("get_message", { messageId });
+  }
+
+  async getMessageContent(messageId: string): Promise<MessageContentResult> {
+    return this.callTool<MessageContentResult>("get_message_content", { messageId });
+  }
+
+  async getThread(threadId: string): Promise<ThreadResult> {
+    return this.callTool<ThreadResult>("get_thread", { threadId });
   }
 
   async callTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
