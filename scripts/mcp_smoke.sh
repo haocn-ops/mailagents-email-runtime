@@ -62,7 +62,7 @@ curl -sS "$BASE_URL/v2/meta/runtime" \
 
 echo "Checking compatibility contract endpoint..."
 curl -sS "$BASE_URL/v2/meta/compatibility" \
-  | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
+  | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and .contract.changelogPath == "/CHANGELOG.md" and .evolution.deprecationPolicy.minimumNotice == "one compatibility version" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
 
 echo "Listing scoped MCP tools..."
 TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \

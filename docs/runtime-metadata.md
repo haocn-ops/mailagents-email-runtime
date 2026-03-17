@@ -62,3 +62,9 @@ The MCP `initialize` response also includes the same metadata under
 
 For clients that need a narrower and more backward-compatible contract, see
 [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md).
+
+That contract also carries machine-readable evolution rules such as:
+
+- compatibility-version bump triggers
+- deprecation announcement policy
+- a `deprecatedFields` list for pending removals

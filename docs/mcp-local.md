@@ -162,6 +162,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `operator_manual_send` can create an operator-guided draft and optionally send when `send: true`
 - when `operator_manual_send` sends, the `idempotencyKey` is bound to the logical send request so safe retries return the original draft and outbound job
 - composite send tools may be listed for draft-only usage even when the token lacks `draft:send`; check `sendAdditionalScopes` before planning a delivery step
+- `/v2/meta/compatibility` is the preferred machine-readable contract for long-lived external agents and SDKs
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
 
 ## Error codes

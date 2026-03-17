@@ -23,6 +23,7 @@ Top-level fields:
 
 - `contract`
 - `discovery`
+- `evolution`
 - `guarantees`
 - `mcp`
 - `workflows`
@@ -32,8 +33,12 @@ Top-level fields:
 Key details:
 
 - `contract.version` is the compatibility version for agent-facing integration behavior
+- `contract.changelogPath` points to the repository changelog used for rollout notes
 - `discovery.runtimeMetadataPath` points to the richer runtime metadata endpoint
 - `discovery.compatibilityPath` points back to this contract
+- `evolution.versioningPolicy` explains which changes are additive and which require a compatibility version bump
+- `evolution.deprecationPolicy` explains how removals should be announced
+- `evolution.deprecatedFields` is the machine-readable place to watch for pending removals
 - `guarantees.stableErrorCodes` lists the MCP error codes that callers may branch on
 - `guarantees.stableToolAnnotations` lists the tool annotation fields expected to remain stable
 
@@ -43,3 +48,9 @@ This contract is especially useful for:
 - hosted agent platforms
 - generated SDKs or wrappers
 - CI smoke checks that need stronger backward-compatibility assertions
+
+Current deprecation stance:
+
+- additive optional fields may appear without a compatibility version bump
+- stable fields and stable error codes should be announced as deprecated before removal
+- the target minimum notice window is one compatibility version

@@ -296,12 +296,40 @@ export function buildCompatibilityContract(env: Env) {
       name: "mailagents-agent-compatibility",
       version: RUNTIME_COMPATIBILITY_VERSION,
       stability: "beta",
+      changelogPath: "/CHANGELOG.md",
     },
     discovery: {
       runtimeMetadataPath: runtime.api.metaRuntimePath,
       compatibilityPath: runtime.api.compatibilityPath,
       mcpInitializeEmbedsRuntimeMetadata: true,
       toolsListScopeFiltered: true,
+    },
+    evolution: {
+      versioningPolicy: {
+        patchSafeChanges: [
+          "new optional metadata fields",
+          "new non-breaking documentation fields",
+          "new tool descriptions without schema changes",
+        ],
+        compatibilityVersionBumpTriggers: [
+          "removing a stable top-level contract field",
+          "renaming a stable MCP error code",
+          "changing the meaning of a stable tool annotation field",
+          "removing a listed idempotent operation name",
+        ],
+      },
+      deprecationPolicy: {
+        announcedVia: ["compatibility contract", "CHANGELOG.md"],
+        minimumNotice: "one compatibility version",
+        removalRule: "stable fields or stable error codes should not be removed without first appearing in deprecatedFields",
+      },
+      deprecatedFields: [] as Array<{
+        path: string;
+        status: "deprecated";
+        replacement?: string;
+        removalVersion?: string;
+        note?: string;
+      }>,
     },
     guarantees: {
       stableRuntimeFields: ["server", "api", "mcp", "workflows", "idempotency", "routes"],

@@ -33,6 +33,10 @@ The format is inspired by Keep a Changelog and follows a simple unreleased-first
   - scheduled cleanup handler
   - admin maintenance APIs for listing and pruning idempotency keys
 - admin dashboard idempotency operations view
+- versioned agent compatibility contract at `/v2/meta/compatibility`, including:
+  - stable MCP error code catalog
+  - compatibility version metadata
+  - deprecation and evolution policy fields
 - open source project files:
   - `LICENSE`
   - `SECURITY.md`
