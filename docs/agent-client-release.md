@@ -15,6 +15,7 @@ Current package skeleton:
 - workspace-aware root scripts available
 - package-local `build` and `check` scripts available
 - package-local dry-run pack script available
+- typed models added for discovery and high-value draft/send flows
 - not published
 - still marked `private: true`
 
@@ -28,7 +29,8 @@ Before publishing:
 4. confirm repository metadata
 5. confirm homepage and bugs links
 6. confirm the public API surface in `src/index.ts`
-7. decide whether to keep `unknown` result types or introduce typed models
+7. decide whether the current typed surface is enough for a first release
+8. decide which additional tool results deserve first-class types
 
 ## Validation Steps
 
@@ -68,7 +70,8 @@ Keep the first published version small:
 - compatibility schema lookup
 - MCP `tools/list`
 - generic MCP `callTool`
-- a few high-value convenience helpers
+- typed discovery models
+- a few high-value typed convenience helpers
 
 Avoid in v1:
 
@@ -79,7 +82,7 @@ Avoid in v1:
 
 ## Suggested Future Enhancements
 
-- typed result models for the highest-traffic tools
+- typed result models for more MCP tools beyond the highest-traffic paths
 - helper methods for error-code branching
 - ESM and CJS packaging strategy if needed
 - published examples package or starter repo

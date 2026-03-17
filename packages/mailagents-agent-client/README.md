@@ -8,6 +8,7 @@ Current scope:
 - compatibility contract lookup
 - MCP `tools/list`
 - MCP `tools/call`
+- typed models for discovery and high-value draft/send workflows
 - a few convenience helpers for common draft and reply flows
 
 ## Status
@@ -31,3 +32,13 @@ const tools = await client.listTools();
 
 console.log(contract, tools);
 ```
+
+Typed helpers currently cover:
+
+- `getRuntimeMetadata()`
+- `getCompatibilityContract()`
+- `listTools()`
+- `createDraft()`
+- `sendDraft()`
+- `replyToInboundEmail()`
+- `operatorManualSend()`
