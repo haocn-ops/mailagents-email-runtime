@@ -90,10 +90,23 @@ agent-friendly interface model.
 - `npm run check`
 - `bash -n scripts/local_smoke.sh`
 - `bash -n scripts/mcp_smoke.sh`
+- manually verified a real local HTTP path through `wrangler dev` for:
+  - token mint
+  - agent create/bind
+  - draft create
+  - idempotent send replay
+  - idempotent replay
+  - SES webhook fixture ingestion
+- manually verified a real local MCP path through `wrangler dev` for:
+  - `initialize`
+  - `tools/list`
+  - `reply_to_inbound_email` happy path and idempotent replay
+  - `operator_manual_send` happy path and idempotent replay
 
 ### Notes
 
 - existing environments should apply `migrations/0002_idempotency_keys.sql`
+- package D1 migration scripts now run both `0001_initial.sql` and `0002_idempotency_keys.sql`
 - the full local smoke flow still requires a running worker, local D1, and
   configured secrets
 - the demo seed now includes a fixed inbound message and thread so the MCP smoke

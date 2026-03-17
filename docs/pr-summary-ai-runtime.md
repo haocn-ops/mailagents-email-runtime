@@ -117,6 +117,20 @@ Behavior:
   - idempotent send behavior
   - seeded inbound reply happy path
   - operator manual send happy path
+- manually exercised a real local HTTP flow against `wrangler dev`, including:
+  - token mint
+  - agent creation
+  - mailbox binding
+  - draft creation
+  - idempotent draft send replay
+  - idempotent message replay
+  - SES webhook fixture ingestion
+- manually exercised a real local MCP flow against `wrangler dev`, including:
+  - `initialize`
+  - `tools/list`
+  - `reply_to_inbound_email` happy path and idempotent replay
+  - `operator_manual_send` happy path and idempotent replay
+- fixed a local verification blocker by updating the package migration scripts to apply both D1 migrations instead of only `0001_initial.sql`
 
 ## Follow-ups
 
