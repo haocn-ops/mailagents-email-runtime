@@ -49,6 +49,12 @@ npm run build:agent-client
 npm run pack:agent-client:dry-run
 ```
 
+After removing `"private": true` for an actual release cut, also run:
+
+```bash
+npm_config_cache=/tmp/mailagents-npm-cache npm run publish:agent-client:dry-run
+```
+
 Then verify:
 
 - `dist/` contains `index.js` and `index.d.ts`
@@ -67,6 +73,9 @@ temporary cache override is a safe workaround:
 ```bash
 npm_config_cache=/tmp/mailagents-npm-cache npm run pack:agent-client:dry-run
 ```
+
+The same cache override is also the recommended pattern for
+`npm run publish:agent-client:dry-run`.
 
 ## Recommended First Release Scope
 

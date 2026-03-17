@@ -59,6 +59,13 @@ npm run build:agent-client
 npm_config_cache=/tmp/mailagents-npm-cache npm run pack:agent-client:dry-run
 ```
 
+After removing `"private": true` for the actual release cut, it should also
+pass:
+
+```bash
+npm_config_cache=/tmp/mailagents-npm-cache npm run publish:agent-client:dry-run
+```
+
 The package should also be checked against the shared `dev` runtime for:
 
 - `/v2/meta/runtime`
