@@ -23,7 +23,8 @@
     "d1:seed:remote:dev": "wrangler d1 execute mailagents-dev --remote --env dev --file=./seeds/0001_demo.sql",
     "d1:seed:remote:staging": "wrangler d1 execute mailagents-staging --remote --env staging --file=./seeds/0001_demo.sql",
     "d1:seed:remote:production": "wrangler d1 execute mailagents-production --remote --env production --file=./seeds/0001_demo.sql",
-    "smoke:local": "bash ./scripts/local_smoke.sh"
+    "smoke:local": "bash ./scripts/local_smoke.sh",
+    "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260308.0",

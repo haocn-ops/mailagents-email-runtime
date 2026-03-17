@@ -17,6 +17,15 @@ The smoke flow exercises:
 - persisted outbound job assertion
 - SES webhook ingestion
 
+The MCP smoke flow exercises:
+
+- MCP `initialize`
+- MCP `tools/list`
+- MCP provisioning tools
+- MCP draft creation and send
+- MCP idempotent send replay
+- MCP machine-readable error codes
+
 ## Prerequisites
 
 - local worker already running with `npm run dev:local`
@@ -37,6 +46,20 @@ Optional overrides:
 - `BASE_URL`
 - `TENANT_ID`
 - `MAILBOX_ID`
+
+## Run the MCP smoke script
+
+```bash
+chmod +x scripts/mcp_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+./scripts/mcp_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:mcp:local
+```
 
 ## Sample SES fixtures
 
