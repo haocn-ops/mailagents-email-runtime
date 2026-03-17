@@ -1,13 +1,12 @@
 {
   "name": "@mailagents/agent-client",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Lightweight Mailagents agent client for runtime discovery and MCP tool calls.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/haocn-ops/mailagents-email-runtime.git",
+    "url": "git+https://github.com/haocn-ops/mailagents-email-runtime.git",
     "directory": "packages/mailagents-agent-client"
   },
   "homepage": "https://github.com/haocn-ops/mailagents-email-runtime/tree/main/packages/mailagents-agent-client",

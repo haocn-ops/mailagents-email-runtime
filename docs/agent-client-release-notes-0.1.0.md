@@ -59,8 +59,7 @@ npm run build:agent-client
 npm_config_cache=/tmp/mailagents-npm-cache npm run pack:agent-client:dry-run
 ```
 
-After removing `"private": true` for the actual release cut, it should also
-pass:
+Before the actual release, it should also pass:
 
 ```bash
 npm_config_cache=/tmp/mailagents-npm-cache npm run publish:agent-client:dry-run
@@ -77,8 +76,8 @@ The package should also be checked against the shared `dev` runtime for:
 ## Known Constraints
 
 - the package currently ships as ESM only
-- the package is still marked `private: true` in-repo until publish time
 - the helper surface is intentionally selective rather than exhaustive
+- a real publish still requires npm account authentication
 
 ## Upgrade Guidance
 

@@ -21,23 +21,22 @@ Current package skeleton:
 - typed models added for discovery and high-value draft/send flows
 - stable error-code helpers added for MCP branching
 - package-local changelog added
+- package is configured for publish dry-run validation
 - not published
-- still marked `private: true`
 
 ## Pre-Publish Changes
 
 Before publishing:
 
-1. remove `"private": true` from the package
-2. confirm the package name and npm scope are correct
-3. confirm license metadata
-4. confirm repository metadata
-5. confirm homepage and bugs links
-6. confirm `publishConfig` is appropriate for the intended npm scope
-7. confirm the public API surface in `src/index.ts`
-8. decide whether the current typed surface is enough for a first release
-9. update the package-local changelog for the release cut
-10. finalize the draft first-release notes
+1. confirm the package name and npm scope are correct
+2. confirm license metadata
+3. confirm repository metadata
+4. confirm homepage and bugs links
+5. confirm `publishConfig` is appropriate for the intended npm scope
+6. confirm the public API surface in `src/index.ts`
+7. decide whether the current typed surface is enough for a first release
+8. update the package-local changelog for the release cut
+9. finalize the draft first-release notes
 
 ## Validation Steps
 
@@ -49,11 +48,14 @@ npm run build:agent-client
 npm run pack:agent-client:dry-run
 ```
 
-After removing `"private": true` for an actual release cut, also run:
+Before the actual release, also run:
 
 ```bash
 npm_config_cache=/tmp/mailagents-npm-cache npm run publish:agent-client:dry-run
 ```
+
+You should also confirm the publishing account is authenticated for npm before
+the real release cut.
 
 Then verify:
 
