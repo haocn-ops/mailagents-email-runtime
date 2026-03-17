@@ -98,6 +98,7 @@ See [`docs/ai-onboarding.md`](docs/ai-onboarding.md) and
 See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
 
 - the versioned `/v2/meta/runtime` discovery endpoint
+- the versioned `/v2/meta/compatibility` compatibility contract
 - MCP capability discovery details
 - runtime-exposed workflow and idempotency metadata
 

@@ -54,11 +54,15 @@ curl -sS "$BASE_URL/mcp" \
     "id": 1,
     "method": "initialize",
     "params": {}
-  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.metaRuntimePath == "/v2/meta/runtime" and (.result.meta.mcp.tools | any(.name == "send_draft" and .riskLevel == "high_risk" and .humanReviewRequired == true)) and (.result.meta.mcp.tools | any(.name == "reply_to_inbound_email" and .supportsPartialAuthorization == true and (.sendAdditionalScopes | index("draft:send"))))' >/dev/null
+  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.metaRuntimePath == "/v2/meta/runtime" and .result.meta.api.compatibilityPath == "/v2/meta/compatibility" and (.result.meta.mcp.tools | any(.name == "send_draft" and .riskLevel == "high_risk" and .humanReviewRequired == true)) and (.result.meta.mcp.tools | any(.name == "reply_to_inbound_email" and .supportsPartialAuthorization == true and (.sendAdditionalScopes | index("draft:send"))))' >/dev/null
 
 echo "Checking runtime metadata endpoint..."
 curl -sS "$BASE_URL/v2/meta/runtime" \
-  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime"' >/dev/null
+  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime" and .api.compatibilityPath == "/v2/meta/compatibility"' >/dev/null
+
+echo "Checking compatibility contract endpoint..."
+curl -sS "$BASE_URL/v2/meta/compatibility" \
+  | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
 
 echo "Listing scoped MCP tools..."
 TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \

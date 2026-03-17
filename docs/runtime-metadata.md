@@ -1,6 +1,7 @@
 # Runtime Metadata
 
 This runtime exposes a versioned metadata endpoint at `/v2/meta/runtime`.
+It also exposes a stricter compatibility contract at `/v2/meta/compatibility`.
 
 Use it when an operator, agent, or integration needs to discover:
 
@@ -33,6 +34,12 @@ Current top-level fields:
 - `idempotency`
 - `routes`
 
+The `api` section includes:
+
+- `metaRuntimePath`
+- `compatibilityPath`
+- `mcpPath`
+
 For each MCP tool, the metadata includes:
 
 - `riskLevel`
@@ -52,3 +59,6 @@ For composite tools that can either draft-only or draft-and-send:
 
 The MCP `initialize` response also includes the same metadata under
 `result.meta`, so agents can discover capabilities from either entry point.
+
+For clients that need a narrower and more backward-compatible contract, see
+[docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md).

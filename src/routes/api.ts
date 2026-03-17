@@ -11,7 +11,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
-import { buildRuntimeMetadata } from "../lib/runtime-metadata";
+import { buildCompatibilityContract, buildRuntimeMetadata } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
   bindMailbox,
@@ -47,6 +47,10 @@ const router = new Router<Env>();
 
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
   return json(buildRuntimeMetadata(env));
+});
+
+router.on("GET", "/v2/meta/compatibility", async (_request, env) => {
+  return json(buildCompatibilityContract(env));
 });
 
 router.on("GET", "/v1/debug/agents/:agentId", async (request, env, _ctx, route) => {

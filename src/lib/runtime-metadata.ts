@@ -6,6 +6,7 @@ export const RUNTIME_SERVER_INFO = {
 } as const;
 
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
+export const RUNTIME_COMPATIBILITY_VERSION = "2026-03-17";
 
 export interface RuntimeToolMetadata {
   name: string;
@@ -150,6 +151,106 @@ export const WORKFLOW_PACKS = [
   },
 ];
 
+export const MCP_ERROR_CODE_CATALOG = [
+  {
+    code: "auth_unauthorized",
+    category: "auth",
+    retryable: false,
+    description: "The request is missing a valid bearer token or the token could not be verified.",
+  },
+  {
+    code: "auth_missing_scope",
+    category: "auth",
+    retryable: false,
+    description: "The bearer token is valid but lacks one or more required scopes.",
+  },
+  {
+    code: "access_tenant_denied",
+    category: "access",
+    retryable: false,
+    description: "The token is not allowed to act on the requested tenant.",
+  },
+  {
+    code: "access_agent_denied",
+    category: "access",
+    retryable: false,
+    description: "The token is not allowed to act on the requested agent.",
+  },
+  {
+    code: "access_mailbox_denied",
+    category: "access",
+    retryable: false,
+    description: "The token is not allowed to act on the requested mailbox.",
+  },
+  {
+    code: "invalid_arguments",
+    category: "input",
+    retryable: false,
+    description: "The tool call arguments failed validation or were malformed.",
+  },
+  {
+    code: "resource_agent_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested agent does not exist.",
+  },
+  {
+    code: "resource_mailbox_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested mailbox does not exist.",
+  },
+  {
+    code: "resource_message_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested message does not exist.",
+  },
+  {
+    code: "resource_thread_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested thread does not exist.",
+  },
+  {
+    code: "resource_draft_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested draft does not exist.",
+  },
+  {
+    code: "idempotency_conflict",
+    category: "idempotency",
+    retryable: false,
+    description: "The provided idempotency key is already reserved for a different logical request.",
+  },
+  {
+    code: "idempotency_in_progress",
+    category: "idempotency",
+    retryable: true,
+    description: "The provided idempotency key is already in progress for the same logical request.",
+  },
+  {
+    code: "tool_internal_error",
+    category: "internal",
+    retryable: true,
+    description: "The runtime failed while processing the tool call.",
+  },
+] as const;
+
+function serializeToolCatalog() {
+  return RUNTIME_TOOL_CATALOG.map((tool) => ({
+    name: tool.name,
+    requiredScopes: tool.requiredScopes,
+    sendAdditionalScopes: tool.sendAdditionalScopes ?? [],
+    composite: Boolean(tool.composite),
+    supportsPartialAuthorization: Boolean(tool.supportsPartialAuthorization),
+    riskLevel: tool.riskLevel,
+    sideEffecting: tool.sideEffecting,
+    humanReviewRequired: tool.humanReviewRequired,
+  }));
+}
+
 function isEnabled(value: string | undefined): boolean {
   return value !== undefined && ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
@@ -159,6 +260,7 @@ export function buildRuntimeMetadata(env: Env) {
     server: RUNTIME_SERVER_INFO,
     api: {
       metaRuntimePath: "/v2/meta/runtime",
+      compatibilityPath: "/v2/meta/compatibility",
       mcpPath: "/mcp",
       supportedHttpVersions: ["v1", "v2"],
     },
@@ -167,16 +269,7 @@ export function buildRuntimeMetadata(env: Env) {
       methods: ["initialize", "tools/list", "tools/call"],
       toolCount: RUNTIME_TOOL_CATALOG.length,
       compositeTools: RUNTIME_TOOL_CATALOG.filter((tool) => tool.composite).map((tool) => tool.name),
-      tools: RUNTIME_TOOL_CATALOG.map((tool) => ({
-        name: tool.name,
-        requiredScopes: tool.requiredScopes,
-        sendAdditionalScopes: tool.sendAdditionalScopes ?? [],
-        composite: Boolean(tool.composite),
-        supportsPartialAuthorization: Boolean(tool.supportsPartialAuthorization),
-        riskLevel: tool.riskLevel,
-        sideEffecting: tool.sideEffecting,
-        humanReviewRequired: tool.humanReviewRequired,
-      })),
+      tools: serializeToolCatalog(),
     },
     workflows: WORKFLOW_PACKS,
     idempotency: {
@@ -193,5 +286,43 @@ export function buildRuntimeMetadata(env: Env) {
       adminEnabled: isEnabled(env.ADMIN_ROUTES_ENABLED),
       debugEnabled: isEnabled(env.DEBUG_ROUTES_ENABLED),
     },
+  };
+}
+
+export function buildCompatibilityContract(env: Env) {
+  const runtime = buildRuntimeMetadata(env);
+  return {
+    contract: {
+      name: "mailagents-agent-compatibility",
+      version: RUNTIME_COMPATIBILITY_VERSION,
+      stability: "beta",
+    },
+    discovery: {
+      runtimeMetadataPath: runtime.api.metaRuntimePath,
+      compatibilityPath: runtime.api.compatibilityPath,
+      mcpInitializeEmbedsRuntimeMetadata: true,
+      toolsListScopeFiltered: true,
+    },
+    guarantees: {
+      stableRuntimeFields: ["server", "api", "mcp", "workflows", "idempotency", "routes"],
+      stableToolAnnotations: [
+        "riskLevel",
+        "sideEffecting",
+        "humanReviewRequired",
+        "composite",
+        "supportsPartialAuthorization",
+        "sendAdditionalScopes",
+      ],
+      stableErrorCodes: MCP_ERROR_CODE_CATALOG.map((item) => item.code),
+      idempotentOperations: runtime.idempotency.operations,
+    },
+    mcp: {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      methods: runtime.mcp.methods,
+      tools: serializeToolCatalog(),
+    },
+    workflows: runtime.workflows,
+    errors: MCP_ERROR_CODE_CATALOG,
+    routes: runtime.routes,
   };
 }

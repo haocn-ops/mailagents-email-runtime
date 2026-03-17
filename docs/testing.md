@@ -21,6 +21,7 @@ The MCP smoke flow exercises:
 
 - MCP `initialize`
 - MCP `tools/list`
+- `/v2/meta/compatibility`
 - MCP provisioning tools
 - MCP draft creation and send
 - MCP idempotent send replay
