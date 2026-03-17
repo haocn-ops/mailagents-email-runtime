@@ -49,6 +49,7 @@ Use these as deeper references:
 
 - [docs/ai-decision-rules.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-decision-rules.md)
 - [docs/agent-workflow-packs.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-workflow-packs.md)
+- [docs/agent-capabilities.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
 - [docs/mcp-local.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mcp-local.md)
 - [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
 
@@ -65,12 +66,16 @@ Three discovery layers are available:
 3. compatibility schema
    Path: `/v2/meta/compatibility/schema`
    Use for CI validation, SDK fixtures, and contract snapshot testing.
+4. agent capabilities snapshot
+   Path: `docs/agent-capabilities.json`
+   Use as a repository-pinned example response and integration fixture.
 
 Current shared `dev` URLs:
 
 - [runtime metadata](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/runtime)
 - [compatibility contract](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility)
 - [compatibility schema](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility/schema)
+- [agent capabilities snapshot](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
 
 ## Authentication
 
@@ -177,6 +182,8 @@ If you are trying to:
   - [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
 - validate compatibility in CI
   - [docs/runtime-compatibility.schema.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.schema.json)
+- start from a pinned fixture instead of a live endpoint
+  - [docs/agent-capabilities.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
 
 ## Recommended External-Agent Startup Sequence
 

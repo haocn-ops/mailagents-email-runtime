@@ -29,11 +29,18 @@ Read the JSON Schema for contract validation:
 curl -sS https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility/schema | jq
 ```
 
+Read the pinned repository snapshot:
+
+```bash
+cat docs/agent-capabilities.json | jq
+```
+
 Recommended usage:
 
 - use `/v2/meta/runtime` for richer environment-aware discovery
 - use `/v2/meta/compatibility` for long-lived branching logic
 - use `/v2/meta/compatibility/schema` in CI or SDK validation
+- use `docs/agent-capabilities.json` as a fixed example fixture when live calls are not desirable
 
 ## 2. Mint a Scoped Bearer Token
 

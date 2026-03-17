@@ -65,6 +65,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/runtime-compatibility.md`
 - `docs/runtime-compatibility.schema.json`
 - `docs/agent-sdk-examples.md`
+- `docs/agent-capabilities.json`
 - `docs/agent-workflow-packs.md`
 - `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
@@ -119,6 +120,12 @@ See [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) for:
 - compatibility contract usage
 - stable error-handling patterns
 - a minimal TypeScript integration snippet
+
+See [`docs/agent-capabilities.json`](docs/agent-capabilities.json) for:
+
+- a pinned machine-readable capability snapshot
+- integration fixture data for SDKs or CI
+- a stable example of current tools, workflows, and error codes
 
 ## Repo Hygiene
 

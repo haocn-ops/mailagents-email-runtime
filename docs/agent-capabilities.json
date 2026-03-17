@@ -1,0 +1,133 @@
+{
+  "snapshot": {
+    "name": "mailagents-agent-capabilities",
+    "generatedFrom": "runtime metadata and compatibility contract",
+    "compatibilityVersion": "2026-03-17",
+    "stability": "beta"
+  },
+  "discovery": {
+    "runtimeMetadataPath": "/v2/meta/runtime",
+    "compatibilityPath": "/v2/meta/compatibility",
+    "compatibilitySchemaPath": "/v2/meta/compatibility/schema",
+    "mcpPath": "/mcp"
+  },
+  "toolAnnotations": [
+    "riskLevel",
+    "sideEffecting",
+    "humanReviewRequired",
+    "composite",
+    "supportsPartialAuthorization",
+    "sendAdditionalScopes"
+  ],
+  "tools": [
+    {
+      "name": "get_message",
+      "requiredScopes": ["mail:read"],
+      "riskLevel": "read",
+      "sideEffecting": false,
+      "humanReviewRequired": false,
+      "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "create_draft",
+      "requiredScopes": ["draft:create"],
+      "riskLevel": "write",
+      "sideEffecting": true,
+      "humanReviewRequired": false,
+      "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "send_draft",
+      "requiredScopes": ["draft:send"],
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "reply_to_inbound_email",
+      "requiredScopes": ["mail:read", "draft:create"],
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": true,
+      "supportsPartialAuthorization": true,
+      "sendAdditionalScopes": ["draft:send"]
+    },
+    {
+      "name": "operator_manual_send",
+      "requiredScopes": ["draft:create"],
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": true,
+      "supportsPartialAuthorization": true,
+      "sendAdditionalScopes": ["draft:send"]
+    },
+    {
+      "name": "replay_message",
+      "requiredScopes": ["mail:replay"],
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    }
+  ],
+  "workflowPacks": [
+    {
+      "name": "reply_to_inbound_email",
+      "compositeTool": "reply_to_inbound_email",
+      "sideEffects": ["create_draft", "send_draft_when_send_true"]
+    },
+    {
+      "name": "operator_manual_send",
+      "compositeTool": "operator_manual_send",
+      "sideEffects": ["create_draft", "send_draft"]
+    },
+    {
+      "name": "replay_and_recover_message",
+      "compositeTool": null,
+      "sideEffects": ["replay_message"]
+    }
+  ],
+  "stableErrorCodes": [
+    "auth_unauthorized",
+    "auth_missing_scope",
+    "access_tenant_denied",
+    "access_agent_denied",
+    "access_mailbox_denied",
+    "invalid_arguments",
+    "resource_agent_not_found",
+    "resource_mailbox_not_found",
+    "resource_message_not_found",
+    "resource_thread_not_found",
+    "resource_draft_not_found",
+    "idempotency_conflict",
+    "idempotency_in_progress",
+    "tool_internal_error"
+  ],
+  "idempotentOperations": [
+    "draft_send",
+    "message_replay",
+    "reply_to_inbound_email(send=true)",
+    "operator_manual_send(send=true)"
+  ],
+  "recommendedStartupSequence": [
+    "read /v2/meta/compatibility",
+    "validate against /v2/meta/compatibility/schema",
+    "mint a least-privilege bearer token",
+    "call MCP tools/list",
+    "prefer read tools before side effects",
+    "create drafts before sends",
+    "use idempotencyKey on side-effecting retries",
+    "branch only on stable error codes"
+  ]
+}
