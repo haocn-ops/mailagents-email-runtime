@@ -111,6 +111,7 @@ See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
 See [`docs/testing.md`](docs/testing.md) for:
 
 - local smoke flow
+- deployed `dev` smoke flow
 - SES webhook fixtures
 - smoke script usage
 
@@ -118,6 +119,7 @@ See [`docs/deployment.md`](docs/deployment.md) for:
 
 - real Cloudflare/AWS resource wiring
 - environment-specific resource naming
+- current `dev` worker URL and verification notes
 - admin/debug route exposure guidance
 - pre-deploy config validation
 - deploy checklist
@@ -138,6 +140,8 @@ Template scripts:
 - `wrangler.toml` intentionally uses placeholder environment IDs and domains
 - real Cloudflare and SES values should be supplied per environment before deploy
 - keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
+- `npm run deploy:dev` updates the existing Cloudflare `dev` environment rather than creating a second one
+- the current shared `dev` worker URL is `https://mailagents-dev.izhenghaocn.workers.dev`
 
 ## GitHub Actions Deploy
 

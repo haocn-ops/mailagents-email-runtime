@@ -95,15 +95,38 @@ npm run d1:seed:remote:dev
 npm run deploy:dev
 ```
 
+This deploys the existing shared Cloudflare `dev` worker:
+
+- `mailagents-dev`
+- `https://mailagents-dev.izhenghaocn.workers.dev`
+
+Subsequent `npm run deploy:dev` runs update that same environment.
+
 ## 9. Verify deployed dev
 
 After deploy, verify:
 
 - worker responds
+- `/v2/meta/runtime` responds
 - auth token route works if `ADMIN_ROUTES_ENABLED=true`
 - agent creation works
 - draft creation works
 - SES webhook endpoint is reachable
+
+Helpful commands:
+
+```bash
+curl -sS https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/runtime | jq '.server'
+
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+WEBHOOK_SHARED_SECRET_FOR_SMOKE=replace-with-shared-secret \
+bash ./scripts/local_smoke.sh
+
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+bash ./scripts/mcp_smoke.sh
+```
 
 ## 10. Recommended next step
 

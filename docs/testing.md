@@ -67,6 +67,34 @@ The MCP smoke script expects the demo seed to include:
 - seeded inbound message `msg_demo_inbound`
 - seeded thread `thr_demo_inbound`
 
+## Run Against Deployed `dev`
+
+The current shared `dev` environment is:
+
+- `https://mailagents-dev.izhenghaocn.workers.dev`
+
+Use the same scripts with `BASE_URL` overrides:
+
+```bash
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+WEBHOOK_SHARED_SECRET_FOR_SMOKE=replace-with-shared-secret \
+bash ./scripts/local_smoke.sh
+```
+
+```bash
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+bash ./scripts/mcp_smoke.sh
+```
+
+Before running remote smoke:
+
+- deploy with `npm run deploy:dev`
+- apply `npm run d1:migrate:remote:dev`
+- apply `npm run d1:seed:remote:dev` if the seeded inbound MCP flow is needed
+- confirm `ADMIN_API_SECRET`, `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` are configured as Worker secrets for `dev`
+
 ## Sample SES fixtures
 
 Fixtures live in:
@@ -90,3 +118,5 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - It asserts key response fields with `jq` so obvious regressions fail fast.
 - Debug endpoints are admin-secret protected and intended only for local/dev verification.
 - For production confidence, add real integration tests around D1 state assertions and SES callback handling.
+- In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either
+  `resource_mailbox_not_found` or `access_mailbox_denied`, depending on token mailbox scope.

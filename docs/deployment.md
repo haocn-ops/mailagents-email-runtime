@@ -15,6 +15,19 @@ This project now assumes three Cloudflare deployment environments:
 
 Local development continues to use the top-level bindings in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml).
 
+Current deployed `dev` environment:
+
+- Worker name: `mailagents-dev`
+- Worker URL: `https://mailagents-dev.izhenghaocn.workers.dev`
+- D1 database: `mailagents-dev`
+- R2 bucket: `mailagents-dev-email`
+- Queues: `mailagents-dev-*`
+
+Important:
+
+- `npm run deploy:dev` updates this existing shared `dev` environment
+- it does not create a separate, parallel `dev` worker
+
 ## Cloudflare Resources
 
 Create or identify, per environment:
@@ -193,6 +206,10 @@ npm run d1:seed:remote:production
 
 Do this only after confirming the correct D1 database is configured in `wrangler.toml`.
 
+If `mailagents-dev` was created before `migrations/0002_idempotency_keys.sql` existed,
+run `npm run d1:migrate:remote:dev` again before testing send, replay, or composite MCP
+send flows. Those paths require the `idempotency_keys` table.
+
 ## Deploy
 
 When config checks pass:
@@ -204,6 +221,12 @@ npm run deploy:production
 ```
 
 Before deploy, make sure the corresponding Worker secrets were set for that environment.
+
+For the current shared `dev` environment, keep these aligned before smoke testing:
+
+- `ADMIN_API_SECRET`
+- `API_SIGNING_SECRET`
+- `WEBHOOK_SHARED_SECRET`
 
 The default deployment also schedules the Worker every hour to prune stale
 idempotency keys. Operators can manually verify or trigger cleanup through the
@@ -238,11 +261,33 @@ Recommended setup:
 Verify:
 
 - API responds on the deployed worker URL
+- runtime metadata responds on `/v2/meta/runtime`
 - auth token minting works
 - agent creation works
 - draft creation works
 - SES webhook endpoint is reachable
 - outbound jobs update status after SES callbacks
+
+Example `dev` checks:
+
+```bash
+curl -sS https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/runtime | jq '.server'
+
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+WEBHOOK_SHARED_SECRET_FOR_SMOKE=replace-with-shared-secret \
+bash ./scripts/local_smoke.sh
+
+BASE_URL='https://mailagents-dev.izhenghaocn.workers.dev' \
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+bash ./scripts/mcp_smoke.sh
+```
+
+Known `dev` note:
+
+- the invalid-mailbox MCP smoke assertion may return either
+  `resource_mailbox_not_found` or `access_mailbox_denied`
+  depending on whether token mailbox scope blocks the request before resource lookup
 
 ## Recommended Next Hardening
 
