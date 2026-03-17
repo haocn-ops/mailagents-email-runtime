@@ -4,6 +4,18 @@ Mailagents is an email-first AI agent runtime built on Cloudflare Workers,
 Cloudflare Email Routing, Cloudflare Queues, Cloudflare R2, Cloudflare D1, and
 Amazon SES.
 
+Best starting point for an LLM agent
+
+Read docs/llms-agent-guide.md first.
+
+Then use:
+
+- docs/ai-onboarding.md for safety model and workflow order
+- docs/ai-auth.md for bearer token scopes and boundaries
+- docs/runtime-metadata.md for rich runtime discovery
+- docs/runtime-compatibility.md for stable branching rules
+- docs/agent-sdk-examples.md for copyable HTTP and MCP examples
+
 Purpose
 
 It provides a control plane and data plane for AI agents that receive email,
@@ -87,6 +99,25 @@ Primary API areas
 - webhooks: SES event ingestion
 - debug: inspect internal state in controlled environments
 
+Capability discovery
+
+The runtime exposes three agent-facing discovery layers:
+
+- /v2/meta/runtime
+  Rich runtime metadata, tool annotations, workflows, idempotency settings, and
+  route exposure.
+- /v2/meta/compatibility
+  Stable compatibility contract for long-lived external agents and SDKs.
+- /v2/meta/compatibility/schema
+  JSON Schema for validating the compatibility contract in CI or SDK fixtures.
+
+For MCP:
+
+- initialize includes runtime metadata under result.meta
+- tools/list is scope-filtered
+- tools/call returns stable machine-readable error codes in
+  result.structuredContent.error.code
+
 Recommended workflow for a new integration
 
 1. mint a bearer token using POST /v1/auth/tokens and x-admin-secret
@@ -95,6 +126,17 @@ Recommended workflow for a new integration
 4. read tasks or messages for that mailbox
 5. create a draft with POST /v1/agents/{agentId}/drafts
 6. explicitly send with POST /v1/drafts/{draftId}/send
+
+Recommended workflow for an external agent integration
+
+1. read /v2/meta/compatibility
+2. validate it against /v2/meta/compatibility/schema
+3. mint a least-privilege bearer token
+4. call MCP tools/list
+5. prefer read operations first
+6. create drafts before sends
+7. use idempotencyKey on send or replay retries
+8. branch only on stable error codes from the compatibility contract
 
 Decision rules
 
@@ -157,12 +199,45 @@ What an AI agent should do by default
 - require explicit send after replay
 - avoid admin/debug endpoints unless the workflow is clearly operational
 
+Stable MCP error handling
+
+Branch on these stable error-code families:
+
+- auth: auth_unauthorized, auth_missing_scope
+- access: access_tenant_denied, access_agent_denied, access_mailbox_denied
+- resource: resource_agent_not_found, resource_mailbox_not_found,
+  resource_message_not_found, resource_thread_not_found, resource_draft_not_found
+- idempotency: idempotency_conflict, idempotency_in_progress
+- internal: tool_internal_error
+
+Suggested agent behavior:
+
+- auth_missing_scope: stop and request broader authorization
+- access_mailbox_denied: stop and request mailbox approval
+- resource_*_not_found: refresh identifiers or upstream context
+- idempotency_in_progress: retry after a short delay
+- idempotency_conflict: treat as a different logical request unless key reuse is intentional
+
+Key agent-first documents in this repository
+
+- docs/llms-agent-guide.md
+- docs/agent-sdk-examples.md
+- docs/agent-workflow-packs.md
+- docs/runtime-compatibility.md
+- docs/runtime-compatibility.schema.json
+- docs/mcp-local.md
+
 Primary references in this repository
 
 - README.md
+- docs/llms-agent-guide.md
 - docs/openapi.yaml
 - docs/ai-onboarding.md
+- docs/ai-auth.md
 - docs/ai-decision-rules.md
+- docs/runtime-metadata.md
+- docs/runtime-compatibility.md
+- docs/agent-sdk-examples.md
 - docs/local-dev.md
 - docs/testing.md
 - docs/mvp-spec.md
