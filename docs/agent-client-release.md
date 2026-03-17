@@ -17,6 +17,7 @@ Current package skeleton:
 - package-local `build` and `check` scripts available
 - package-local dry-run pack script available
 - typed models added for discovery and high-value draft/send flows
+- stable error-code helpers added for MCP branching
 - package-local changelog added
 - not published
 - still marked `private: true`
@@ -75,6 +76,7 @@ Keep the first published version small:
 - generic MCP `callTool`
 - typed discovery models
 - a few high-value typed convenience helpers
+- stable error-code branching helpers
 
 Avoid in v1:
 

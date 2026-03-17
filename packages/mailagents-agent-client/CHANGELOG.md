@@ -10,6 +10,7 @@ All notable changes to `@mailagents/agent-client` will be documented here.
 - runtime discovery helpers
 - compatibility contract and schema helpers
 - MCP `tools/list` and generic `callTool` support
+- stable error-code helpers for MCP branching
 - typed helpers for:
   - discovery
   - provisioning

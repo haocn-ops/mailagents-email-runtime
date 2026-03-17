@@ -267,6 +267,25 @@ export interface McpToolErrorResult {
   };
 }
 
+export const STABLE_MAILAGENTS_ERROR_CODES = [
+  "auth_unauthorized",
+  "auth_missing_scope",
+  "access_tenant_denied",
+  "access_agent_denied",
+  "access_mailbox_denied",
+  "invalid_arguments",
+  "resource_message_not_found",
+  "resource_thread_not_found",
+  "resource_draft_not_found",
+  "resource_mailbox_not_found",
+  "resource_agent_not_found",
+  "idempotency_conflict",
+  "idempotency_in_progress",
+  "tool_internal_error",
+] as const;
+
+export type MailagentsStableErrorCode = typeof STABLE_MAILAGENTS_ERROR_CODES[number];
+
 function getStructuredToolErrorCode(payload: JsonRpcFailure): string | undefined {
   return payload.result?.structuredContent?.error?.code;
 }
@@ -281,6 +300,22 @@ export class MailagentsClientError extends Error {
     this.status = options?.status;
     this.errorCode = options?.errorCode;
   }
+}
+
+export function isMailagentsClientError(error: unknown): error is MailagentsClientError {
+  return error instanceof MailagentsClientError;
+}
+
+export function hasMailagentsErrorCode(
+  error: unknown,
+  errorCode: MailagentsStableErrorCode
+): error is MailagentsClientError & { errorCode: MailagentsStableErrorCode } {
+  return isMailagentsClientError(error) && error.errorCode === errorCode;
+}
+
+export function isRetryableMailagentsError(error: unknown): boolean {
+  return hasMailagentsErrorCode(error, "idempotency_in_progress") ||
+    hasMailagentsErrorCode(error, "tool_internal_error");
 }
 
 export class MailagentsAgentClient {
