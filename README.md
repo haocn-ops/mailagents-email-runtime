@@ -59,6 +59,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-mail-workflows.md`
 - `docs/ai-debug.md`
 - `docs/mcp-tooling-draft.md`
+- `docs/mcp-local.md`
 - `docs/local-dev.md`
 - `docs/dev-bootstrap.md`
 - `docs/deployment.md`

@@ -3,11 +3,17 @@ import { handleEmail } from "./handlers/email";
 import { handleQueue } from "./handlers/queues";
 import { handleScheduled } from "./handlers/scheduled";
 import { handleApiRequest } from "./routes/api";
+import { handleMcpRequest } from "./routes/mcp";
 import { handleSiteRequest } from "./routes/site";
 import type { Env } from "./types";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const mcpResponse = await handleMcpRequest(request, env, ctx);
+    if (mcpResponse) {
+      return mcpResponse;
+    }
+
     const siteResponse = await handleSiteRequest(request, env, ctx);
     if (siteResponse) {
       return siteResponse;
