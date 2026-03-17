@@ -140,6 +140,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `bind_mailbox`
 - `upsert_agent_policy`
 - `reply_to_inbound_email`
+- `operator_manual_send`
 - `list_agent_tasks`
 - `get_message`
 - `get_message_content`
@@ -157,6 +158,8 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `send_draft` and `replay_message` support `idempotencyKey`
 - `reply_to_inbound_email` can create a reply draft and optionally send when `send: true`
 - when `reply_to_inbound_email` sends, the `idempotencyKey` is bound to the logical reply request so safe retries return the original workflow result instead of creating a second draft
+- `operator_manual_send` can create an operator-guided draft and optionally send when `send: true`
+- when `operator_manual_send` sends, the `idempotencyKey` is bound to the logical send request so safe retries return the original draft and outbound job
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
 
 ## Error codes

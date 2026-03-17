@@ -89,6 +89,11 @@ the normal draft and queue path.
 2. `get_draft`
 3. `send_draft`
 
+### Composite tool
+
+This workflow can also be executed through the composite MCP tool
+`operator_manual_send`.
+
 ### Side-effect boundary
 
 - the only outbound delivery side effect is `send_draft`

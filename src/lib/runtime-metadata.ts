@@ -37,6 +37,12 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     composite: true,
   },
   {
+    name: "operator_manual_send",
+    description: "Create an operator-approved draft and optionally send it through the normal queue path.",
+    requiredScopes: ["draft:create"],
+    composite: true,
+  },
+  {
     name: "list_agent_tasks",
     description: "Fetch current tasks for an agent.",
     requiredScopes: ["task:read"],
@@ -86,7 +92,7 @@ export const WORKFLOW_PACKS = [
   },
   {
     name: "operator_manual_send",
-    compositeTool: null,
+    compositeTool: "operator_manual_send",
     sideEffects: ["create_draft", "send_draft"],
   },
   {
@@ -125,6 +131,7 @@ export function buildRuntimeMetadata(env: Env) {
         "draft_send",
         "message_replay",
         "reply_to_inbound_email(send=true)",
+        "operator_manual_send(send=true)",
       ],
       completedRetentionHours: Number(env.IDEMPOTENCY_COMPLETED_RETENTION_HOURS ?? "168"),
       pendingRetentionHours: Number(env.IDEMPOTENCY_PENDING_RETENTION_HOURS ?? "1"),

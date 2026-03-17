@@ -72,6 +72,7 @@ TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   }')"
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "create_agent")' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send")' >/dev/null
 
 echo "Creating agent through MCP..."
 CREATE_AGENT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
@@ -262,6 +263,68 @@ echo "$REPLY_WORKFLOW_REPEAT" | jq -e --arg draft "$REPLY_DRAFT_ID" --arg outbou
   .result.structuredContent.sendResult.status == "queued"
 ' >/dev/null
 
+echo "Checking operator manual send composite tool through MCP..."
+MANUAL_SEND_IDEMPOTENCY_KEY="mcp-manual-send-$AGENT_ID"
+MANUAL_SEND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 83,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"operator_manual_send\",
+      \"arguments\": {
+        \"agentId\": \"$AGENT_ID\",
+        \"tenantId\": \"$TENANT_ID\",
+        \"mailboxId\": \"$MAILBOX_ID\",
+        \"from\": \"$FROM_EMAIL\",
+        \"to\": [\"$TO_EMAIL\"],
+        \"subject\": \"Operator manual send\",
+        \"text\": \"Sent through the composite operator flow.\",
+        \"send\": true,
+        \"idempotencyKey\": \"$MANUAL_SEND_IDEMPOTENCY_KEY\"
+      }
+    }
+  }")"
+MANUAL_SEND_DRAFT_ID="$(echo "$MANUAL_SEND_RESPONSE" | jq -r '.result.structuredContent.draft.id')"
+MANUAL_SEND_OUTBOUND_JOB_ID="$(echo "$MANUAL_SEND_RESPONSE" | jq -r '.result.structuredContent.sendResult.outboundJobId')"
+echo "$MANUAL_SEND_RESPONSE" | jq -e '.result.structuredContent.sendRequested == true and .result.structuredContent.sendResult.status == "queued"' >/dev/null
+if [[ -z "$MANUAL_SEND_DRAFT_ID" || "$MANUAL_SEND_DRAFT_ID" == "null" || -z "$MANUAL_SEND_OUTBOUND_JOB_ID" || "$MANUAL_SEND_OUTBOUND_JOB_ID" == "null" ]]; then
+  echo "Composite operator manual send did not return a draft and outbound job" >&2
+  echo "$MANUAL_SEND_RESPONSE" >&2
+  exit 1
+fi
+
+echo "Checking operator manual send idempotency through MCP..."
+MANUAL_SEND_REPEAT="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 84,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"operator_manual_send\",
+      \"arguments\": {
+        \"agentId\": \"$AGENT_ID\",
+        \"tenantId\": \"$TENANT_ID\",
+        \"mailboxId\": \"$MAILBOX_ID\",
+        \"from\": \"$FROM_EMAIL\",
+        \"to\": [\"$TO_EMAIL\"],
+        \"subject\": \"Operator manual send\",
+        \"text\": \"Sent through the composite operator flow.\",
+        \"send\": true,
+        \"idempotencyKey\": \"$MANUAL_SEND_IDEMPOTENCY_KEY\"
+      }
+    }
+  }")"
+echo "$MANUAL_SEND_REPEAT" | jq -e --arg draft "$MANUAL_SEND_DRAFT_ID" --arg outbound "$MANUAL_SEND_OUTBOUND_JOB_ID" '
+  .result.structuredContent.draft.id == $draft and
+  .result.structuredContent.sendResult.outboundJobId == $outbound and
+  .result.structuredContent.sendRequested == true
+' >/dev/null
+
 echo "Checking composite reply workflow error path through MCP..."
 REPLY_WORKFLOW_ERROR_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
@@ -304,3 +367,5 @@ echo "Draft ID: $DRAFT_ID"
 echo "Outbound Job ID: $OUTBOUND_JOB_ID"
 echo "Reply Draft ID: $REPLY_DRAFT_ID"
 echo "Reply Outbound Job ID: $REPLY_OUTBOUND_JOB_ID"
+echo "Manual Send Draft ID: $MANUAL_SEND_DRAFT_ID"
+echo "Manual Send Outbound Job ID: $MANUAL_SEND_OUTBOUND_JOB_ID"

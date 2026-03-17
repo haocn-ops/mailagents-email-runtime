@@ -126,6 +126,32 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "operator_manual_send")!,
+    inputSchema: {
+      type: "object",
+      required: ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
+      properties: {
+        agentId: { type: "string" },
+        tenantId: { type: "string" },
+        mailboxId: { type: "string" },
+        threadId: { type: "string" },
+        sourceMessageId: { type: "string" },
+        from: { type: "string" },
+        to: { type: "array", items: { type: "string" }, minItems: 1 },
+        cc: { type: "array", items: { type: "string" } },
+        bcc: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        text: { type: "string" },
+        html: { type: "string" },
+        inReplyTo: { type: "string" },
+        references: { type: "array", items: { type: "string" } },
+        send: { type: "boolean" },
+        idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "list_agent_tasks")!,
     inputSchema: {
       type: "object",
@@ -637,6 +663,147 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       return response;
     } catch (error) {
       await releaseIdempotencyKey(env, "draft_send", message.tenantId, idempotencyKey!);
+      throw error;
+    }
+  }
+
+  if (toolName === "operator_manual_send") {
+    const auth = await requireClaimsStrict(request, env, ["draft:create"]);
+    const agentId = requireString(args.agentId, "agentId");
+    const tenantId = requireString(args.tenantId, "tenantId");
+    const mailboxId = requireString(args.mailboxId, "mailboxId");
+    const from = requireString(args.from, "from");
+    const to = requireStringArray(args.to, "to");
+    const subject = requireString(args.subject, "subject");
+    const cc = optionalStringArray(args.cc) ?? [];
+    const bcc = optionalStringArray(args.bcc) ?? [];
+    const text = optionalString(args.text) ?? "";
+    const html = optionalString(args.html) ?? "";
+    const send = args.send === true;
+    const idempotencyKey = optionalString(args.idempotencyKey);
+
+    if (!text && !html) {
+      throw new McpToolError("invalid_arguments", "text or html is required");
+    }
+
+    const tenantError = enforceTenantAccess(auth, tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const agentError = enforceAgentAccess(auth, agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+    await validateBindingResources(env, tenantId, agentId, mailboxId);
+
+    if (send) {
+      const sendAuth = await requireClaims(request, env, ["draft:send"]);
+      if (sendAuth instanceof Response) {
+        await throwIfResponseError(sendAuth);
+      }
+      if (!idempotencyKey) {
+        throw new McpToolError("invalid_arguments", "idempotencyKey is required when send is true");
+      }
+    }
+
+    const draftPayload = {
+      from,
+      to,
+      cc,
+      bcc,
+      subject,
+      text,
+      html,
+      inReplyTo: optionalString(args.inReplyTo),
+      references: optionalStringArray(args.references) ?? [],
+      attachments: [],
+    };
+
+    if (!send) {
+      const draft = await createDraft(env, {
+        tenantId,
+        agentId,
+        mailboxId,
+        threadId: optionalString(args.threadId),
+        sourceMessageId: optionalString(args.sourceMessageId),
+        payload: draftPayload,
+      });
+      return {
+        draft,
+        sendRequested: false,
+      };
+    }
+
+    const reservation = await reserveIdempotencyKey(env, {
+      operation: "draft_send",
+      tenantId,
+      idempotencyKey: idempotencyKey!,
+      requestFingerprint: JSON.stringify({
+        tool: "operator_manual_send",
+        agentId,
+        tenantId,
+        mailboxId,
+        from,
+        to,
+        cc,
+        bcc,
+        subject,
+        text,
+        html,
+        inReplyTo: optionalString(args.inReplyTo) ?? null,
+        references: optionalStringArray(args.references) ?? [],
+        threadId: optionalString(args.threadId) ?? null,
+        sourceMessageId: optionalString(args.sourceMessageId) ?? null,
+        send: true,
+      }),
+      resourceId: mailboxId,
+    });
+
+    if (reservation.status === "conflict") {
+      throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different operator send request");
+    }
+    if (reservation.status === "pending") {
+      throw new McpToolError("idempotency_in_progress", "An operator send request with this idempotency key is already in progress");
+    }
+    if (reservation.status === "completed") {
+      return reservation.record.response ?? {
+        sendRequested: true,
+      };
+    }
+
+    try {
+      const draft = await createDraft(env, {
+        tenantId,
+        agentId,
+        mailboxId,
+        threadId: optionalString(args.threadId),
+        sourceMessageId: optionalString(args.sourceMessageId),
+        payload: draftPayload,
+      });
+      const result = await enqueueDraftSend(env, draft.id);
+      const response = {
+        draft,
+        sendRequested: true,
+        sendResult: {
+          draftId: draft.id,
+          outboundJobId: result.outboundJobId,
+          status: result.status,
+        },
+      };
+      await completeIdempotencyKey(env, {
+        operation: "draft_send",
+        tenantId,
+        idempotencyKey: idempotencyKey!,
+        resourceId: draft.id,
+        response,
+      });
+      return response;
+    } catch (error) {
+      await releaseIdempotencyKey(env, "draft_send", tenantId, idempotencyKey!);
       throw error;
     }
   }

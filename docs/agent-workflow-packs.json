@@ -31,6 +31,7 @@
       "name": "operator_manual_send",
       "goal": "Allow an operator or operator-guided agent to compose and send through the normal draft and queue path.",
       "inputs": ["tenantId", "mailboxId", "recipients", "subject", "body", "idempotencyKey?"],
+      "compositeTool": "operator_manual_send",
       "steps": [
         { "tool": "create_draft", "mode": "write" },
         { "tool": "get_draft", "mode": "read" },
