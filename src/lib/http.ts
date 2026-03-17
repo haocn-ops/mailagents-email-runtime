@@ -23,3 +23,12 @@ export function accepted(data: unknown): Response {
 export async function readJson<T>(request: Request): Promise<T> {
   return await request.json<T>();
 }
+
+export async function readOptionalJson<T>(request: Request): Promise<T | undefined> {
+  const raw = await request.text();
+  if (!raw.trim()) {
+    return undefined;
+  }
+
+  return JSON.parse(raw) as T;
+}

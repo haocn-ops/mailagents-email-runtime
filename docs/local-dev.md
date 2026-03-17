@@ -36,6 +36,8 @@ Copy [.dev.vars.example](/Users/zh/Documents/codeX/mailagents_cloudflare2/.dev.v
 - `ADMIN_API_SECRET`
 - `ADMIN_ROUTES_ENABLED`
 - `DEBUG_ROUTES_ENABLED`
+- `IDEMPOTENCY_COMPLETED_RETENTION_HOURS`
+- `IDEMPOTENCY_PENDING_RETENTION_HOURS`
 
 Wrangler automatically loads `.dev.vars` for local development.
 Do not commit `.dev.vars`; it is intentionally gitignored.
@@ -49,6 +51,13 @@ npm run d1:migrate:local
 This creates the initial schema in the local D1 instance persisted under `.wrangler/state`.
 The entire `.wrangler/` directory is local-only and is intentionally gitignored.
 
+If your local or remote database was created before the idempotency update, also
+apply:
+
+```bash
+wrangler d1 execute mailagents-local --local --file=./migrations/0002_idempotency_keys.sql
+```
+
 ## 5. Seed demo data locally
 
 ```bash
@@ -60,6 +69,8 @@ This inserts:
 - demo tenant `t_demo`
 - demo mailbox `mbx_demo`
 - demo agent `agt_demo`
+- seeded inbound thread `thr_demo_inbound`
+- seeded inbound message `msg_demo_inbound`
 - mailbox binding and basic policy
 
 The SQL lives in [seeds/0001_demo.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/seeds/0001_demo.sql).
@@ -161,7 +172,11 @@ Send:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/drafts/REPLACE_WITH_DRAFT_ID/send \
-  -H "authorization: Bearer $TOKEN"
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "idempotencyKey": "send-draft-001"
+  }'
 ```
 
 ## 10. Replay a message normalize job
@@ -170,7 +185,10 @@ curl -X POST http://127.0.0.1:8787/v1/drafts/REPLACE_WITH_DRAFT_ID/send \
 curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $TOKEN" \
-  -d '{"mode":"normalize"}'
+  -d '{
+    "mode": "normalize",
+    "idempotencyKey": "replay-normalize-001"
+  }'
 ```
 
 ## 11. Common workflow
@@ -187,4 +205,5 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 
 - The current parser is MVP-grade, not a full RFC-complete MIME parser.
 - Outbound now chooses SES `Raw` content when reply headers or attachments are present.
+- Idempotency cleanup can be triggered manually with `POST /admin/api/maintenance/idempotency-cleanup`.
 - For remote D1, use `npm run d1:migrate:remote` and `npm run d1:seed:remote`.

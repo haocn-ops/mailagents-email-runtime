@@ -121,8 +121,13 @@ curl -sS -X GET "$BASE_URL/v1/debug/drafts/$DRAFT_ID" \
   -H "x-admin-secret: $ADMIN_SECRET" | jq -e --arg draft "$DRAFT_ID" '.draft.id == $draft and .payload.subject == "Smoke test email"' >/dev/null
 
 echo "Enqueueing draft send..."
+SEND_IDEMPOTENCY_KEY="smoke-send-$DRAFT_ID"
 SEND_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/drafts/$DRAFT_ID/send" \
-  -H "authorization: Bearer $TOKEN")"
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"idempotencyKey\": \"$SEND_IDEMPOTENCY_KEY\"
+  }")"
 
 OUTBOUND_JOB_ID="$(echo "$SEND_RESPONSE" | jq -r '.outboundJobId')"
 if [[ -z "$OUTBOUND_JOB_ID" || "$OUTBOUND_JOB_ID" == "null" ]]; then
@@ -132,9 +137,43 @@ if [[ -z "$OUTBOUND_JOB_ID" || "$OUTBOUND_JOB_ID" == "null" ]]; then
 fi
 echo "$SEND_RESPONSE" | jq -e '.status == "queued"' >/dev/null
 
+echo "Checking draft send idempotency..."
+SEND_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/drafts/$DRAFT_ID/send" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"idempotencyKey\": \"$SEND_IDEMPOTENCY_KEY\"
+  }")"
+echo "$SEND_RESPONSE_REPEAT" | jq -e --arg outbound "$OUTBOUND_JOB_ID" --arg draft "$DRAFT_ID" '.outboundJobId == $outbound and .draftId == $draft and .status == "queued"' >/dev/null
+
 echo "Checking persisted outbound job..."
-curl -sS -X GET "$BASE_URL/v1/debug/outbound-jobs/$OUTBOUND_JOB_ID" \
-  -H "x-admin-secret: $ADMIN_SECRET" | jq -e '.status == "queued" or .status == "sending" or .status == "sent" or .status == "retry"' >/dev/null
+OUTBOUND_JOB_RESPONSE="$(curl -sS -X GET "$BASE_URL/v1/debug/outbound-jobs/$OUTBOUND_JOB_ID" \
+  -H "x-admin-secret: $ADMIN_SECRET")"
+echo "$OUTBOUND_JOB_RESPONSE" | jq -e '.status == "queued" or .status == "sending" or .status == "sent" or .status == "retry"' >/dev/null
+OUTBOUND_MESSAGE_ID="$(echo "$OUTBOUND_JOB_RESPONSE" | jq -r '.messageId')"
+
+echo "Checking replay idempotency..."
+REPLAY_IDEMPOTENCY_KEY="smoke-replay-$DRAFT_ID"
+if [[ -n "$OUTBOUND_MESSAGE_ID" && "$OUTBOUND_MESSAGE_ID" != "null" ]]; then
+  REPLAY_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
+    -H 'content-type: application/json' \
+    -H "authorization: Bearer $TOKEN" \
+    -d "{
+      \"mode\": \"normalize\",
+      \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
+    }")"
+  echo "$REPLAY_RESPONSE" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
+  REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
+    -H 'content-type: application/json' \
+    -H "authorization: Bearer $TOKEN" \
+    -d "{
+      \"mode\": \"normalize\",
+      \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
+    }")"
+  echo "$REPLAY_RESPONSE_REPEAT" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
+else
+  echo "Skipping replay idempotency assertion because no message ID was available from the current flow."
+fi
 
 echo "Posting sample SES delivery event..."
 WEBHOOK_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/webhooks/ses" \

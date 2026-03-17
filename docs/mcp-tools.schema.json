@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mailagents MCP Tool Catalog Draft",
+  "type": "object",
+  "required": ["tools"],
+  "properties": {
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "mode", "description", "inputSchema"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["read", "write", "privileged", "high_risk"]
+          },
+          "requiredScopes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "description": {
+            "type": "string"
+          },
+          "sideEffecting": {
+            "type": "boolean"
+          },
+          "humanReviewRequired": {
+            "type": "boolean"
+          },
+          "composite": {
+            "type": "boolean"
+          },
+          "inputSchema": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "tools": [
+        {
+          "name": "list_agent_tasks",
+          "mode": "read",
+          "requiredScopes": ["task:read"],
+          "description": "Fetch current tasks for an agent.",
+          "sideEffecting": false,
+          "humanReviewRequired": false,
+          "composite": false,
+          "inputSchema": {
+            "type": "object",
+            "required": ["agentId"],
+            "properties": {
+              "agentId": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["queued", "running", "done", "needs_review", "failed"]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      ]
+    }
+  ],
+  "default": {
+    "tools": [
+      {
+        "name": "mint_access_token",
+        "mode": "privileged",
+        "requiredScopes": ["admin:token"],
+        "description": "Mint a tenant-scoped bearer token for normal API access.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["sub", "tenantId", "scopes"],
+          "properties": {
+            "sub": { "type": "string" },
+            "tenantId": { "type": "string" },
+            "scopes": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "agentId": { "type": "string" },
+            "mailboxIds": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "expiresInSeconds": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "create_agent",
+        "mode": "write",
+        "requiredScopes": ["agent:create"],
+        "description": "Provision a new agent for a tenant.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["tenantId", "name", "mode"],
+          "properties": {
+            "tenantId": { "type": "string" },
+            "name": { "type": "string" },
+            "mode": {
+              "type": "string",
+              "enum": ["assistant", "autonomous", "review_only"]
+            },
+            "config": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "bind_mailbox",
+        "mode": "write",
+        "requiredScopes": ["agent:bind"],
+        "description": "Attach a mailbox to an agent.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["agentId", "tenantId", "mailboxId", "role"],
+          "properties": {
+            "agentId": { "type": "string" },
+            "tenantId": { "type": "string" },
+            "mailboxId": { "type": "string" },
+            "role": {
+              "type": "string",
+              "enum": ["primary", "shared", "send_only", "receive_only"]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "list_agent_tasks",
+        "mode": "read",
+        "requiredScopes": ["task:read"],
+        "description": "Fetch current tasks for an agent.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["agentId"],
+          "properties": {
+            "agentId": { "type": "string" },
+            "status": {
+              "type": "string",
+              "enum": ["queued", "running", "done", "needs_review", "failed"]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_message",
+        "mode": "read",
+        "requiredScopes": ["mail:read"],
+        "description": "Fetch message metadata.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["messageId"],
+          "properties": {
+            "messageId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_message_content",
+        "mode": "read",
+        "requiredScopes": ["mail:read"],
+        "description": "Fetch normalized message content and attachment metadata.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["messageId"],
+          "properties": {
+            "messageId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_thread",
+        "mode": "read",
+        "requiredScopes": ["mail:read"],
+        "description": "Fetch thread context for reply generation.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["threadId"],
+          "properties": {
+            "threadId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "create_draft",
+        "mode": "write",
+        "requiredScopes": ["draft:create"],
+        "description": "Create a proposed outbound email draft.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
+          "properties": {
+            "agentId": { "type": "string" },
+            "tenantId": { "type": "string" },
+            "mailboxId": { "type": "string" },
+            "threadId": { "type": "string" },
+            "sourceMessageId": { "type": "string" },
+            "from": { "type": "string" },
+            "to": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            },
+            "cc": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "bcc": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "subject": { "type": "string" },
+            "text": { "type": "string" },
+            "html": { "type": "string" },
+            "inReplyTo": { "type": "string" },
+            "references": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "attachments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["filename", "contentType", "r2Key"],
+                "properties": {
+                  "filename": { "type": "string" },
+                  "contentType": { "type": "string" },
+                  "r2Key": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_draft",
+        "mode": "read",
+        "requiredScopes": ["draft:read"],
+        "description": "Inspect draft metadata before send.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["draftId"],
+          "properties": {
+            "draftId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "send_draft",
+        "mode": "high_risk",
+        "requiredScopes": ["draft:send"],
+        "description": "Enqueue a draft for outbound delivery.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["draftId"],
+          "properties": {
+            "draftId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "replay_message",
+        "mode": "high_risk",
+        "requiredScopes": ["mail:replay"],
+        "description": "Replay message normalization or rerun agent execution.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
+        "inputSchema": {
+          "type": "object",
+          "required": ["messageId", "mode"],
+          "properties": {
+            "messageId": { "type": "string" },
+            "mode": {
+              "type": "string",
+              "enum": ["normalize", "rerun_agent"]
+            },
+            "agentId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "inspect_outbound_job",
+        "mode": "privileged",
+        "description": "Inspect outbound job state through a debug-capable integration.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["outboundJobId"],
+          "properties": {
+            "outboundJobId": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

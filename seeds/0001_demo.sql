@@ -71,3 +71,53 @@ INSERT OR IGNORE INTO agent_policies (
   '["reply_email"]',
   '2026-03-16T00:00:00.000Z'
 );
+
+INSERT OR IGNORE INTO threads (
+  id,
+  tenant_id,
+  mailbox_id,
+  thread_key,
+  subject_norm,
+  last_message_at,
+  status
+) VALUES (
+  'thr_demo_inbound',
+  't_demo',
+  'mbx_demo',
+  'demo-inbound-thread',
+  'need help with setup',
+  '2026-03-16T00:00:00.000Z',
+  'open'
+);
+
+INSERT OR IGNORE INTO messages (
+  id,
+  tenant_id,
+  mailbox_id,
+  thread_id,
+  direction,
+  provider,
+  internet_message_id,
+  from_addr,
+  to_addr,
+  subject,
+  snippet,
+  status,
+  received_at,
+  created_at
+) VALUES (
+  'msg_demo_inbound',
+  't_demo',
+  'mbx_demo',
+  'thr_demo_inbound',
+  'inbound',
+  'cloudflare',
+  '<msg_demo_inbound@mailagents.net>',
+  'customer@example.com',
+  'agent@mailagents.net',
+  'Need help with setup',
+  'Can you help me finish setup?',
+  'received',
+  '2026-03-16T00:00:00.000Z',
+  '2026-03-16T00:00:00.000Z'
+);

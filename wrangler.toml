@@ -5,6 +5,9 @@ compatibility_date = "2026-03-16"
 [observability]
 enabled = true
 
+[triggers]
+crons = ["0 * * * *"]
+
 # Local/default development bindings.
 # Real Cloudflare environments are defined below under [env.*].
 [[d1_databases]]
@@ -53,9 +56,14 @@ SES_FROM_DOMAIN = "local.mailagents.test"
 SES_CONFIGURATION_SET = "mailagents-local"
 ADMIN_ROUTES_ENABLED = "true"
 DEBUG_ROUTES_ENABLED = "true"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
 
 [env.dev]
 name = "mailagents-dev"
+
+[env.dev.triggers]
+crons = ["0 * * * *"]
 
 [[env.dev.d1_databases]]
 binding = "D1_DB"
@@ -103,9 +111,14 @@ SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-dev"
 ADMIN_ROUTES_ENABLED = "true"
 DEBUG_ROUTES_ENABLED = "true"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
 
 [env.staging]
 name = "mailagents-staging"
+
+[env.staging.triggers]
+crons = ["0 * * * *"]
 
 [[env.staging.d1_databases]]
 binding = "D1_DB"
@@ -153,9 +166,14 @@ SES_FROM_DOMAIN = "staging.mail.example.com"
 SES_CONFIGURATION_SET = "mailagents-staging"
 ADMIN_ROUTES_ENABLED = "false"
 DEBUG_ROUTES_ENABLED = "false"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
 
 [env.production]
 name = "mailagents-production"
+
+[env.production.triggers]
+crons = ["0 * * * *"]
 
 [[env.production.d1_databases]]
 binding = "D1_DB"
@@ -203,3 +221,5 @@ SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-production"
 ADMIN_ROUTES_ENABLED = "false"
 DEBUG_ROUTES_ENABLED = "false"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
