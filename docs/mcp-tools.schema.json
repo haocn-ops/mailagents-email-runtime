@@ -17,8 +17,21 @@
             "type": "string",
             "enum": ["read", "write", "privileged", "high_risk"]
           },
+          "requiredScopes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "description": {
             "type": "string"
+          },
+          "sideEffecting": {
+            "type": "boolean"
+          },
+          "humanReviewRequired": {
+            "type": "boolean"
+          },
+          "composite": {
+            "type": "boolean"
           },
           "inputSchema": {
             "type": "object"
@@ -35,7 +48,11 @@
         {
           "name": "list_agent_tasks",
           "mode": "read",
+          "requiredScopes": ["task:read"],
           "description": "Fetch current tasks for an agent.",
+          "sideEffecting": false,
+          "humanReviewRequired": false,
+          "composite": false,
           "inputSchema": {
             "type": "object",
             "required": ["agentId"],
@@ -59,7 +76,11 @@
       {
         "name": "mint_access_token",
         "mode": "privileged",
+        "requiredScopes": ["admin:token"],
         "description": "Mint a tenant-scoped bearer token for normal API access.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["sub", "tenantId", "scopes"],
@@ -83,7 +104,11 @@
       {
         "name": "create_agent",
         "mode": "write",
+        "requiredScopes": ["agent:create"],
         "description": "Provision a new agent for a tenant.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["tenantId", "name", "mode"],
@@ -104,7 +129,11 @@
       {
         "name": "bind_mailbox",
         "mode": "write",
+        "requiredScopes": ["agent:bind"],
         "description": "Attach a mailbox to an agent.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["agentId", "tenantId", "mailboxId", "role"],
@@ -123,7 +152,11 @@
       {
         "name": "list_agent_tasks",
         "mode": "read",
+        "requiredScopes": ["task:read"],
         "description": "Fetch current tasks for an agent.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["agentId"],
@@ -140,7 +173,11 @@
       {
         "name": "get_message",
         "mode": "read",
+        "requiredScopes": ["mail:read"],
         "description": "Fetch message metadata.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["messageId"],
@@ -153,7 +190,11 @@
       {
         "name": "get_message_content",
         "mode": "read",
+        "requiredScopes": ["mail:read"],
         "description": "Fetch normalized message content and attachment metadata.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["messageId"],
@@ -166,7 +207,11 @@
       {
         "name": "get_thread",
         "mode": "read",
+        "requiredScopes": ["mail:read"],
         "description": "Fetch thread context for reply generation.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["threadId"],
@@ -179,7 +224,11 @@
       {
         "name": "create_draft",
         "mode": "write",
+        "requiredScopes": ["draft:create"],
         "description": "Create a proposed outbound email draft.",
+        "sideEffecting": true,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
@@ -231,7 +280,11 @@
       {
         "name": "get_draft",
         "mode": "read",
+        "requiredScopes": ["draft:read"],
         "description": "Inspect draft metadata before send.",
+        "sideEffecting": false,
+        "humanReviewRequired": false,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["draftId"],
@@ -244,7 +297,11 @@
       {
         "name": "send_draft",
         "mode": "high_risk",
+        "requiredScopes": ["draft:send"],
         "description": "Enqueue a draft for outbound delivery.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["draftId"],
@@ -257,7 +314,11 @@
       {
         "name": "replay_message",
         "mode": "high_risk",
+        "requiredScopes": ["mail:replay"],
         "description": "Replay message normalization or rerun agent execution.",
+        "sideEffecting": true,
+        "humanReviewRequired": true,
+        "composite": false,
         "inputSchema": {
           "type": "object",
           "required": ["messageId", "mode"],

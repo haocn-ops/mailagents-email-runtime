@@ -7,6 +7,7 @@ import {
 } from "../lib/cloudflare-email";
 import { badRequest, json } from "../lib/http";
 import { Router } from "../lib/router";
+import { buildRuntimeMetadata } from "../lib/runtime-metadata";
 import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import { ensureMailbox, listMailboxes } from "../repositories/agents";
 import {
@@ -42,6 +43,15 @@ site.on("GET", "/contact", () => html(layout("contact", "Contact", renderContact
 site.on("HEAD", "/contact", () => html(layout("contact", "Contact", renderContact())));
 site.on("GET", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
 site.on("HEAD", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
+site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  return json(buildRuntimeMetadata(env));
+});
+
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
   const adminError = requireAdminSecret(request, env);
   if (adminError) {
@@ -1585,6 +1595,15 @@ function renderAdmin(url: URL): string {
             <div id="overview-alias-status" class="admin-list admin-muted">Unlock the dashboard to inspect alias status.</div>
           </section>
         </div>
+        <section class="admin-card" style="margin-top:24px;">
+          <div class="admin-card-header">
+            <div>
+              <h3>AI runtime policy</h3>
+              <p>直接查看 MCP 工具的風險分級、是否有副作用，以及哪些動作應該先停下來等人確認。</p>
+            </div>
+          </div>
+          <div id="overview-ai-policy" class="admin-list admin-muted">Unlock the dashboard to inspect MCP risk policy.</div>
+        </section>
       </section>
 
       <section id="admin-view-messages" class="admin-view">
@@ -1896,6 +1915,7 @@ function renderAdmin(url: URL): string {
     const runtimeStatus = document.getElementById("admin-runtime-status");
     const overviewMailRuntime = document.getElementById("overview-mail-runtime");
     const overviewAliasStatus = document.getElementById("overview-alias-status");
+    const overviewAiPolicy = document.getElementById("overview-ai-policy");
     const statMailboxes = document.getElementById("stat-mailboxes");
     const statMessages = document.getElementById("stat-messages");
     const statJobs = document.getElementById("stat-jobs");
@@ -1916,6 +1936,7 @@ function renderAdmin(url: URL): string {
     let latestAliases = [];
     let latestMessages = [];
     let latestJobs = [];
+    let latestRuntimeMetadata = null;
 
     secretInput.value = window.localStorage.getItem(secretKey) || "";
 
@@ -1975,6 +1996,31 @@ function renderAdmin(url: URL): string {
             '</div>'
           ).join("")
         : 'Unlock the dashboard to inspect alias status.';
+
+      const toolMeta = latestRuntimeMetadata && latestRuntimeMetadata.mcp && Array.isArray(latestRuntimeMetadata.mcp.tools)
+        ? latestRuntimeMetadata.mcp.tools
+        : [];
+      const highRiskTools = toolMeta.filter((tool) => tool.riskLevel === 'high_risk');
+      const reviewRequiredTools = toolMeta.filter((tool) => tool.humanReviewRequired);
+      const compositeTools = toolMeta.filter((tool) => tool.composite);
+      overviewAiPolicy.innerHTML = toolMeta.length
+        ? [
+            '<div class="faq-item"><h3>High-risk tools</h3><p>' + (highRiskTools.length ? highRiskTools.map((tool) => tool.name).join(', ') : 'None exposed.') + '</p></div>',
+            '<div class="faq-item"><h3>Human review expected</h3><p>' + (reviewRequiredTools.length ? reviewRequiredTools.map((tool) => tool.name).join(', ') : 'No tools currently flagged.') + '</p></div>',
+            '<div class="faq-item"><h3>Composite workflows</h3><p>' + (compositeTools.length ? compositeTools.map((tool) => tool.name).join(', ') : 'No composite tools published.') + '</p></div>',
+            '<div class="faq-item"><h3>Route gates</h3><p>Admin routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.adminEnabled ? 'enabled' : 'disabled') + ' · Debug routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.debugEnabled ? 'enabled' : 'disabled') + '</p></div>',
+          ].join('')
+        : 'Unlock the dashboard to inspect MCP risk policy.';
+    }
+
+    async function loadRuntimeMetadata() {
+      try {
+        latestRuntimeMetadata = await api('/admin/api/runtime-metadata');
+        updateOverview();
+      } catch (error) {
+        latestRuntimeMetadata = null;
+        overviewAiPolicy.textContent = error.message;
+      }
     }
 
     function renderAliases(aliases) {
@@ -2469,6 +2515,7 @@ function renderAdmin(url: URL): string {
 
     async function bootstrapDashboard() {
       runtimeStatus.textContent = 'Connecting to live runtime';
+      await loadRuntimeMetadata();
       await loadAliases();
       await loadMailboxes();
       if (!currentMailboxId && mailboxIndex[0]) {
