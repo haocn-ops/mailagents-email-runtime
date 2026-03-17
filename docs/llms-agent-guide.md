@@ -44,12 +44,14 @@ Read these in order:
 3. [docs/runtime-metadata.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-metadata.md)
 4. [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
 5. [docs/agent-sdk-examples.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-sdk-examples.md)
+6. [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
 
 Use these as deeper references:
 
 - [docs/ai-decision-rules.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-decision-rules.md)
 - [docs/agent-workflow-packs.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-workflow-packs.md)
 - [docs/agent-capabilities.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
+- [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
 - [docs/mcp-local.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mcp-local.md)
 - [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
 
@@ -178,6 +180,8 @@ If you are trying to:
   - [docs/agent-workflow-packs.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-workflow-packs.md)
 - copy working requests quickly
   - [docs/agent-sdk-examples.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-sdk-examples.md)
+- start from a lightweight TypeScript helper
+  - [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
 - integrate against the stable contract
   - [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
 - validate compatibility in CI

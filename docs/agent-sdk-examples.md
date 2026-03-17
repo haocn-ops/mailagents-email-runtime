@@ -8,6 +8,7 @@ Use it together with:
 - [docs/ai-onboarding.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-onboarding.md)
 - [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
 - [docs/mcp-local.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mcp-local.md)
+- [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
 
 ## 1. Discover Runtime Capabilities
 
@@ -294,6 +295,9 @@ async function listTools(baseUrl: string, token: string) {
   return payload.result.tools;
 }
 ```
+
+If you want a copyable wrapper instead of starting from raw `fetch`, see
+[docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md).
 
 ## 9. Recommended External-Agent Pattern
 

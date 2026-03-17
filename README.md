@@ -66,6 +66,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/runtime-compatibility.schema.json`
 - `docs/agent-sdk-examples.md`
 - `docs/agent-capabilities.json`
+- `docs/agent-client-helper.md`
 - `docs/agent-workflow-packs.md`
 - `docs/agent-workflow-packs.json`
 - `docs/local-dev.md`
@@ -120,6 +121,12 @@ See [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) for:
 - compatibility contract usage
 - stable error-handling patterns
 - a minimal TypeScript integration snippet
+
+See [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for:
+
+- a lightweight TypeScript client wrapper
+- a copyable starting point for external SDKs
+- a path toward a future published client
 
 See [`docs/agent-capabilities.json`](docs/agent-capabilities.json) for:
 
