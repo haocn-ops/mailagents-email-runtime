@@ -153,6 +153,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 ## Notes
 
 - `tools/list` only shows tools allowed by the current token scopes
+- `tools/list` also returns tool annotations for `riskLevel`, `sideEffecting`, `humanReviewRequired`, and `composite`
 - `tools/call` reuses the same access checks as the HTTP API
 - `bind_mailbox` now validates that both the agent and mailbox exist and belong to the declared tenant
 - `send_draft` and `replay_message` support `idempotencyKey`

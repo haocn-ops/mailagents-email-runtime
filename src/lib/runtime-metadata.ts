@@ -12,6 +12,9 @@ export interface RuntimeToolMetadata {
   description: string;
   requiredScopes: string[];
   composite?: boolean;
+  riskLevel: "read" | "write" | "high_risk" | "privileged";
+  sideEffecting: boolean;
+  humanReviewRequired: boolean;
 }
 
 export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
@@ -19,68 +22,107 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     name: "create_agent",
     description: "Provision a new agent for a tenant.",
     requiredScopes: ["agent:create"],
+    riskLevel: "write",
+    sideEffecting: true,
+    humanReviewRequired: false,
   },
   {
     name: "bind_mailbox",
     description: "Attach a mailbox to an agent.",
     requiredScopes: ["agent:bind"],
+    riskLevel: "write",
+    sideEffecting: true,
+    humanReviewRequired: false,
   },
   {
     name: "upsert_agent_policy",
     description: "Set reply and delivery policy controls for an agent.",
     requiredScopes: ["agent:update"],
+    riskLevel: "privileged",
+    sideEffecting: true,
+    humanReviewRequired: true,
   },
   {
     name: "reply_to_inbound_email",
     description: "Read inbound message context, construct a reply draft with proper headers, and optionally send it.",
     requiredScopes: ["mail:read", "draft:create"],
     composite: true,
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
   },
   {
     name: "operator_manual_send",
     description: "Create an operator-approved draft and optionally send it through the normal queue path.",
     requiredScopes: ["draft:create"],
     composite: true,
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
   },
   {
     name: "list_agent_tasks",
     description: "Fetch current tasks for an agent.",
     requiredScopes: ["task:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
   },
   {
     name: "get_message",
     description: "Fetch message metadata.",
     requiredScopes: ["mail:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
   },
   {
     name: "get_message_content",
     description: "Fetch normalized message content and attachment metadata.",
     requiredScopes: ["mail:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
   },
   {
     name: "get_thread",
     description: "Fetch thread context for reply generation.",
     requiredScopes: ["mail:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
   },
   {
     name: "create_draft",
     description: "Create a proposed outbound email draft.",
     requiredScopes: ["draft:create"],
+    riskLevel: "write",
+    sideEffecting: true,
+    humanReviewRequired: false,
   },
   {
     name: "get_draft",
     description: "Inspect draft metadata before send.",
     requiredScopes: ["draft:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
   },
   {
     name: "send_draft",
     description: "Enqueue a draft for outbound delivery.",
     requiredScopes: ["draft:send"],
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
   },
   {
     name: "replay_message",
     description: "Replay message normalization or rerun agent execution.",
     requiredScopes: ["mail:replay"],
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
   },
 ];
 
@@ -123,6 +165,9 @@ export function buildRuntimeMetadata(env: Env) {
         name: tool.name,
         requiredScopes: tool.requiredScopes,
         composite: Boolean(tool.composite),
+        riskLevel: tool.riskLevel,
+        sideEffecting: tool.sideEffecting,
+        humanReviewRequired: tool.humanReviewRequired,
       })),
     },
     workflows: WORKFLOW_PACKS,

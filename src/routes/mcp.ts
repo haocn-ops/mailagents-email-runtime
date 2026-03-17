@@ -1156,6 +1156,12 @@ router.on("POST", "/mcp", async (request, env) => {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema,
+        annotations: {
+          riskLevel: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.riskLevel ?? "read",
+          sideEffecting: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sideEffecting ?? false,
+          humanReviewRequired: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.humanReviewRequired ?? false,
+          composite: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.composite),
+        },
       })),
     });
   }

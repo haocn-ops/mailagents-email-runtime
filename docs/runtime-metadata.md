@@ -7,6 +7,7 @@ Use it when an operator, agent, or integration needs to discover:
 - runtime name and version
 - supported HTTP and MCP surfaces
 - available MCP tools and required scopes
+- tool risk level and whether human review is expected
 - workflow packs currently shipped with the runtime
 - idempotency retention defaults
 - whether admin and debug routes are enabled in the current environment
@@ -31,6 +32,13 @@ Current top-level fields:
 - `workflows`
 - `idempotency`
 - `routes`
+
+For each MCP tool, the metadata includes:
+
+- `riskLevel`
+- `sideEffecting`
+- `humanReviewRequired`
+- `composite`
 
 The MCP `initialize` response also includes the same metadata under
 `result.meta`, so agents can discover capabilities from either entry point.
