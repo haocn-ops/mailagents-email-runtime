@@ -530,6 +530,9 @@ export async function getDraftByR2Key(env: Env, draftR2Key: string): Promise<Dra
 
 export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ outboundJobId: string; status: "queued" }> {
   const draft = requireRow(await getDraft(env, draftId), "Draft not found");
+  if (draft.status !== "draft" && draft.status !== "approved") {
+    throw new Error(`Draft status ${draft.status} cannot be enqueued for send`);
+  }
   const outboundJobId = createId("obj");
   const timestamp = nowIso();
   const outboundMessageId = createId("msg");
@@ -881,6 +884,23 @@ export async function createTask(env: Env, input: {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+}
+
+export async function updateTaskStatus(env: Env, input: {
+  taskId: string;
+  status: TaskRecord["status"];
+  resultR2Key?: string | null;
+}): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET status = ?, result_r2_key = COALESCE(?, result_r2_key), updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.status,
+    input.resultR2Key ?? null,
+    nowIso(),
+    input.taskId
+  ));
 }
 
 export async function insertDeliveryEvent(env: Env, input: {

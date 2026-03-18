@@ -960,6 +960,9 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
+    if (draft.status !== "draft" && draft.status !== "approved") {
+      throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
+    }
 
     const idempotencyKey = optionalString(args.idempotencyKey);
     if (idempotencyKey) {

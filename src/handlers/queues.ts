@@ -13,6 +13,7 @@ import {
   insertAttachments,
   markDraftStatus,
   markMessageSent,
+  updateTaskStatus,
   updateInboundMessageNormalized,
   updateOutboundJobStatus,
   updateThreadTimestamp,
@@ -113,6 +114,11 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
 async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
+      await updateTaskStatus(env, {
+        taskId: message.body.taskId,
+        status: "running",
+      });
+
       const runId = `run_${message.body.taskId}`;
       const timestamp = nowIso();
       const version = message.body.agentVersionId
@@ -149,8 +155,18 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
         timestamp
       ).run();
 
+      await updateTaskStatus(env, {
+        taskId: message.body.taskId,
+        status: "done",
+        resultR2Key: traceR2Key,
+      });
+
       message.ack();
     } catch (error) {
+      await updateTaskStatus(env, {
+        taskId: message.body.taskId,
+        status: "failed",
+      }).catch(() => undefined);
       await enqueueDeadLetter(env, deadLetterFromError("agent-execute", message.body.taskId, error));
       message.retry();
     }

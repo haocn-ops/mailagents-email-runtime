@@ -17,6 +17,7 @@ import { escapeHtml } from "../lib/self-serve";
 import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import {
   ensureMailbox,
+  getMailboxById,
   listMailboxes,
 } from "../repositories/agents";
 import {
@@ -433,6 +434,10 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
     return badRequest("mailboxId, tenantId, from, to, and subject are required");
   }
+  const normalizedFrom = body.from.trim().toLowerCase();
+  if (!normalizedFrom) {
+    return badRequest("from must be a non-empty string");
+  }
 
   const idempotencyKey = body.idempotencyKey?.trim();
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
@@ -440,6 +445,20 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   }
 
   try {
+    const mailbox = await getMailboxById(env, body.mailboxId);
+    if (!mailbox) {
+      return json({ error: "Mailbox not found" }, { status: 404 });
+    }
+    if (mailbox.tenant_id !== body.tenantId) {
+      return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+    }
+    if (mailbox.status !== "active") {
+      return json({ error: "Mailbox is not active" }, { status: 409 });
+    }
+    if (normalizedFrom !== mailbox.address.toLowerCase()) {
+      return json({ error: "from must match the mailbox address" }, { status: 409 });
+    }
+
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
         operation: "admin_send",
@@ -480,7 +499,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
       threadId: body.threadId,
       sourceMessageId: body.sourceMessageId,
       payload: {
-        from: body.from,
+        from: normalizedFrom,
         to: body.to,
         cc: body.cc ?? [],
         bcc: body.bcc ?? [],

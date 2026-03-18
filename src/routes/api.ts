@@ -1257,6 +1257,9 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   if (mailboxError) {
     return mailboxError;
   }
+  if (draft.status !== "draft" && draft.status !== "approved") {
+    return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
+  }
 
   const body = await readOptionalJson<{ idempotencyKey?: string }>(request);
   const idempotencyKey = body?.idempotencyKey?.trim();
