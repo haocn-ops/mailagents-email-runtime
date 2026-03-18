@@ -961,6 +961,73 @@ function layout(active: string, title: string, content: string): string {
       color: var(--muted);
       font-size: 13px;
     }
+    .markdown-doc {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 30px 34px;
+      background: rgba(255, 252, 247, 0.88);
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+    }
+    .markdown-doc h1,
+    .markdown-doc h2,
+    .markdown-doc h3 {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      letter-spacing: -0.02em;
+    }
+    .markdown-doc h1 {
+      margin: 0 0 22px;
+      max-width: none;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: 1.05;
+    }
+    .markdown-doc h2 {
+      margin: 34px 0 12px;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    .markdown-doc h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+    .markdown-doc p,
+    .markdown-doc li {
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    .markdown-doc ul,
+    .markdown-doc ol {
+      margin: 12px 0;
+      padding-left: 22px;
+    }
+    .markdown-doc pre {
+      margin: 16px 0;
+      padding: 18px 20px;
+      border-radius: 18px;
+      background: #181512;
+      color: #f8efe5;
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 13px;
+      line-height: 1.7;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    .markdown-doc code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      background: rgba(28, 25, 22, 0.06);
+      padding: 2px 6px;
+      border-radius: 8px;
+    }
+    .markdown-doc hr {
+      border: 0;
+      border-top: 1px solid rgba(28, 25, 22, 0.1);
+      margin: 28px 0;
+    }
     @media (max-width: 980px) {
       .hero,
       .stats,
@@ -1028,289 +1095,132 @@ function renderHome(url: URL): string {
   const compatibilityApi = "https://api.mailagents.net/v2/meta/compatibility";
   const signupApi = "https://api.mailagents.net/public/signup";
   const accessEmail = "hello@mailagents.net";
-  return `<section class="hero">
-    <article class="hero-card">
-      <div class="eyebrow">AI-First Email Runtime</div>
-      <h1>Give your agent a real inbox, a safe send path, and a clear way to start.</h1>
-      <p class="lead">Mailagents is email infrastructure for agent-native products. You can provision inboxes, route inbound mail into workflows, and send transactional email with operator controls, delivery policy, and auditability built in from the start.</p>
-      <div class="hero-note">
-        <strong>Registration is API-first.</strong> Agents should provision mailboxes through <a href="${signupApi}" target="_blank" rel="noreferrer"><code>/public/signup</code></a>. If you need higher-volume access or custom routing help, contact <a href="mailto:${accessEmail}">${accessEmail}</a>.
-      </div>
-      <div class="hero-actions">
-        <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>
-        ${isMarketingSite ? `<a class="button secondary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>` : ""}
-        <a class="button secondary" href="#get-started">API Onboarding</a>
-        <a class="button secondary" href="/contact">Contact</a>
-      </div>
-    </article>
-    <aside class="hero-side">
-      <section class="panel signal">
-        <h2>Fast answer for agents</h2>
-        <p>If an autonomous agent lands here and needs the shortest valid onboarding answer, this is the part it should read first.</p>
-        <div class="signal-grid">
-          <div class="mini">
-            <div class="label">Registration</div>
-            <strong>API-only signup</strong>
-          </div>
-          <div class="mini">
-            <div class="label">Access Path</div>
-            <strong>POST /public/signup</strong>
-          </div>
-          <div class="mini">
-            <div class="label">Best For</div>
-            <strong>AI inboxes, routing, transactional sends</strong>
-          </div>
-          <div class="mini">
-            <div class="label">Not For</div>
-            <strong>Cold outreach or bulk marketing</strong>
-          </div>
-        </div>
-      </section>
-      <section class="panel signal">
-        <h2>Machine-readable summary</h2>
-        <div class="command-panel">
-          <pre>service: Mailagents
+  return `<article class="markdown-doc">
+<h1>Mailagents</h1>
+
+<p>AI-first email infrastructure for agent-native products.</p>
+
+<p>This homepage is intentionally documentation-shaped. It is meant to be easy for an autonomous agent to parse and easy for a human operator to audit.</p>
+
+<hr />
+
+<h2>Summary</h2>
+
+<ul>
+  <li><strong>Service type:</strong> mailbox orchestration plus transactional email runtime</li>
+  <li><strong>Registration mode:</strong> API only</li>
+  <li><strong>Signup endpoint:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
+  <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
+  <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
+  <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
+</ul>
+
+<h2>Intended Use</h2>
+
+<ul>
+  <li>Agent inbox provisioning</li>
+  <li>Inbound email workflows</li>
+  <li>Transactional replies</li>
+  <li>Operational notifications tied to active product workflows</li>
+</ul>
+
+<h2>Not Supported</h2>
+
+<ul>
+  <li>Cold outreach</li>
+  <li>Purchased lists</li>
+  <li>Bulk newsletters</li>
+  <li>Attempts to bypass suppression, bounce, or complaint controls</li>
+</ul>
+
+<h2>Signup API</h2>
+
+<p>Agents should provision a mailbox by sending a JSON request to <code>/public/signup</code>.</p>
+
+<pre><code>POST ${signupApi}
+content-type: application/json
+
+{
+  "mailboxAlias": "agent-demo",
+  "agentName": "Agent Demo",
+  "operatorEmail": "operator@example.com",
+  "productName": "Example Product",
+  "useCase": "Handle inbound support email and send transactional replies."
+}</code></pre>
+
+<h3>Signup Request Fields</h3>
+
+<ul>
+  <li><code>mailboxAlias</code>: desired local-part under <code>mailagents.net</code></li>
+  <li><code>agentName</code>: default agent display name</li>
+  <li><code>operatorEmail</code>: inbox that receives the first welcome email</li>
+  <li><code>productName</code>: product context used in metadata</li>
+  <li><code>useCase</code>: short description of the mailbox workflow</li>
+</ul>
+
+<h3>What Signup Creates</h3>
+
+<ol>
+  <li>One active mailbox</li>
+  <li>One default agent</li>
+  <li>One published default version</li>
+  <li>One active mailbox deployment</li>
+  <li>One welcome email through the same outbound runtime used by the product</li>
+</ol>
+
+<h2>Agent Discovery</h2>
+
+<ul>
+  <li><a href="${agentDocs}">AI agent guide</a></li>
+  ${isMarketingSite ? `<li><a href="${sdkExamples}">Agent SDK examples</a></li>` : ""}
+  <li><a href="${compatibilityDoc}">Runtime compatibility docs</a></li>
+  <li><a href="${runtimeMetadata}">Live runtime metadata</a></li>
+  <li><a href="${compatibilityApi}">Live compatibility contract</a></li>
+</ul>
+
+<h2>Operational Guarantees</h2>
+
+<ul>
+  <li>Mailbox provisioning is backed by the production runtime, not a demo-only path.</li>
+  <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
+  <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
+  <li>Operator and compliance contacts are published on this site for review.</li>
+</ul>
+
+<h2>Machine-Readable Block</h2>
+
+<pre><code>service: Mailagents
 category: AI-first email infrastructure
 signup_mode: api_only
 signup_endpoint: ${signupApi}
+runtime_metadata: ${runtimeMetadata}
+compatibility_contract: ${compatibilityApi}
 fallback_contact: ${accessEmail}
-ideal_use_cases:
+intended_use:
   - agent inbox provisioning
   - inbound email workflows
   - transactional delivery
-avoid_use_cases:
+unsupported_use:
   - cold outreach
   - purchased lists
-  - bulk newsletters</pre>
-        </div>
-      </section>
-    </aside>
-  </section>
+  - bulk newsletters</code></pre>
 
-  <section class="panel section" id="get-started">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Get Started</div>
-        <h2>Three steps from discovery to a working agent mailbox.</h2>
-      </div>
-      <p>The first job of this page is to remove ambiguity. If your agent wants a mailbox, here is the exact API path.</p>
-    </div>
-    <div class="steps">
-      <div class="card">
-        <div class="step-number">1</div>
-        <h3>Call signup API</h3>
-        <p>POST mailbox alias, agent name, operator email, product name, and use case to <code>/public/signup</code>.</p>
-      </div>
-      <div class="card">
-        <div class="step-number">2</div>
-        <h3>Provision automatically</h3>
-        <p>Mailagents creates the mailbox, binds a default agent, publishes an initial version, and attaches the mailbox deployment for you.</p>
-      </div>
-      <div class="card">
-        <div class="step-number">3</div>
-        <h3>Check the first email</h3>
-        <p>Your newly created mailbox sends a welcome message to the operator email so you can confirm outbound delivery before wiring agent workflows.</p>
-      </div>
-    </div>
-    <div class="command-panel" style="margin-top:18px;">
-      <h3>Example request</h3>
-      <pre>curl -X POST ${signupApi} \
-  -H "content-type: application/json" \
-  -d '{
-    "mailboxAlias": "agent-demo",
-    "agentName": "Agent Demo",
-    "operatorEmail": "operator@example.com",
-    "productName": "Example Product",
-    "useCase": "Handle inbound support email and send transactional replies."
-  }'</pre>
-    </div>
-  </section>
+<h2>Human Contacts</h2>
 
-  ${isMarketingSite ? `<section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">AI Agent Quickstart</div>
-        <h2>The fastest path for agents to discover, trust, and use the runtime.</h2>
-      </div>
-      <p>If you are integrating an AI agent, start with the guide, then use the live compatibility endpoints for capability discovery and stable error handling.</p>
-    </div>
-    <div class="cards">
-      <div class="card">
-        <h3>LLM agent guide</h3>
-        <p>The single best starting point for external agents and builders.</p>
-        <p><a href="${agentDocs}" target="_blank" rel="noreferrer">Open the AI agent guide</a></p>
-      </div>
-      <div class="card">
-        <h3>Runtime metadata</h3>
-        <p>Discover live MCP methods, tool count, workflows, and route posture.</p>
-        <p><a href="${runtimeMetadata}" target="_blank" rel="noreferrer">Open <code>/v2/meta/runtime</code></a></p>
-      </div>
-      <div class="card">
-        <h3>Compatibility contract</h3>
-        <p>Read stable fields, idempotent operations, and machine-readable error guarantees.</p>
-        <p><a href="${compatibilityApi}" target="_blank" rel="noreferrer">Open <code>/v2/meta/compatibility</code></a></p>
-      </div>
-      <div class="card">
-        <h3>SDK examples</h3>
-        <p>Copy runnable HTTP, MCP, and TypeScript examples for common agent workflows.</p>
-        <p><a href="${sdkExamples}" target="_blank" rel="noreferrer">Open agent SDK examples</a></p>
-      </div>
-      <div class="card">
-        <h3>Contract docs</h3>
-        <p>Understand versioning, deprecation rules, and what agents can safely depend on.</p>
-        <p><a href="${compatibilityDoc}" target="_blank" rel="noreferrer">Open compatibility docs</a></p>
-      </div>
-    </div>
-  </section>` : ""}
+<ul>
+  <li>General: <a href="mailto:hello@mailagents.net">hello@mailagents.net</a></li>
+  <li>Security: <a href="mailto:security@mailagents.net">security@mailagents.net</a></li>
+  <li>Privacy: <a href="mailto:privacy@mailagents.net">privacy@mailagents.net</a></li>
+</ul>
 
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Why It Feels AI-First</div>
-        <h2>Built for autonomous systems that need email without wandering into unsafe behavior.</h2>
-      </div>
-      <p>Most email tools assume a human operator clicking around dashboards. Mailagents is designed so an agent can discover capabilities, follow constraints, and operate inside transactional boundaries with less guesswork.</p>
-    </div>
-    <div class="stats">
-      <div class="card">
-        <h3>Discoverable runtime</h3>
-        <p>Agents can inspect runtime metadata and compatibility contracts instead of reverse-engineering hidden product behavior.</p>
-      </div>
-      <div class="card">
-        <h3>Mailbox orchestration</h3>
-        <p>Provision inboxes, manage leases, and route inbound mail into workflows that look like product logic instead of ad hoc glue.</p>
-      </div>
-      <div class="card">
-        <h3>Transactional sending</h3>
-        <p>Send account events, agent replies, approvals, and workflow results with queue-backed delivery and event tracking.</p>
-      </div>
-      <div class="card">
-        <h3>Policy boundaries</h3>
-        <p>Abuse controls, suppression handling, and operator review help keep an autonomous sender inside a safe operating model.</p>
-      </div>
-    </div>
-  </section>
+<h2>Policy Pages</h2>
 
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">What You Can Build</div>
-        <h2>Use cases where an agent actually benefits from owning email state.</h2>
-      </div>
-      <p>Mailagents fits products that need inbox lifecycle control and reliable transactional delivery in the same system.</p>
-    </div>
-    <div class="cards">
-      <div class="card">
-        <h3>AI assistants with inboxes</h3>
-        <p>Give an agent its own address for inbound tasks, triage, automated replies, and user-approved follow-up workflows.</p>
-      </div>
-      <div class="card">
-        <h3>Internal operations systems</h3>
-        <p>Handle approvals, alerts, queue output, and exception review when email is part of the real operational control plane.</p>
-      </div>
-      <div class="card">
-        <h3>Customer-facing SaaS</h3>
-        <p>Send sign-in links, lifecycle notifications, receipts, support replies, and workflow updates tied to actual user activity.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Proof For Builders</div>
-        <h2>Human-readable product copy, plus enough structure for an agent to keep moving.</h2>
-      </div>
-      <p>Email infrastructure becomes much easier to integrate when the onboarding path, capability surface, and constraints are all stated plainly.</p>
-    </div>
-    <div class="proof">
-      <div class="proof-item">
-        <h3>What the signup API expects</h3>
-        <ul class="checklist">
-          <li>Your desired mailbox alias.</li>
-          <li>Your first agent name.</li>
-          <li>The operator email that should receive the welcome message.</li>
-          <li>Your product name.</li>
-          <li>A short use case so the generated agent metadata is legible.</li>
-        </ul>
-      </div>
-      <div class="proof-item">
-        <h3>What an integrating agent should assume</h3>
-        <p><span class="inline-code">signup_endpoint = ${signupApi}</span></p>
-        <p><span class="inline-code">onboarding_mode = api_first_with_guardrails</span></p>
-        <p><span class="inline-code">fallback_contact = ${accessEmail}</span></p>
-        <p><span class="inline-code">intended_use = transactional and mailbox workflows</span></p>
-        <p><span class="inline-code">unsupported = cold outreach, bulk marketing</span></p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Trust & Compliance</div>
-        <h2>Transactional posture stated in plain language.</h2>
-      </div>
-      <p>This site is the public product overview for the current Mailagents service. The pages linked here are intended to describe real usage, recipient sources, and contact paths for platform review and customer due diligence.</p>
-    </div>
-    <div class="policies">
-      <div class="policy">
-        <h3>Allowed use</h3>
-        <ul class="policy-list">
-          <li>Authentication emails such as sign-in codes or account verification.</li>
-          <li>Workflow notifications triggered by user activity in the product.</li>
-          <li>Mailbox lifecycle updates such as provisioning, lease, and routing events.</li>
-          <li>Operational replies generated on behalf of an active user workflow.</li>
-        </ul>
-      </div>
-      <div class="policy">
-        <h3>Not supported</h3>
-        <ul class="policy-list">
-          <li>Purchased lists, list rentals, or recipient scraping.</li>
-          <li>Cold outreach, affiliate blasts, or mass promotional newsletters.</li>
-          <li>High-volume bulk marketing without direct user relationship.</li>
-          <li>Attempts to bypass complaint, bounce, or suppression controls.</li>
-        </ul>
-      </div>
-    </div>
-    <div class="hero-actions">
-      <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">Open docs</a>
-      <a class="button secondary" href="/privacy">View data handling</a>
-      <a class="button secondary" href="/terms">View terms</a>
-    </div>
-  </section>
-
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">FAQ</div>
-        <h2>Quick answers for customers, reviewers, and browsing agents.</h2>
-      </div>
-      <p>These are the questions that usually matter when a new email platform is being evaluated.</p>
-    </div>
-    <div class="faq">
-      <div class="faq-item">
-        <h3>How do I register for Mailagents?</h3>
-        <p>Provision through the public API at <a href="${signupApi}"><code>${signupApi}</code></a>. The website no longer provides a manual signup form. For custom onboarding or higher-volume setups, email <a href="mailto:${accessEmail}">${accessEmail}</a>.</p>
-      </div>
-      <div class="faq-item">
-        <h3>Does Mailagents send marketing campaigns?</h3>
-        <p>No. The product is designed for transactional and operational email tied to active accounts, mailbox workflows, and user-triggered actions.</p>
-      </div>
-      <div class="faq-item">
-        <h3>Who receives messages sent through the platform?</h3>
-        <p>Recipients are registered users, operators, or addresses explicitly configured by users inside supported product workflows.</p>
-      </div>
-      <div class="faq-item">
-        <h3>How are complaints and bounces handled?</h3>
-        <p>Suppression controls, delivery event tracking, and account enforcement are used to reduce repeated sends to problematic recipients.</p>
-      </div>
-      <div class="faq-item">
-        <h3>Can the product be used for cold outreach?</h3>
-        <p>No. Purchased lists, scraped addresses, unsolicited blasts, and deliverability-abusive workflows are not supported.</p>
-      </div>
-    </div>
-  </section>`;
+<ul>
+  <li><a href="/privacy">Privacy Policy</a></li>
+  <li><a href="/terms">Terms of Service</a></li>
+  <li><a href="/contact">Contact</a></li>
+</ul>
+</article>`;
 }
 
 function renderPrivacy(): string {
