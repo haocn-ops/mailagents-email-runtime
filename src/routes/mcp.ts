@@ -1046,14 +1046,6 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
     const agentId = optionalString(args.agentId);
     const idempotencyKey = optionalString(args.idempotencyKey);
-    if (mode === "normalize" && !message.rawR2Key) {
-      throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
-    }
-    const replayRawR2Key = mode === "normalize" ? message.rawR2Key : undefined;
-    const replayTarget = mode === "rerun_agent"
-      ? await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId)
-      : null;
-    const replayAgentTarget = replayTarget ?? undefined;
     const response = {
       messageId,
       mode,
@@ -1085,19 +1077,17 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
       try {
         if (mode === "normalize") {
-          if (!replayRawR2Key) {
+          if (!message.rawR2Key) {
             throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
           }
           await env.EMAIL_INGEST_QUEUE.send({
             messageId,
             tenantId: message.tenantId,
             mailboxId: message.mailboxId,
-            rawR2Key: replayRawR2Key,
+            rawR2Key: message.rawR2Key,
           });
         } else {
-          if (!replayAgentTarget) {
-            throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
-          }
+          const replayAgentTarget = await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId);
           await env.AGENT_EXECUTE_QUEUE.send({
             taskId: createId("tsk"),
             agentId: replayAgentTarget.agentId,
@@ -1120,19 +1110,17 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     if (mode === "normalize") {
-      if (!replayRawR2Key) {
+      if (!message.rawR2Key) {
         throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
       }
       await env.EMAIL_INGEST_QUEUE.send({
         messageId,
         tenantId: message.tenantId,
         mailboxId: message.mailboxId,
-        rawR2Key: replayRawR2Key,
+        rawR2Key: message.rawR2Key,
       });
     } else {
-      if (!replayAgentTarget) {
-        throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
-      }
+      const replayAgentTarget = await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId);
       await env.AGENT_EXECUTE_QUEUE.send({
         taskId: createId("tsk"),
         agentId: replayAgentTarget.agentId,

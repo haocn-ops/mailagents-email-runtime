@@ -1038,23 +1038,10 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   if (mailboxError) {
     return mailboxError;
   }
-  if (body.mode === "normalize" && !existingMessage.rawR2Key) {
-    return badRequest("normalize replay requires the message to have raw email content");
-  }
-  const replayRawR2Key = body.mode === "normalize" ? existingMessage.rawR2Key : undefined;
-
   const idempotencyKey = body.idempotencyKey?.trim();
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
-
-  const replayTarget = body.mode === "rerun_agent"
-    ? await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId)
-    : null;
-  if (replayTarget instanceof Response) {
-    return replayTarget;
-  }
-  const replayAgentTarget = replayTarget ?? undefined;
 
   const replayResponse = {
     messageId: route.params.messageId,
@@ -1087,18 +1074,25 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
 
     try {
       if (body.mode === "normalize") {
+        if (!existingMessage.rawR2Key) {
+          return badRequest("normalize replay requires the message to have raw email content");
+        }
         await env.EMAIL_INGEST_QUEUE.send({
           messageId: route.params.messageId,
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
-          rawR2Key: replayRawR2Key!,
+          rawR2Key: existingMessage.rawR2Key,
         });
       } else {
+        const replayTarget = await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId);
+        if (replayTarget instanceof Response) {
+          return replayTarget;
+        }
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: createId("tsk"),
-          agentId: replayAgentTarget!.agentId,
-          agentVersionId: replayAgentTarget!.agentVersionId,
-          deploymentId: replayAgentTarget!.deploymentId,
+          agentId: replayTarget.agentId,
+          agentVersionId: replayTarget.agentVersionId,
+          deploymentId: replayTarget.deploymentId,
         });
       }
 
@@ -1117,24 +1111,25 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   }
 
   if (body.mode === "normalize") {
-    if (!replayRawR2Key) {
+    if (!existingMessage.rawR2Key) {
       return badRequest("normalize replay requires the message to have raw email content");
     }
     await env.EMAIL_INGEST_QUEUE.send({
       messageId: route.params.messageId,
       tenantId: existingMessage.tenantId,
       mailboxId: existingMessage.mailboxId,
-      rawR2Key: replayRawR2Key,
+      rawR2Key: existingMessage.rawR2Key,
     });
   } else {
-    if (!replayAgentTarget) {
-      return badRequest("agentId is required for rerun_agent replay");
+    const replayTarget = await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId);
+    if (replayTarget instanceof Response) {
+      return replayTarget;
     }
     await env.AGENT_EXECUTE_QUEUE.send({
       taskId: createId("tsk"),
-      agentId: replayAgentTarget.agentId,
-      agentVersionId: replayAgentTarget.agentVersionId,
-      deploymentId: replayAgentTarget.deploymentId,
+      agentId: replayTarget.agentId,
+      agentVersionId: replayTarget.agentVersionId,
+      deploymentId: replayTarget.deploymentId,
     });
   }
 
