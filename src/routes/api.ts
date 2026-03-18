@@ -1273,9 +1273,6 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   if (mailboxError) {
     return mailboxError;
   }
-  if (draft.status !== "draft" && draft.status !== "approved") {
-    return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
-  }
 
   const body = await readOptionalJson<{ idempotencyKey?: string }>(request);
   const idempotencyKey = body?.idempotencyKey?.trim();
@@ -1306,6 +1303,11 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       });
     }
 
+    if (draft.status !== "draft" && draft.status !== "approved") {
+      await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+      return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
+    }
+
     try {
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
@@ -1326,6 +1328,10 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
       throw error;
     }
+  }
+
+  if (draft.status !== "draft" && draft.status !== "approved") {
+    return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
   }
 
   const result = await enqueueDraftSend(env, route.params.draftId);

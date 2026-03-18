@@ -960,9 +960,6 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    if (draft.status !== "draft" && draft.status !== "approved") {
-      throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
-    }
 
     const idempotencyKey = optionalString(args.idempotencyKey);
     if (idempotencyKey) {
@@ -988,6 +985,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         };
       }
 
+      if (draft.status !== "draft" && draft.status !== "approved") {
+        await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+        throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
+      }
+
       try {
         const result = await enqueueDraftSend(env, draftId);
         const response = {
@@ -1007,6 +1009,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
         throw error;
       }
+    }
+
+    if (draft.status !== "draft" && draft.status !== "approved") {
+      throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
     }
 
     const result = await enqueueDraftSend(env, draftId);
