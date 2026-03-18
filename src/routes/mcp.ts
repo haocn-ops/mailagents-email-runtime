@@ -24,6 +24,7 @@ import {
 import {
   completeIdempotencyKey,
   createDraft,
+  createTask,
   enqueueDraftSend,
   getDraft,
   getMessage,
@@ -1098,8 +1099,17 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           if (!replayAgentTarget) {
             throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
           }
+          const replayTask = await createTask(env, {
+            tenantId: message.tenantId,
+            mailboxId: message.mailboxId,
+            sourceMessageId: messageId,
+            taskType: "replay",
+            priority: 50,
+            status: "queued",
+            assignedAgent: replayAgentTarget.agentId,
+          });
           await env.AGENT_EXECUTE_QUEUE.send({
-            taskId: createId("tsk"),
+            taskId: replayTask.id,
             agentId: replayAgentTarget.agentId,
             agentVersionId: replayAgentTarget.agentVersionId,
             deploymentId: replayAgentTarget.deploymentId,
@@ -1133,8 +1143,17 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!replayAgentTarget) {
         throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
       }
+      const replayTask = await createTask(env, {
+        tenantId: message.tenantId,
+        mailboxId: message.mailboxId,
+        sourceMessageId: messageId,
+        taskType: "replay",
+        priority: 50,
+        status: "queued",
+        assignedAgent: replayAgentTarget.agentId,
+      });
       await env.AGENT_EXECUTE_QUEUE.send({
-        taskId: createId("tsk"),
+        taskId: replayTask.id,
         agentId: replayAgentTarget.agentId,
         agentVersionId: replayAgentTarget.agentVersionId,
         deploymentId: replayAgentTarget.deploymentId,

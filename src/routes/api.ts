@@ -46,6 +46,7 @@ import {
 } from "../repositories/agents";
 import {
   createDraft,
+  createTask,
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
@@ -1094,8 +1095,17 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           rawR2Key: replayRawR2Key!,
         });
       } else {
+        const replayTask = await createTask(env, {
+          tenantId: existingMessage.tenantId,
+          mailboxId: existingMessage.mailboxId,
+          sourceMessageId: route.params.messageId,
+          taskType: "replay",
+          priority: 50,
+          status: "queued",
+          assignedAgent: replayAgentTarget!.agentId,
+        });
         await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: createId("tsk"),
+          taskId: replayTask.id,
           agentId: replayAgentTarget!.agentId,
           agentVersionId: replayAgentTarget!.agentVersionId,
           deploymentId: replayAgentTarget!.deploymentId,
@@ -1130,8 +1140,17 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     if (!replayAgentTarget) {
       return badRequest("agentId is required for rerun_agent replay");
     }
+    const replayTask = await createTask(env, {
+      tenantId: existingMessage.tenantId,
+      mailboxId: existingMessage.mailboxId,
+      sourceMessageId: route.params.messageId,
+      taskType: "replay",
+      priority: 50,
+      status: "queued",
+      assignedAgent: replayAgentTarget.agentId,
+    });
     await env.AGENT_EXECUTE_QUEUE.send({
-      taskId: createId("tsk"),
+      taskId: replayTask.id,
       agentId: replayAgentTarget.agentId,
       agentVersionId: replayAgentTarget.agentVersionId,
       deploymentId: replayAgentTarget.deploymentId,
