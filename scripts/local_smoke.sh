@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-replace-with-shared-secret}"
@@ -18,6 +20,49 @@ require_cmd() {
 
 require_cmd curl
 require_cmd jq
+
+load_local_secrets() {
+  local dev_vars="$REPO_ROOT/.dev.vars"
+  if [[ ! -f "$dev_vars" ]]; then
+    return
+  fi
+
+  if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" || "$WEBHOOK_SECRET" == "replace-with-shared-secret" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$dev_vars"
+    set +a
+    ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-${ADMIN_API_SECRET:-$ADMIN_SECRET}}"
+    WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-${WEBHOOK_SHARED_SECRET:-$WEBHOOK_SECRET}}"
+  fi
+}
+
+wait_for_server() {
+  local attempt
+  echo "Waiting for smoke target at $BASE_URL ..."
+  for attempt in $(seq 1 20); do
+    if curl --connect-timeout 1 --max-time 2 -fsS "$BASE_URL/" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Smoke target is not reachable at $BASE_URL. Start the worker first, for example with: npm run dev:local" >&2
+  exit 1
+}
+
+load_local_secrets
+wait_for_server
+
+if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
+  echo "Missing admin secret. Set ADMIN_API_SECRET_FOR_SMOKE or configure ADMIN_API_SECRET in .dev.vars." >&2
+  exit 1
+fi
+
+if [[ "$WEBHOOK_SECRET" == "replace-with-shared-secret" ]]; then
+  echo "Missing webhook secret. Set WEBHOOK_SHARED_SECRET_FOR_SMOKE or configure WEBHOOK_SHARED_SECRET in .dev.vars." >&2
+  exit 1
+fi
 
 echo "Minting bearer token..."
 TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
