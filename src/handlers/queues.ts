@@ -3,7 +3,7 @@ import { buildRawMimeMessage } from "../lib/mime";
 import { enqueueDeadLetter } from "../lib/queue";
 import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
-import { getMailboxById } from "../repositories/agents";
+import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
   createTask,
   getDraftByR2Key,
@@ -13,7 +13,6 @@ import {
   insertAttachments,
   markDraftStatus,
   markMessageSent,
-  resolveAssignedAgent,
   updateInboundMessageNormalized,
   updateOutboundJobStatus,
   updateThreadTimestamp,
@@ -79,7 +78,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         attachments: attachmentRows,
       });
 
-      const assignedAgent = await resolveAssignedAgent(env, message.body.mailboxId);
+      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId);
       const task = await createTask(env, {
         tenantId: message.body.tenantId,
         mailboxId: message.body.mailboxId,
@@ -87,17 +86,19 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         taskType: "reply",
         priority: 50,
         status: "queued",
-        assignedAgent,
+        assignedAgent: executionTarget?.agentId,
       });
 
       await env.D1_DB.prepare(
         "UPDATE messages SET status = ? WHERE id = ?"
       ).bind("tasked", message.body.messageId).run();
 
-      if (assignedAgent) {
+      if (executionTarget) {
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: task.id,
-          agentId: assignedAgent,
+          agentId: executionTarget.agentId,
+          agentVersionId: executionTarget.agentVersionId,
+          deploymentId: executionTarget.deploymentId,
         });
       }
 
@@ -114,17 +115,36 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
     try {
       const runId = `run_${message.body.taskId}`;
       const timestamp = nowIso();
+      const version = message.body.agentVersionId
+        ? await getAgentVersion(env, message.body.agentId, message.body.agentVersionId)
+        : null;
+      const traceR2Key = `traces/${runId}.json`;
+
+      await env.R2_EMAIL.put(traceR2Key, JSON.stringify({
+        runId,
+        taskId: message.body.taskId,
+        agentId: message.body.agentId,
+        agentVersionId: message.body.agentVersionId ?? null,
+        deploymentId: message.body.deploymentId ?? null,
+        model: version?.model ?? "gpt-5",
+        status: "completed",
+        startedAt: timestamp,
+        completedAt: timestamp,
+      }, null, 2), {
+        httpMetadata: { contentType: "application/json; charset=utf-8" },
+      });
 
       await env.D1_DB.prepare(
         `INSERT OR REPLACE INTO agent_runs (
-          id, task_id, agent_id, model, status, started_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          id, task_id, agent_id, model, status, trace_r2_key, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         runId,
         message.body.taskId,
         message.body.agentId,
-        "gpt-5",
+        version?.model ?? "gpt-5",
         "completed",
+        traceR2Key,
         timestamp,
         timestamp
       ).run();

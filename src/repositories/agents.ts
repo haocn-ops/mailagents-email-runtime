@@ -3,6 +3,7 @@ import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { nowIso } from "../lib/time";
 import type {
   AgentCapabilityRecord,
+  AgentExecutionTarget,
   AgentDeploymentRecord,
   AgentMailboxBindingRecord,
   AgentPolicyRecord,
@@ -115,6 +116,10 @@ function parseJsonArray(value: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+function isMissingTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table/i.test(error.message);
 }
 
 function mapAgentRow(row: AgentRow): AgentRecord {
@@ -505,6 +510,48 @@ export async function listAgentDeployments(env: Env, agentId: string): Promise<A
   );
 
   return rows.map(mapDeploymentRow);
+}
+
+export async function resolveAgentExecutionTarget(env: Env, mailboxId: string): Promise<AgentExecutionTarget | null> {
+  try {
+    const deployment = await firstRow<{
+      id: string;
+      agent_id: string;
+      agent_version_id: string;
+    }>(
+      env.D1_DB.prepare(
+        `SELECT id, agent_id, agent_version_id
+         FROM agent_deployments
+         WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+         ORDER BY created_at DESC
+         LIMIT 1`
+      ).bind(mailboxId)
+    );
+
+    if (deployment) {
+      return {
+        agentId: deployment.agent_id,
+        agentVersionId: deployment.agent_version_id,
+        deploymentId: deployment.id,
+      };
+    }
+  } catch (error) {
+    if (!isMissingTableError(error)) {
+      throw error;
+    }
+  }
+
+  const fallback = await firstRow<{ agent_id: string }>(
+    env.D1_DB.prepare(
+      `SELECT agent_id
+       FROM agent_mailboxes
+       WHERE mailbox_id = ? AND status = 'active'
+       ORDER BY created_at ASC
+       LIMIT 1`
+    ).bind(mailboxId)
+  );
+
+  return fallback ? { agentId: fallback.agent_id } : null;
 }
 
 export async function bindMailbox(env: Env, input: {

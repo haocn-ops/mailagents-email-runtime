@@ -95,6 +95,12 @@ export interface AgentDeploymentRecord {
   updatedAt: string;
 }
 
+export interface AgentExecutionTarget {
+  agentId: string;
+  agentVersionId?: string;
+  deploymentId?: string;
+}
+
 export interface AgentMailboxBindingRecord {
   id: string;
   agentId: string;
@@ -222,6 +228,8 @@ export interface EmailIngestJob {
 export interface AgentExecuteJob {
   taskId: string;
   agentId: string;
+  agentVersionId?: string;
+  deploymentId?: string;
 }
 
 export interface OutboundSendJob {
