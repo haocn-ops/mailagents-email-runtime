@@ -105,6 +105,7 @@ As of 2026-03-18, the shared `dev` environment has been live-verified for:
 - outbound SES send
 - inbound email to `agent@mailagents.net`
 - versioned registry resolution via `agent_versions` and `agent_deployments`
+- deployment rollout and rollback against the same mailbox target
 
 The validation sequence was:
 
@@ -116,6 +117,7 @@ The validation sequence was:
 6. confirm a new `tasks` row exists
 7. confirm the new `agent_runs` row has a non-null `trace_r2_key`
 8. fetch the trace object from remote R2 and verify it contains `agentVersionId` and `deploymentId`
+9. roll the mailbox target to a newer deployment and then roll it back, confirming only one deployment remains `active`
 
 ## Sample SES fixtures
 

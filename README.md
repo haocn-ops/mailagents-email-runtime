@@ -85,6 +85,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `migrations/0001_initial.sql`
 - `migrations/0002_agent_registry.sql`
 - `migrations/0002_idempotency_keys.sql`
+- `migrations/0003_agent_deployment_history.sql`
 - `seeds/0001_demo.sql`
 - `wrangler.toml`
 - `src/index.ts`
@@ -202,7 +203,7 @@ Template scripts:
 - keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
 - `npm run deploy:dev` updates the existing Cloudflare `dev` environment rather than creating a second one
 - the current shared `dev` worker URL is `https://mailagents-dev.izhenghaocn.workers.dev`
-- `npm run d1:migrate:*` now applies the base schema, versioned agent registry schema, and idempotency schema in sequence
+- `npm run d1:migrate:*` now applies the base schema, versioned agent registry schema, idempotency schema, and deployment-history schema in sequence
 
 ## GitHub Actions Deploy
 
@@ -227,7 +228,7 @@ You can also choose whether to run the demo seed during the deployment.
 2. Replace the MVP email parser with a full RFC-aware MIME parser if needed.
 3. Add deeper D1/R2 integration assertions or a real test suite.
 4. Further harden queue/webhook tenant ownership checks.
-5. Add richer operator workflows around approvals, replay, and deployment rollout/rollback.
+5. Add richer operator workflows around approvals and replay on top of the new deployment rollout/rollback primitives.
 
 ## License
 

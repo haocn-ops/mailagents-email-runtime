@@ -19,13 +19,17 @@ import {
   createAgentDeployment,
   createAgentVersion,
   getAgent,
+  getAgentDeployment,
   getAgentVersion,
   getMailboxById,
   listAgentDeployments,
   listAgentMailboxes,
   listAgents,
   listAgentVersions,
+  rollbackAgentDeployment,
+  rolloutAgentDeployment,
   updateAgent,
+  updateAgentDeploymentStatus,
   upsertAgentPolicy,
 } from "../repositories/agents";
 import {
@@ -510,6 +514,157 @@ router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, r
   }
 
   return json({ items: await listAgentDeployments(env, route.params.agentId) });
+});
+
+router.on("PATCH", "/v1/agents/:agentId/deployments/:deploymentId", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:update"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const deployment = await getAgentDeployment(env, route.params.agentId, route.params.deploymentId);
+  if (!deployment) {
+    return json({ error: "Agent deployment not found" }, { status: 404 });
+  }
+
+  if (deployment.targetType === "mailbox") {
+    const mailboxError = enforceMailboxAccess(auth, deployment.targetId);
+    if (mailboxError) {
+      return mailboxError;
+    }
+  }
+
+  const body = await readJson<{ status?: "active" | "paused" | "rolled_back" }>(request);
+  if (!body.status) {
+    return badRequest("status is required");
+  }
+
+  const updated = await updateAgentDeploymentStatus(env, {
+    agentId: route.params.agentId,
+    deploymentId: route.params.deploymentId,
+    status: body.status,
+  });
+
+  if (!updated) {
+    return json({ error: "Agent deployment not found" }, { status: 404 });
+  }
+
+  return json(updated);
+});
+
+router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:update"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const body = await readJson<{
+    tenantId?: string;
+    agentVersionId?: string;
+    targetType?: "mailbox" | "workflow" | "tenant_default";
+    targetId?: string;
+  }>(request);
+
+  if (!body.tenantId || !body.agentVersionId || !body.targetType || !body.targetId) {
+    return badRequest("tenantId, agentVersionId, targetType, and targetId are required");
+  }
+
+  const deploymentTenantError = enforceTenantAccess(auth, body.tenantId);
+  if (deploymentTenantError) {
+    return deploymentTenantError;
+  }
+
+  if (body.targetType === "mailbox") {
+    const mailboxError = enforceMailboxAccess(auth, body.targetId);
+    if (mailboxError) {
+      return mailboxError;
+    }
+  }
+
+  const version = await getAgentVersion(env, route.params.agentId, body.agentVersionId);
+  if (!version) {
+    return json({ error: "Agent version not found" }, { status: 404 });
+  }
+
+  return json(await rolloutAgentDeployment(env, {
+    tenantId: body.tenantId,
+    agentId: route.params.agentId,
+    agentVersionId: body.agentVersionId,
+    targetType: body.targetType,
+    targetId: body.targetId,
+  }), { status: 201 });
+});
+
+router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:update"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const deployment = await getAgentDeployment(env, route.params.agentId, route.params.deploymentId);
+  if (!deployment) {
+    return json({ error: "Agent deployment not found" }, { status: 404 });
+  }
+
+  if (deployment.targetType === "mailbox") {
+    const mailboxError = enforceMailboxAccess(auth, deployment.targetId);
+    if (mailboxError) {
+      return mailboxError;
+    }
+  }
+
+  const rolledBack = await rollbackAgentDeployment(env, {
+    agentId: route.params.agentId,
+    deploymentId: route.params.deploymentId,
+  });
+
+  if (!rolledBack) {
+    return json({ error: "Agent deployment not found" }, { status: 404 });
+  }
+
+  return json(rolledBack);
 });
 
 router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, route) => {

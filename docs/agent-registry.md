@@ -179,8 +179,18 @@ Recommended API surface:
 - `GET /v1/agents/{agentId}/versions/{versionId}`
 - `POST /v1/agents/{agentId}/deployments`
 - `GET /v1/agents/{agentId}/deployments`
+- `PATCH /v1/agents/{agentId}/deployments/{deploymentId}`
+- `POST /v1/agents/{agentId}/deployments/rollout`
+- `POST /v1/agents/{agentId}/deployments/{deploymentId}/rollback`
 - `POST /v1/agents/{agentId}/mailboxes`
 - `PUT /v1/agents/{agentId}/policy`
+
+Deployment operations:
+
+- `POST /deployments/rollout` marks any currently active deployment on the same target as `rolled_back`
+- then creates a new active deployment pinned to the requested version
+- `POST /deployments/{deploymentId}/rollback` re-activates a previous deployment for the same target
+- `PATCH /deployments/{deploymentId}` allows explicit `active`, `paused`, or `rolled_back` transitions
 
 ## Migration Strategy
 

@@ -487,6 +487,100 @@ export async function createAgentDeployment(env: Env, input: {
   return requireRow(await getAgentDeployment(env, input.agentId, id), "Failed to load created agent deployment");
 }
 
+export async function updateAgentDeploymentStatus(env: Env, input: {
+  agentId: string;
+  deploymentId: string;
+  status: AgentDeploymentRecord["status"];
+}): Promise<AgentDeploymentRecord | null> {
+  const timestamp = nowIso();
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE agent_deployments
+     SET status = ?, updated_at = ?
+     WHERE id = ? AND agent_id = ?`
+  ).bind(
+    input.status,
+    timestamp,
+    input.deploymentId,
+    input.agentId
+  ));
+
+  return await getAgentDeployment(env, input.agentId, input.deploymentId);
+}
+
+export async function rolloutAgentDeployment(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  agentVersionId: string;
+  targetType: AgentDeploymentRecord["targetType"];
+  targetId: string;
+}): Promise<AgentDeploymentRecord> {
+  const timestamp = nowIso();
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE agent_deployments
+     SET status = 'rolled_back', updated_at = ?
+     WHERE tenant_id = ?
+       AND target_type = ?
+       AND target_id = ?
+       AND status = 'active'`
+  ).bind(
+    timestamp,
+    input.tenantId,
+    input.targetType,
+    input.targetId
+  ));
+
+  return await createAgentDeployment(env, {
+    tenantId: input.tenantId,
+    agentId: input.agentId,
+    agentVersionId: input.agentVersionId,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    status: "active",
+  });
+}
+
+export async function rollbackAgentDeployment(env: Env, input: {
+  agentId: string;
+  deploymentId: string;
+}): Promise<AgentDeploymentRecord | null> {
+  const deployment = await getAgentDeployment(env, input.agentId, input.deploymentId);
+  if (!deployment) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE agent_deployments
+     SET status = 'rolled_back', updated_at = ?
+     WHERE tenant_id = ?
+       AND target_type = ?
+       AND target_id = ?
+       AND status = 'active'
+       AND id != ?`
+  ).bind(
+    timestamp,
+    deployment.tenantId,
+    deployment.targetType,
+    deployment.targetId,
+    deployment.id
+  ));
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE agent_deployments
+     SET status = 'active', updated_at = ?
+     WHERE id = ? AND agent_id = ?`
+  ).bind(
+    timestamp,
+    deployment.id,
+    input.agentId
+  ));
+
+  return await getAgentDeployment(env, input.agentId, input.deploymentId);
+}
+
 export async function getAgentDeployment(env: Env, agentId: string, deploymentId: string): Promise<AgentDeploymentRecord | null> {
   const row = await firstRow<AgentDeploymentRow>(
     env.D1_DB.prepare(

@@ -415,6 +415,62 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AgentDeployment'
+  /v1/agents/{agentId}/deployments/rollout:
+    post:
+      tags: [Agents]
+      summary: Roll out a new deployment for a target
+      operationId: rolloutAgentDeployment
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolloutAgentDeploymentRequest'
+      responses:
+        '201':
+          description: Agent deployment rolled out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeployment'
+  /v1/agents/{agentId}/deployments/{deploymentId}:
+    patch:
+      tags: [Agents]
+      summary: Update deployment status
+      operationId: updateAgentDeploymentStatus
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/DeploymentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAgentDeploymentStatusRequest'
+      responses:
+        '200':
+          description: Agent deployment updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeployment'
+  /v1/agents/{agentId}/deployments/{deploymentId}/rollback:
+    post:
+      tags: [Agents]
+      summary: Roll back to a prior deployment
+      operationId: rollbackAgentDeployment
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/DeploymentId'
+      responses:
+        '200':
+          description: Agent deployment rolled back
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeployment'
   /v1/messages/{messageId}:
     get:
       tags: [Messages]
@@ -579,6 +635,12 @@ components:
         type: string
     DraftId:
       name: draftId
+      in: path
+      required: true
+      schema:
+        type: string
+    DeploymentId:
+      name: deploymentId
       in: path
       required: true
       schema:
@@ -784,6 +846,25 @@ components:
           enum: [mailbox, workflow, tenant_default]
         targetId:
           type: string
+        status:
+          $ref: '#/components/schemas/AgentDeploymentStatus'
+    RolloutAgentDeploymentRequest:
+      type: object
+      required: [tenantId, agentVersionId, targetType, targetId]
+      properties:
+        tenantId:
+          type: string
+        agentVersionId:
+          type: string
+        targetType:
+          type: string
+          enum: [mailbox, workflow, tenant_default]
+        targetId:
+          type: string
+    UpdateAgentDeploymentStatusRequest:
+      type: object
+      required: [status]
+      properties:
         status:
           $ref: '#/components/schemas/AgentDeploymentStatus'
     AgentMailboxBinding:

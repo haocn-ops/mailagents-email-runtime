@@ -230,11 +230,13 @@ These migration commands now apply all required schema layers in order:
 1. `0001_initial.sql`
 2. `0002_agent_registry.sql`
 3. `0002_idempotency_keys.sql`
+4. `0003_agent_deployment_history.sql`
 
 If `mailagents-dev` was created before either `migrations/0002_agent_registry.sql` or
-`migrations/0002_idempotency_keys.sql` existed, run `npm run d1:migrate:remote:dev`
-again before testing versioned agent execution, send, replay, or composite MCP send
-flows.
+`migrations/0002_idempotency_keys.sql` existed, or before deployment history was rebuilt
+by `migrations/0003_agent_deployment_history.sql`, run `npm run d1:migrate:remote:dev`
+again before testing versioned agent execution, deployment rollout/rollback, send,
+replay, or composite MCP send flows.
 
 ## Deploy
 
@@ -267,6 +269,8 @@ After running the remote migration, you can validate the versioned registry path
 3. send a real test email to `agent@mailagents.net`
 4. confirm the newest `agent_runs.trace_r2_key` is non-null
 5. fetch that R2 trace object and verify it includes both `agentVersionId` and `deploymentId`
+6. optionally validate `POST /deployments/rollout` and `POST /deployments/{deploymentId}/rollback`
+   against the same mailbox target to confirm deployment history is preserved
 
 This is the key check that distinguishes the new deployment-aware runtime from the
 older mailbox-to-agent fallback path.
