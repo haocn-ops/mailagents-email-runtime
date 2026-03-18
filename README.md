@@ -78,6 +78,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/dev-bootstrap.md`
 - `docs/deployment.md`
 - `docs/production-rollout-checklist.md`
+- `docs/production-operator-bootstrap.md`
 - `docs/testing.md`
 - `docs/openapi.yaml`
 - `llms-full.txt`
@@ -185,6 +186,12 @@ See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.m
 - the exact inputs still needed for a real rollout
 - the production deploy and domain-binding sequence
 
+See [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for:
+
+- the first safe write path in production
+- mailbox, agent, version, and deployment bootstrap order
+- post-bootstrap validation expectations
+
 See [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) for:
 
 - first real `dev` environment creation
@@ -221,6 +228,21 @@ Then run the `Deploy` workflow and choose:
 - `production`
 
 You can also choose whether to run the demo seed during the deployment.
+
+## Production Read-Only Smoke
+
+Run:
+
+```bash
+npm run smoke:production:readonly
+```
+
+This verifies:
+
+- production runtime metadata
+- production compatibility metadata
+- admin routes are disabled
+- debug routes are disabled
 
 ## Next Steps
 

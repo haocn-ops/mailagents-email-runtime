@@ -32,6 +32,7 @@
     "d1:seed:remote:production": "wrangler d1 execute mailagents-production --remote --env production --file=./seeds/0001_demo.sql",
     "smoke:local": "bash ./scripts/local_smoke.sh",
     "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh",
+    "smoke:production:readonly": "bash ./scripts/production_readonly_smoke.sh",
     "example:agent:discover": "node ./examples/discover_agent_capabilities.mjs",
     "example:agent:reply-draft": "node ./examples/reply_draft_only.mjs",
     "example:agent:operator-send": "node ./examples/operator_manual_send.mjs"

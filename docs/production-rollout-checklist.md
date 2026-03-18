@@ -112,6 +112,7 @@ After deploy:
 - verify `/v2/meta/compatibility`
 - verify MCP `initialize`
 - verify admin/debug routes are disabled
+- run `npm run smoke:production:readonly`
 
 ## 6. Domain Binding
 
