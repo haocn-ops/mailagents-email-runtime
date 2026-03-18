@@ -14,12 +14,15 @@ import { Router } from "../lib/router";
 import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
+  buildTokenReissueHtml,
+  buildTokenReissueText,
   escapeHtml,
   parseSelfServeSignup,
   performSelfServeSignup,
   type SignupPageState,
   type SignupSuccessResult,
 } from "../lib/self-serve";
+import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
 import {
   bindMailbox,
   createAgent,
@@ -28,11 +31,13 @@ import {
   getAgent,
   getAgentDeployment,
   getAgentVersion,
+  getMailboxByAddress,
   getMailboxById,
   listAgentDeployments,
   listAgentMailboxes,
   listAgents,
   listAgentVersions,
+  resolveAgentExecutionTarget,
   rollbackAgentDeployment,
   rolloutAgentDeployment,
   updateAgent,
@@ -101,6 +106,31 @@ router.on("POST", "/public/signup", async (request, env) => {
       ? html(renderPublicSignupResult("Start Signup", renderPublicSignupError({ values: parsed.values, error: message })), { status: 502 })
       : json({ error: message, values: parsed.values }, { status: 502 });
   }
+});
+
+router.on("POST", "/public/token/reissue", async (request, env) => {
+  const body = await readJson<{
+    mailboxAlias?: string;
+    mailboxAddress?: string;
+  }>(request);
+
+  const mailboxAddress = normalizeMailboxLookup(env, body);
+  if (!mailboxAddress) {
+    return badRequest("mailboxAlias or mailboxAddress is required");
+  }
+
+  if (env.API_SIGNING_SECRET) {
+    try {
+      await reissueMailboxAccessToken(env, mailboxAddress);
+    } catch {
+      // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
+    }
+  }
+
+  return accepted({
+    accepted: true,
+    message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
+  });
 });
 
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
@@ -1224,6 +1254,97 @@ function wantsHtmlResponse(request: Request): boolean {
   const contentType = request.headers.get("content-type") ?? "";
   return accept.includes("text/html") || contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data");
 }
+
+function normalizeMailboxLookup(env: Env, input: { mailboxAlias?: string; mailboxAddress?: string }): string | null {
+  const address = input.mailboxAddress?.trim().toLowerCase();
+  if (address) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) ? address : null;
+  }
+
+  const alias = input.mailboxAlias?.trim().toLowerCase();
+  if (!alias) {
+    return null;
+  }
+
+  const domain = env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net";
+  return /^[a-z0-9][a-z0-9._+-]{2,31}$/.test(alias) ? `${alias}@${domain}` : null;
+}
+
+async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Promise<void> {
+  const mailbox = await getMailboxByAddress(env, mailboxAddress);
+  if (!mailbox || mailbox.status !== "active") {
+    return;
+  }
+
+  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id);
+  if (!executionTarget?.agentId) {
+    return;
+  }
+
+  const agent = await getAgent(env, executionTarget.agentId);
+  if (!agent?.configR2Key) {
+    return;
+  }
+
+  const config = await readAgentConfig(env, agent.configR2Key);
+  const operatorEmail = typeof config?.operatorEmail === "string" ? config.operatorEmail.trim().toLowerCase() : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorEmail)) {
+    return;
+  }
+
+  const productName = typeof config?.productName === "string" && config.productName.trim()
+    ? config.productName.trim()
+    : "Mailagents";
+  const access = await issueSelfServeAccessToken({
+    env,
+    tenantId: mailbox.tenant_id,
+    agentId: executionTarget.agentId,
+    mailboxId: mailbox.id,
+  });
+
+  const draft = await createDraft(env, {
+    tenantId: mailbox.tenant_id,
+    agentId: executionTarget.agentId,
+    mailboxId: mailbox.id,
+    payload: {
+      from: mailbox.address,
+      to: [operatorEmail],
+      subject: `Your refreshed Mailagents access token for ${mailbox.address}`,
+      text: buildTokenReissueText({
+        mailboxAddress: mailbox.address,
+        productName,
+        agentName: agent.name,
+        accessToken: access.accessToken,
+        accessTokenExpiresAt: access.accessTokenExpiresAt,
+        accessTokenScopes: access.accessTokenScopes,
+      }),
+      html: buildTokenReissueHtml({
+        mailboxAddress: mailbox.address,
+        productName,
+        agentName: agent.name,
+        accessToken: access.accessToken,
+        accessTokenExpiresAt: access.accessTokenExpiresAt,
+        accessTokenScopes: access.accessTokenScopes,
+      }),
+      attachments: [],
+    },
+  });
+
+  await enqueueDraftSend(env, draft.id);
+}
+
+async function readAgentConfig(env: Env, configR2Key: string): Promise<Record<string, unknown> | null> {
+  const object = await env.R2_EMAIL.get(configR2Key);
+  if (!object) {
+    return null;
+  }
+
+  const payload = await object.json<unknown>();
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+}
+
 
 function html(markup: string, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);

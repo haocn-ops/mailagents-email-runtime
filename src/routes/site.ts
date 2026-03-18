@@ -902,6 +902,8 @@ content-type: application/json
   <li>Send the draft with <code>POST /v1/drafts/{draftId}/send</code>.</li>
 </ol>
 
+<p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
+
 <h3>1. Sign Up</h3>
 
 <pre><code>curl -sS -X POST ${signupApi} \
@@ -983,6 +985,16 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 
 <p>Use the returned <code>sourceMessageId</code> with <code>get_message</code> and <code>get_message_content</code>, or call <code>reply_to_inbound_email</code> to reply on the same thread.</p>
 
+<h3>6. Reissue an Expired Token</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/public/token/reissue \
+  -H 'content-type: application/json' \
+  -d '{
+    "mailboxAlias": "agent-demo"
+  }'</code></pre>
+
+<p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered to the original <code>operatorEmail</code> from signup.</p>
+
 <h3>What Signup Creates</h3>
 
 <ol>
@@ -992,6 +1004,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>One active mailbox deployment</li>
   <li>One default mailbox-scoped access token for read, draft, and send APIs</li>
   <li>One welcome email through the same outbound runtime used by the product</li>
+  <li>One public token reissue path that only emails refreshed tokens to the original operator inbox</li>
 </ol>
 
 <h2>Agent Discovery</h2>
@@ -1009,6 +1022,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 <ul>
   <li>Mailbox provisioning is backed by the production runtime, not a demo-only path.</li>
   <li>Self-serve signup returns a mailbox-scoped token when API signing is configured for the environment.</li>
+  <li>Expired self-serve tokens can be reissued without the old token, but refreshed credentials are only sent to the original operator inbox.</li>
   <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
   <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
   <li>Operator and compliance contacts are published on this site for review.</li>

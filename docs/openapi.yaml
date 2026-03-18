@@ -55,6 +55,25 @@ paths:
           description: Invalid signup request
         '502':
           description: Provisioning failed
+  /public/token/reissue:
+    post:
+      tags: [Auth]
+      summary: Reissue a self-serve mailbox access token by email
+      operationId: publicTokenReissue
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicTokenReissueRequest'
+      responses:
+        '202':
+          description: Request accepted. If the mailbox exists, a refreshed token will be emailed to the original operator inbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicTokenReissueAccepted'
   /v1/auth/tokens:
     post:
       tags: [Auth]
@@ -999,6 +1018,23 @@ components:
           type: string
           enum: [queued, failed]
         welcomeError:
+          type: string
+    PublicTokenReissueRequest:
+      type: object
+      properties:
+        mailboxAlias:
+          type: string
+        mailboxAddress:
+          type: string
+          format: email
+      description: Provide either mailboxAlias or mailboxAddress. The API always returns a generic acceptance response and never returns the refreshed token directly.
+    PublicTokenReissueAccepted:
+      type: object
+      required: [accepted, message]
+      properties:
+        accepted:
+          type: boolean
+        message:
           type: string
     AgentPolicy:
       type: object

@@ -9,4 +9,10 @@ export {
   buildAgentDescription,
 } from "./provisioning/signup";
 export { SELF_SERVE_DEFAULT_SCOPES } from "./provisioning/default-access";
-export { buildWelcomeHtml, buildWelcomeText, escapeHtml } from "./provisioning/welcome";
+export {
+  buildTokenReissueHtml,
+  buildTokenReissueText,
+  buildWelcomeHtml,
+  buildWelcomeText,
+  escapeHtml,
+} from "./provisioning/welcome";
