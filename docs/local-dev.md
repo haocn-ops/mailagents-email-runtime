@@ -51,11 +51,12 @@ npm run d1:migrate:local
 This creates the initial schema in the local D1 instance persisted under `.wrangler/state`.
 The entire `.wrangler/` directory is local-only and is intentionally gitignored.
 
-If your local or remote database was created before the idempotency update, also
-apply:
+If your local or remote database was created before later schema updates, rerun the
+full migration command or apply the missing files manually. For example:
 
 ```bash
 wrangler d1 execute mailagents-local --local --file=./migrations/0002_idempotency_keys.sql
+wrangler d1 execute mailagents-local --local --file=./migrations/0004_token_reissue_requests.sql
 ```
 
 ## 5. Seed demo data locally
@@ -206,4 +207,4 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 - The current parser is MVP-grade, not a full RFC-complete MIME parser.
 - Outbound now chooses SES `Raw` content when reply headers or attachments are present.
 - Idempotency cleanup can be triggered manually with `POST /admin/api/maintenance/idempotency-cleanup`.
-- For remote D1, use `npm run d1:migrate:remote` and `npm run d1:seed:remote`.
+- For remote D1, use the environment-specific commands such as `npm run d1:migrate:remote:dev` and `npm run d1:seed:remote:dev`.

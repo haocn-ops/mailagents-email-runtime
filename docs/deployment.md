@@ -252,10 +252,12 @@ These migration commands now apply all required schema layers in order:
 2. `0002_agent_registry.sql`
 3. `0002_idempotency_keys.sql`
 4. `0003_agent_deployment_history.sql`
+5. `0004_token_reissue_requests.sql`
 
 If `mailagents-dev` was created before either `migrations/0002_agent_registry.sql` or
 `migrations/0002_idempotency_keys.sql` existed, or before deployment history was rebuilt
-by `migrations/0003_agent_deployment_history.sql`, run `npm run d1:migrate:remote:dev`
+by `migrations/0003_agent_deployment_history.sql`, or before token reissue rate-limit
+logging was added by `migrations/0004_token_reissue_requests.sql`, run `npm run d1:migrate:remote:dev`
 again before testing versioned agent execution, deployment rollout/rollback, send,
 replay, or composite MCP send flows.
 

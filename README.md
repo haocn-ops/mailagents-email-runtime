@@ -100,6 +100,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `migrations/0002_agent_registry.sql`
 - `migrations/0002_idempotency_keys.sql`
 - `migrations/0003_agent_deployment_history.sql`
+- `migrations/0004_token_reissue_requests.sql`
 - `seeds/0001_demo.sql`
 - `wrangler.toml`
 - `src/index.ts`

@@ -111,6 +111,7 @@ The validation sequence was:
 
 1. deploy the latest `dev` Worker
 2. apply remote D1 migrations including `0002_agent_registry.sql`
+   and `0004_token_reissue_requests.sql`
 3. create a demo agent version for `agt_demo`
 4. create an active mailbox deployment for `mbx_demo`
 5. send a live email to `agent@mailagents.net`
