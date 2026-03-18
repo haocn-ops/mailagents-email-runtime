@@ -9,7 +9,7 @@ import {
   requireAuth,
   requireDebugRoutesEnabled,
 } from "../lib/auth";
-import { accepted, badRequest, json, readJson, readOptionalJson } from "../lib/http";
+import { accepted, badRequest, InvalidJsonBodyError, json, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
@@ -1400,7 +1400,15 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
 });
 
 export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  return await router.handle(request, env, ctx);
+  try {
+    return await router.handle(request, env, ctx);
+  } catch (error) {
+    if (error instanceof InvalidJsonBodyError) {
+      return badRequest(error.message);
+    }
+
+    throw error;
+  }
 }
 
 function wantsHtmlResponse(request: Request): boolean {

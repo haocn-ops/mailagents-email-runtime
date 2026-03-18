@@ -1,3 +1,10 @@
+export class InvalidJsonBodyError extends Error {
+  constructor(message = "Invalid JSON body") {
+    super(message);
+    this.name = "InvalidJsonBodyError";
+  }
+}
+
 export function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");
@@ -21,7 +28,11 @@ export function accepted(data: unknown): Response {
 }
 
 export async function readJson<T>(request: Request): Promise<T> {
-  return await request.json<T>();
+  try {
+    return await request.json<T>();
+  } catch {
+    throw new InvalidJsonBodyError();
+  }
 }
 
 export async function readOptionalJson<T>(request: Request): Promise<T | undefined> {
@@ -30,5 +41,9 @@ export async function readOptionalJson<T>(request: Request): Promise<T | undefin
     return undefined;
   }
 
-  return JSON.parse(raw) as T;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new InvalidJsonBodyError();
+  }
 }

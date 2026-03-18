@@ -10,7 +10,7 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
-import { badRequest, json } from "../lib/http";
+import { badRequest, InvalidJsonBodyError, json, readJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildRuntimeMetadata } from "../lib/runtime-metadata";
 import { escapeHtml } from "../lib/self-serve";
@@ -131,7 +131,7 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
     return configError;
   }
 
-  const body = await request.json<{ alias?: string }>();
+  const body = await readJson<{ alias?: string }>(request);
   const alias = body.alias?.trim().toLowerCase();
 
   if (!alias || !/^[a-z0-9._+-]+$/.test(alias)) {
@@ -169,9 +169,9 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
     return configError;
   }
 
-  const body = await request.json<{
+  const body = await readJson<{
     overwrite?: boolean;
-  }>();
+  }>(request);
   if (!env.CLOUDFLARE_EMAIL_WORKER) {
     return json({ error: "CLOUDFLARE_EMAIL_WORKER is not configured" }, { status: 500 });
   }
@@ -444,7 +444,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     return accessError;
   }
 
-  const body = await request.json<{
+  const body = await readJson<{
     mailboxId?: string;
     tenantId?: string;
     from?: string;
@@ -459,7 +459,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     inReplyTo?: string;
     references?: string[];
     idempotencyKey?: string;
-  }>();
+  }>(request);
 
   if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
     return badRequest("mailboxId, tenantId, from, to, and subject are required");
@@ -613,7 +613,15 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
 });
 
 export async function handleSiteRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  return await site.handle(request, env, ctx);
+  try {
+    return await site.handle(request, env, ctx);
+  } catch (error) {
+    if (error instanceof InvalidJsonBodyError) {
+      return badRequest(error.message);
+    }
+
+    throw error;
+  }
 }
 
 function requireSiteAdminAccess(request: Request, env: Env): Response | null {
