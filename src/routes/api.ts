@@ -14,6 +14,13 @@ import { Router } from "../lib/router";
 import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
+  escapeHtml,
+  parseSelfServeSignup,
+  performSelfServeSignup,
+  type SignupPageState,
+  type SignupSuccessResult,
+} from "../lib/self-serve";
+import {
   bindMailbox,
   createAgent,
   createAgentDeployment,
@@ -54,6 +61,47 @@ import {
 import type { Env } from "../types";
 
 const router = new Router<Env>();
+
+router.on("GET", "/public/signup", async () => {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: "https://mailagents.net/signup",
+    },
+  });
+});
+
+router.on("HEAD", "/public/signup", async () => {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: "https://mailagents.net/signup",
+    },
+  });
+});
+
+router.on("POST", "/public/signup", async (request, env) => {
+  const parsed = await parseSelfServeSignup(request);
+  const expectsHtml = wantsHtmlResponse(request);
+
+  if (!parsed.ok) {
+    return expectsHtml
+      ? html(renderPublicSignupResult("Start Signup", renderPublicSignupError(parsed)))
+      : json({ error: parsed.error, values: parsed.values }, { status: 400 });
+  }
+
+  try {
+    const result = await performSelfServeSignup(env, parsed.values);
+    return expectsHtml
+      ? html(renderPublicSignupResult("Signup Complete", renderPublicSignupSuccess(result)), { status: 201 })
+      : json(result, { status: 201 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to complete self-serve signup";
+    return expectsHtml
+      ? html(renderPublicSignupResult("Start Signup", renderPublicSignupError({ values: parsed.values, error: message })), { status: 502 })
+      : json({ error: message, values: parsed.values }, { status: 502 });
+  }
+});
 
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
   return json(buildRuntimeMetadata(env));
@@ -1169,4 +1217,134 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
 
 export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   return await router.handle(request, env, ctx);
+}
+
+function wantsHtmlResponse(request: Request): boolean {
+  const accept = request.headers.get("accept") ?? "";
+  const contentType = request.headers.get("content-type") ?? "";
+  return accept.includes("text/html") || contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data");
+}
+
+function html(markup: string, init: ResponseInit = {}): Response {
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "text/html; charset=utf-8");
+  return new Response(markup, {
+    ...init,
+    headers,
+  });
+}
+
+function renderPublicSignupResult(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)} | Mailagents</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(180deg, #fff9f0 0%, #fffef8 100%);
+        color: #261c12;
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 48px 20px 72px;
+      }
+      .card {
+        background: rgba(255, 252, 246, 0.96);
+        border: 1px solid rgba(68, 49, 28, 0.12);
+        border-radius: 28px;
+        box-shadow: 0 20px 60px rgba(68, 49, 28, 0.08);
+        padding: 28px;
+      }
+      .eyebrow {
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #9d5a1f;
+        margin-bottom: 10px;
+      }
+      h1 { margin: 0 0 12px; font-size: 34px; line-height: 1.1; }
+      p, li { line-height: 1.6; }
+      .banner {
+        border-radius: 18px;
+        padding: 14px 16px;
+        margin: 18px 0;
+      }
+      .banner.error { background: #fff1ef; color: #8c2a1a; }
+      .banner.success { background: #eefaf1; color: #185c2b; }
+      .mono {
+        display: inline-block;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: #f6eee1;
+        padding: 4px 8px;
+        border-radius: 10px;
+      }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px 18px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .button.primary { background: #261c12; color: #fffdf8; }
+      .button.secondary { background: transparent; color: #261c12; border: 1px solid rgba(38, 28, 18, 0.18); }
+    </style>
+  </head>
+  <body>
+    <main>
+      ${body}
+    </main>
+  </body>
+</html>`;
+}
+
+function renderPublicSignupError(state: SignupPageState): string {
+  const values = state.values ?? {};
+  return `<section class="card">
+    <div class="eyebrow">Public Signup</div>
+    <h1>We could not finish provisioning yet.</h1>
+    <div class="banner error">${escapeHtml(state.error ?? "Unknown error")}</div>
+    <p>Review the mailbox details and try again from the public signup page.</p>
+    <ul>
+      <li>Requested mailbox: <span class="mono">${escapeHtml(values.mailboxAlias ?? "")}@mailagents.net</span></li>
+      <li>Operator inbox: <span class="mono">${escapeHtml(values.operatorEmail ?? "")}</span></li>
+    </ul>
+    <div class="actions">
+      <a class="button primary" href="https://mailagents.net/signup">Back to signup</a>
+      <a class="button secondary" href="mailto:hello@mailagents.net">Contact support</a>
+    </div>
+  </section>`;
+}
+
+function renderPublicSignupSuccess(result: SignupSuccessResult): string {
+  const bannerClass = result.welcomeStatus === "queued" ? "success" : "error";
+  const bannerText = result.welcomeStatus === "queued"
+    ? "Mailbox created and welcome email queued successfully."
+    : `Mailbox created, but the welcome email could not be queued automatically: ${result.welcomeError ?? "unknown error"}`;
+  return `<section class="card">
+    <div class="eyebrow">Public Signup</div>
+    <h1>${escapeHtml(result.mailboxAddress)} is ready.</h1>
+    <div class="banner ${bannerClass}">${escapeHtml(bannerText)}</div>
+    <p>Your first mailbox, default agent, published version, and active deployment have been created inside Mailagents.</p>
+    <ul>
+      <li>Mailbox: <span class="mono">${escapeHtml(result.mailboxAddress)}</span></li>
+      <li>Agent ID: <span class="mono">${escapeHtml(result.agentId)}</span></li>
+      <li>Version ID: <span class="mono">${escapeHtml(result.agentVersionId)}</span></li>
+      <li>Deployment ID: <span class="mono">${escapeHtml(result.deploymentId)}</span></li>
+      ${result.outboundJobId ? `<li>Welcome outbound job: <span class="mono">${escapeHtml(result.outboundJobId)}</span></li>` : ""}
+    </ul>
+    <p>Check <strong>${escapeHtml(result.operatorEmail)}</strong> for the welcome email sent from the new mailbox.</p>
+    <div class="actions">
+      <a class="button primary" href="https://mailagents.net/">Back to homepage</a>
+      <a class="button secondary" href="https://mailagents.net/signup">Create another mailbox</a>
+    </div>
+  </section>`;
 }

@@ -5,6 +5,15 @@ compatibility_date = "2026-03-16"
 [observability]
 enabled = true
 
+[vars]
+CLOUDFLARE_EMAIL_DOMAIN = "mailagents.net"
+SES_REGION = "us-east-1"
+SES_FROM_DOMAIN = "mailagents.net"
+ADMIN_ROUTES_ENABLED = "false"
+DEBUG_ROUTES_ENABLED = "false"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
+
 [[d1_databases]]
 binding = "D1_DB"
 database_name = "mailagents-dev"
@@ -18,10 +27,32 @@ bucket_name = "mailagents-dev-email"
 binding = "OUTBOUND_SEND_QUEUE"
 queue = "mailagents-dev-outbound-send"
 
-[vars]
-CLOUDFLARE_ZONE_ID = "b6ff05475c44f13b926af9f7d71312e8"
+[env.production]
+name = "mailagents-site"
+routes = [
+  { pattern = "mailagents.net/*", zone_name = "mailagents.net" },
+  { pattern = "www.mailagents.net/*", zone_name = "mailagents.net" }
+]
+
+[[env.production.d1_databases]]
+binding = "D1_DB"
+database_name = "mailagents-production"
+database_id = "2c3e9c0a-8551-48b6-b256-97761de3e3f1"
+
+[[env.production.r2_buckets]]
+binding = "R2_EMAIL"
+bucket_name = "mailagents-production-email"
+
+[[env.production.queues.producers]]
+binding = "OUTBOUND_SEND_QUEUE"
+queue = "mailagents-production-outbound-send"
+
+[env.production.vars]
 CLOUDFLARE_EMAIL_DOMAIN = "mailagents.net"
-CLOUDFLARE_EMAIL_WORKER = "mailagents-dev"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
-SES_CONFIGURATION_SET = "mailagents-dev"
+SES_CONFIGURATION_SET = "mailagents-production"
+ADMIN_ROUTES_ENABLED = "false"
+DEBUG_ROUTES_ENABLED = "false"
+IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
+IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
