@@ -53,6 +53,7 @@ import {
   getMessageByProviderMessageId,
   getMessageContent,
   getThread,
+  getOutboundJobByMessageId,
   getOutboundJob,
   getSuppression,
   insertDeliveryEvent,
@@ -61,6 +62,7 @@ import {
   releaseIdempotencyKey,
   reserveIdempotencyKey,
   addSuppression,
+  updateOutboundJobStatus,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
 import {
@@ -1361,6 +1363,28 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
       normalized.eventType === "complaint" ? "failed" :
       "failed";
     await updateMessageStatusByProviderMessageId(env, normalized.providerMessageId, status);
+  }
+
+  if (message) {
+    const outboundJob = await getOutboundJobByMessageId(env, message.id);
+    if (outboundJob) {
+      const deliveryError = normalized.reason ?? normalized.eventType;
+      if (normalized.eventType === "delivery") {
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "sent",
+          lastError: null,
+          nextRetryAt: null,
+        });
+      } else {
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "failed",
+          lastError: deliveryError,
+          nextRetryAt: null,
+        });
+      }
+    }
   }
 
   if ((normalized.eventType === "bounce" || normalized.eventType === "complaint") && normalized.recipient) {

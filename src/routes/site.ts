@@ -357,6 +357,10 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
+    const message = await getMessage(env, job.messageId);
+    if (message?.providerMessageId) {
+      return json({ error: "Outbound jobs with provider delivery events cannot be retried from the queue state" }, { status: 409 });
+    }
     if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
     }
