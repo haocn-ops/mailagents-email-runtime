@@ -55,10 +55,6 @@ export interface SignupSuccessResult {
 export const RESERVED_SELF_SERVE_ALIASES = new Set([
   "admin",
   "api",
-  "dmarc",
-  "hello",
-  "privacy",
-  "security",
   "support",
   "www",
 ]);
