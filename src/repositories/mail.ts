@@ -202,6 +202,18 @@ function mapSuppressionRow(row: SuppressionRow) {
   };
 }
 
+function parseOptionalJson<T>(value: string | null): T | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 function mapIdempotencyRow<T>(row: IdempotencyRow): IdempotencyRecord<T> {
   return {
     operation: row.operation,
@@ -210,7 +222,7 @@ function mapIdempotencyRow<T>(row: IdempotencyRow): IdempotencyRecord<T> {
     requestFingerprint: row.request_fingerprint,
     status: row.status,
     resourceId: row.resource_id ?? undefined,
-    response: row.response_json ? JSON.parse(row.response_json) as T : undefined,
+    response: parseOptionalJson<T>(row.response_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
