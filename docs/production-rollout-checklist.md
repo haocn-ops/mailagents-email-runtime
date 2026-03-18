@@ -3,11 +3,6 @@
 This checklist covers the remaining work before deploying the Mailagents
 runtime to the real production environment and binding a custom domain.
 
-Current blockers as of 2026-03-17:
-
-- `dev` remote smoke cannot complete until the remote admin secret is aligned or updated
-- `mailagents.net` resolves, but `api.mailagents.net` does not currently resolve in DNS
-
 Resolved during this rollout:
 
 - production D1 database created: `mailagents-production`
@@ -16,6 +11,8 @@ Resolved during this rollout:
 - `mailagents-production` Worker deployed
 - production secrets installed
 - production route attached: `api.mailagents.net/*`
+- production read-only smoke passed
+- production support mailbox routing verified through a real inbound message
 
 ## 1. Cloudflare Production Resources
 
@@ -30,7 +27,8 @@ Observed current state:
 
 - root site `mailagents.net` is live
 - production Worker route is attached to `api.mailagents.net/*`
-- `api.mailagents.net` is still not currently resolvable in DNS
+- `api.mailagents.net` responds successfully
+- `support@mailagents.net` now has a Cloudflare Email Routing rule targeting `mailagents-production`
 
 Expected defaults in this repo:
 
@@ -113,6 +111,7 @@ After deploy:
 - verify MCP `initialize`
 - verify admin/debug routes are disabled
 - run `npm run smoke:production:readonly`
+- verify at least one real inbound mailbox path end to end
 
 ## 6. Domain Binding
 
@@ -124,11 +123,17 @@ After the production Worker exists:
 - verify HTTPS response on the final hostname
 - rerun the read-only runtime checks on the final domain
 
-## 7. What I Need From You
+## 7. Operational Notes
 
-To continue execution, I need:
+Two production-specific pitfalls showed up during the real bootstrap:
 
-- a Cloudflare credential with `DNS: Edit` for `mailagents.net`
+- Cloudflare Email Routing must have an explicit worker rule for each new production alias you want to receive
+- AWS SES suppression can make inbound verification appear broken even when routing is correct, if the test address has previously bounced
+
+For the verified `support@mailagents.net` rollout, both had to be addressed:
+
+- a `support inbox` routing rule was added for `mailagents-production`
+- `support@mailagents.net` was removed from the SES account suppression list before final verification
 
 ## 8. Minimum Cloudflare Permissions
 

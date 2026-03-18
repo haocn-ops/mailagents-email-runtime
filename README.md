@@ -31,6 +31,9 @@ Inbound email and replay jobs now carry mailbox-specific routing data instead of
 The runtime now also supports a versioned agent registry with mailbox deployments, and the
 shared `dev` environment has been verified end to end for agent registration, inbound mail,
 outbound SES send, and deployment-aware agent execution traces.
+Production has also been verified end to end for `support@mailagents.net`, including
+mailbox bootstrap, Cloudflare Email Routing, inbound task creation, and version-aware
+agent execution traces.
 
 ## Quick Start
 
@@ -191,6 +194,7 @@ See [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap
 - the first safe write path in production
 - mailbox, agent, version, and deployment bootstrap order
 - post-bootstrap validation expectations
+- a real verified `support@mailagents.net` production example
 
 See [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) for:
 

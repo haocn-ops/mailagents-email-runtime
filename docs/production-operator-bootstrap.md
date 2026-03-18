@@ -31,6 +31,27 @@ Do this with a temporary operator token in a tightly controlled maintenance wind
 7. send one controlled inbound email to verify task creation
 8. send one controlled outbound draft to verify SES path
 
+## Verified Example
+
+As of 2026-03-18, this flow has been verified in production for:
+
+- mailbox: `support@mailagents.net`
+- mailbox id: `mbx_support_primary`
+- agent id: `agt_support_primary`
+- version id: `agv_support_v1`
+- deployment id: `agd_support_primary_v1`
+
+Observed successful inbound runtime records:
+
+- message id: `msg_48e8daa3d719442fadd210d33d298590`
+- task id: `tsk_842060e1e2904cb5be11612d0174573b`
+- run id: `run_tsk_842060e1e2904cb5be11612d0174573b`
+
+The resulting trace confirmed:
+
+- `agentVersionId = agv_support_v1`
+- `deploymentId = agd_support_primary_v1`
+
 ## Safety Notes
 
 - keep `ADMIN_ROUTES_ENABLED=false` in production outside the exact bootstrap window
@@ -38,6 +59,8 @@ Do this with a temporary operator token in a tightly controlled maintenance wind
 - use a dedicated operator mailbox or verified test recipient for first outbound validation
 - do not run demo seed data in production
 - do not reuse `agt_demo` or `mbx_demo` identifiers in production
+- if you test inbound by sending from SES, check the SES account suppression list first
+- Cloudflare Email Routing rules must exist before inbound verification is meaningful
 
 ## Suggested Naming
 
@@ -53,6 +76,12 @@ After bootstrap, verify:
 - the resulting `agent_runs` row has a non-null `trace_r2_key`
 - the fetched trace includes `agentVersionId` and `deploymentId`
 - one controlled outbound draft reaches SES and records `provider_message_id`
+
+If inbound does not arrive:
+
+1. inspect Cloudflare Email Routing rules for the target address
+2. confirm the rule action points to the production worker
+3. verify the destination address is not on the SES account suppression list
 
 ## Rollout Model
 
