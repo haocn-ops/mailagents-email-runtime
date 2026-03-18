@@ -5,6 +5,7 @@ import {
   upsertCatchAllWorkerRule,
   upsertWorkerRule,
 } from "../cloudflare-email";
+import { readJson } from "../http";
 import { createId } from "../ids";
 import {
   bindMailbox,
@@ -67,7 +68,7 @@ export async function parseSelfServeSignup(request: Request): Promise<
   let values: Partial<SignupFormValues>;
 
   if (contentType.includes("application/json")) {
-    const body = await request.json<Record<string, unknown>>();
+    const body = await readJson<Record<string, unknown>>(request);
     values = {
       mailboxAlias: String(body.mailboxAlias ?? "").trim().toLowerCase(),
       agentName: String(body.agentName ?? "").trim(),

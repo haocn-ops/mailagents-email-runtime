@@ -96,8 +96,22 @@ router.on("HEAD", "/public/signup", async () => {
 });
 
 router.on("POST", "/public/signup", async (request, env) => {
-  const parsed = await parseSelfServeSignup(request);
   const expectsHtml = wantsHtmlResponse(request);
+  let parsed: Awaited<ReturnType<typeof parseSelfServeSignup>>;
+
+  try {
+    parsed = await parseSelfServeSignup(request);
+  } catch (error) {
+    if (error instanceof InvalidJsonBodyError) {
+      return expectsHtml
+        ? html(renderPublicSignupResult("Start Signup", renderPublicSignupError({
+            values: {},
+            error: error.message,
+          })), { status: 400 })
+        : json({ error: error.message, values: {} }, { status: 400 });
+    }
+    throw error;
+  }
 
   if (!parsed.ok) {
     return expectsHtml
@@ -1330,7 +1344,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     }
   }
 
-  const body = await request.json<unknown>();
+  const body = await readJson<unknown>(request);
   const normalized = normalizeSesEvent(body);
   const payloadR2Key = `events/ses/${createId("evt")}.json`;
   await env.R2_EMAIL.put(payloadR2Key, JSON.stringify(body, null, 2), {
