@@ -5,6 +5,10 @@ export class InvalidJsonBodyError extends Error {
   }
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");
@@ -28,11 +32,18 @@ export function accepted(data: unknown): Response {
 }
 
 export async function readJson<T>(request: Request): Promise<T> {
+  let body: unknown;
   try {
-    return await request.json<T>();
+    body = await request.json<T>();
   } catch {
     throw new InvalidJsonBodyError();
   }
+
+  if (!isJsonObject(body)) {
+    throw new InvalidJsonBodyError("JSON body must be an object");
+  }
+
+  return body as T;
 }
 
 export async function readOptionalJson<T>(request: Request): Promise<T | undefined> {
@@ -41,9 +52,16 @@ export async function readOptionalJson<T>(request: Request): Promise<T | undefin
     return undefined;
   }
 
+  let body: unknown;
   try {
-    return JSON.parse(raw) as T;
+    body = JSON.parse(raw) as unknown;
   } catch {
     throw new InvalidJsonBodyError();
   }
+
+  if (!isJsonObject(body)) {
+    throw new InvalidJsonBodyError("JSON body must be an object");
+  }
+
+  return body as T;
 }
