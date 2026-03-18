@@ -2029,6 +2029,15 @@ function renderAdmin(url: URL): string {
       return payload;
     }
 
+    function esc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function setView(viewName) {
       document.querySelectorAll(".admin-nav-button").forEach((button) => {
         button.classList.toggle("active", button.getAttribute("data-view") === viewName);
@@ -2183,11 +2192,11 @@ function renderAdmin(url: URL): string {
       contactMailboxList.innerHTML = items.length
         ? items.map((item) =>
             '<div class="faq-item">' +
-              '<h3>' + item.address + '</h3>' +
-              '<p>Status: ' + item.status + '</p>' +
+              '<h3>' + esc(item.address) + '</h3>' +
+              '<p>Status: ' + esc(item.status) + '</p>' +
               '<p style="margin-top:12px;">' +
-                '<button data-contact-mailbox="' + item.id + '" class="button secondary contact-mailbox-button" type="button">Open Inbox</button> ' +
-                '<button data-main-mailbox="' + item.id + '" class="button secondary jump-mailbox-button" type="button">Open In Messages</button>' +
+                '<button data-contact-mailbox="' + esc(item.id) + '" class="button secondary contact-mailbox-button" type="button">Open Inbox</button> ' +
+                '<button data-main-mailbox="' + esc(item.id) + '" class="button secondary jump-mailbox-button" type="button">Open In Messages</button>' +
               '</p>' +
             '</div>'
           ).join("")
@@ -2221,11 +2230,11 @@ function renderAdmin(url: URL): string {
       messageList.innerHTML = items.length
         ? items.map((item) =>
             '<div class="faq-item">' +
-              '<h3>' + (item.subject || '(No subject)') + '</h3>' +
-              '<p>From: ' + item.fromAddr + '</p>' +
-              '<p>To: ' + item.toAddr + '</p>' +
-              '<p>Status: ' + item.status + ' · ' + item.direction + '</p>' +
-              '<p style="margin-top:12px;"><button data-message="' + item.id + '" class="button secondary message-button" type="button">View Message</button></p>' +
+              '<h3>' + esc(item.subject || '(No subject)') + '</h3>' +
+              '<p>From: ' + esc(item.fromAddr) + '</p>' +
+              '<p>To: ' + esc(item.toAddr) + '</p>' +
+              '<p>Status: ' + esc(item.status) + ' · ' + esc(item.direction) + '</p>' +
+              '<p style="margin-top:12px;"><button data-message="' + esc(item.id) + '" class="button secondary message-button" type="button">View Message</button></p>' +
             '</div>'
           ).join("")
         : 'No messages found for this mailbox.';
@@ -2254,11 +2263,11 @@ function renderAdmin(url: URL): string {
       contactMessageList.innerHTML = items.length
         ? items.map((item) =>
             '<div class="faq-item">' +
-              '<h3>' + (item.subject || '(No subject)') + '</h3>' +
-              '<p>From: ' + item.fromAddr + '</p>' +
-              '<p>Received: ' + (item.receivedAt || item.createdAt) + '</p>' +
+              '<h3>' + esc(item.subject || '(No subject)') + '</h3>' +
+              '<p>From: ' + esc(item.fromAddr) + '</p>' +
+              '<p>Received: ' + esc(item.receivedAt || item.createdAt) + '</p>' +
               '<p style="margin-top:12px;">' +
-                '<button data-contact-message="' + item.id + '" class="button secondary contact-message-button" type="button">Inspect</button>' +
+                '<button data-contact-message="' + esc(item.id) + '" class="button secondary contact-message-button" type="button">Inspect</button>' +
               '</p>' +
             '</div>'
           ).join("")
@@ -2307,12 +2316,12 @@ function renderAdmin(url: URL): string {
         const text = content.text || content.html || 'No content extracted.';
         contactMessageDetail.innerHTML =
           '<div class="faq-item">' +
-            '<h3>' + (message.subject || '(No subject)') + '</h3>' +
-            '<p><strong>From:</strong> ' + message.fromAddr + '</p>' +
-            '<p><strong>To:</strong> ' + message.toAddr + '</p>' +
-            '<p><strong>Status:</strong> ' + message.status + '</p>' +
-            '<div class="code" style="margin-top:12px;">' + text + '</div>' +
-            '<p style="margin-top:12px;"><button data-thread-message="' + message.id + '" class="button secondary contact-thread-button" type="button">Open Thread & Delivery</button></p>' +
+            '<h3>' + esc(message.subject || '(No subject)') + '</h3>' +
+            '<p><strong>From:</strong> ' + esc(message.fromAddr) + '</p>' +
+            '<p><strong>To:</strong> ' + esc(message.toAddr) + '</p>' +
+            '<p><strong>Status:</strong> ' + esc(message.status) + '</p>' +
+            '<div class="code" style="margin-top:12px;">' + esc(text) + '</div>' +
+            '<p style="margin-top:12px;"><button data-thread-message="' + esc(message.id) + '" class="button secondary contact-thread-button" type="button">Open Thread & Delivery</button></p>' +
           '</div>';
 
         const openThreadButton = document.querySelector(".contact-thread-button");
@@ -2331,13 +2340,13 @@ function renderAdmin(url: URL): string {
       outboundJobs.innerHTML = items.length
         ? items.map((job) =>
             '<div class="faq-item">' +
-              '<h3>' + job.id + '</h3>' +
-              '<p>Status: ' + job.status + '</p>' +
-              '<p>Message: ' + job.messageId + '</p>' +
-              '<p>Updated: ' + job.updatedAt + '</p>' +
-              '<p>' + (job.lastError || 'No error') + '</p>' +
+              '<h3>' + esc(job.id) + '</h3>' +
+              '<p>Status: ' + esc(job.status) + '</p>' +
+              '<p>Message: ' + esc(job.messageId) + '</p>' +
+              '<p>Updated: ' + esc(job.updatedAt) + '</p>' +
+              '<p>' + esc(job.lastError || 'No error') + '</p>' +
               '<p style="margin-top:12px;">' + (job.status === 'failed'
-                ? '<button data-job="' + job.id + '" class="button secondary retry-job" type="button">Retry Job</button>'
+                ? '<button data-job="' + esc(job.id) + '" class="button secondary retry-job" type="button">Retry Job</button>'
                 : '') + '</p>' +
             '</div>'
           ).join('')
@@ -2366,12 +2375,12 @@ function renderAdmin(url: URL): string {
       idempotencyList.innerHTML = items.length
         ? items.map((item) =>
             '<div class="faq-item">' +
-              '<h3>' + item.operation + '</h3>' +
-              '<p>Status: ' + item.status + '</p>' +
-              '<p>Tenant: ' + item.tenantId + '</p>' +
-              '<p>Key: <code>' + item.idempotencyKey + '</code></p>' +
-              '<p>Resource: ' + (item.resourceId || 'n/a') + '</p>' +
-              '<p>Updated: ' + item.updatedAt + '</p>' +
+              '<h3>' + esc(item.operation) + '</h3>' +
+              '<p>Status: ' + esc(item.status) + '</p>' +
+              '<p>Tenant: ' + esc(item.tenantId) + '</p>' +
+              '<p>Key: <code>' + esc(item.idempotencyKey) + '</code></p>' +
+              '<p>Resource: ' + esc(item.resourceId || 'n/a') + '</p>' +
+              '<p>Updated: ' + esc(item.updatedAt) + '</p>' +
             '</div>'
           ).join('')
         : 'No idempotency records found for the current filters.';
@@ -2410,11 +2419,11 @@ function renderAdmin(url: URL): string {
       draftList.innerHTML = items.length
         ? items.map((draft) =>
             '<div class="faq-item">' +
-              '<h3>' + draft.id + '</h3>' +
-              '<p>Status: ' + draft.status + '</p>' +
-              '<p>Mailbox: ' + draft.mailboxId + '</p>' +
-              '<p>Updated: ' + draft.updatedAt + '</p>' +
-              '<p style="margin-top:12px;"><button data-draft="' + draft.id + '" class="button secondary draft-button" type="button">Inspect Draft</button></p>' +
+              '<h3>' + esc(draft.id) + '</h3>' +
+              '<p>Status: ' + esc(draft.status) + '</p>' +
+              '<p>Mailbox: ' + esc(draft.mailboxId) + '</p>' +
+              '<p>Updated: ' + esc(draft.updatedAt) + '</p>' +
+              '<p style="margin-top:12px;"><button data-draft="' + esc(draft.id) + '" class="button secondary draft-button" type="button">Inspect Draft</button></p>' +
             '</div>'
           ).join('')
         : 'No drafts found.';
@@ -2498,7 +2507,7 @@ function renderAdmin(url: URL): string {
         const text = content.text || '';
         const html = content.html || '';
         const attachments = (content.attachments || []).map((item) =>
-          '<li>' + (item.filename || item.id) + ' · ' + item.sizeBytes + ' bytes</li>'
+          '<li>' + esc(item.filename || item.id) + ' · ' + esc(item.sizeBytes) + ' bytes</li>'
         ).join('');
         currentReplyContext = {
           mailboxId: message.mailboxId,
@@ -2511,16 +2520,16 @@ function renderAdmin(url: URL): string {
           inReplyTo: message.internetMessageId || '',
           references: message.internetMessageId ? [message.internetMessageId] : [],
         };
-        replyHint.innerHTML = 'Reply ready for <strong>' + message.fromAddr + '</strong>. <button id="use-reply" class="button secondary" type="button">Use Reply Draft</button>';
+        replyHint.innerHTML = 'Reply ready for <strong>' + esc(message.fromAddr) + '</strong>. <button id="use-reply" class="button secondary" type="button">Use Reply Draft</button>';
 
         messageDetail.innerHTML =
           '<div class="faq-item">' +
-            '<h3>' + (message.subject || '(No subject)') + '</h3>' +
-            '<p><strong>From:</strong> ' + message.fromAddr + '</p>' +
-            '<p><strong>To:</strong> ' + message.toAddr + '</p>' +
-            '<p><strong>Status:</strong> ' + message.status + '</p>' +
-            '<p><strong>Received:</strong> ' + (message.receivedAt || message.createdAt) + '</p>' +
-            '<div class="code" style="margin-top:12px;">' + (text || html || 'No content extracted.') + '</div>' +
+            '<h3>' + esc(message.subject || '(No subject)') + '</h3>' +
+            '<p><strong>From:</strong> ' + esc(message.fromAddr) + '</p>' +
+            '<p><strong>To:</strong> ' + esc(message.toAddr) + '</p>' +
+            '<p><strong>Status:</strong> ' + esc(message.status) + '</p>' +
+            '<p><strong>Received:</strong> ' + esc(message.receivedAt || message.createdAt) + '</p>' +
+            '<div class="code" style="margin-top:12px;">' + esc(text || html || 'No content extracted.') + '</div>' +
             '<div style="margin-top:12px;"><strong>Attachments</strong><ul>' + (attachments || '<li>None</li>') + '</ul></div>' +
           '</div>';
 
@@ -2540,10 +2549,10 @@ function renderAdmin(url: URL): string {
           threadView.innerHTML = thread.messages.length
             ? thread.messages.map((item) =>
                 '<div class="faq-item">' +
-                  '<h3>' + (item.subject || '(No subject)') + '</h3>' +
-                  '<p>' + item.direction + ' · ' + item.status + '</p>' +
-                  '<p>From: ' + item.fromAddr + '</p>' +
-                  '<p>To: ' + item.toAddr + '</p>' +
+                  '<h3>' + esc(item.subject || '(No subject)') + '</h3>' +
+                  '<p>' + esc(item.direction) + ' · ' + esc(item.status) + '</p>' +
+                  '<p>From: ' + esc(item.fromAddr) + '</p>' +
+                  '<p>To: ' + esc(item.toAddr) + '</p>' +
                 '</div>'
               ).join('')
             : 'Thread found but no messages were returned.';
@@ -2556,9 +2565,9 @@ function renderAdmin(url: URL): string {
         deliveryEvents.innerHTML = events.items.length
           ? events.items.map((event) =>
               '<div class="faq-item">' +
-                '<h3>' + event.eventType + '</h3>' +
-                '<p>Provider message id: ' + (event.providerMessageId || 'n/a') + '</p>' +
-                '<p>Created: ' + event.createdAt + '</p>' +
+                '<h3>' + esc(event.eventType) + '</h3>' +
+                '<p>Provider message id: ' + esc(event.providerMessageId || 'n/a') + '</p>' +
+                '<p>Created: ' + esc(event.createdAt) + '</p>' +
               '</div>'
             ).join('')
           : 'No delivery events recorded for this message yet.';
@@ -2574,11 +2583,11 @@ function renderAdmin(url: URL): string {
           }
           outboxDetail.innerHTML = match
             ? '<div class="faq-item">' +
-                '<h3>Outbound job ' + match.id + '</h3>' +
-                '<p>Status: ' + match.status + '</p>' +
-                '<p>Retry count: ' + match.retryCount + '</p>' +
-                '<p>Next retry: ' + (match.nextRetryAt || 'n/a') + '</p>' +
-                '<p>Last error: ' + (match.lastError || 'none') + '</p>' +
+                '<h3>Outbound job ' + esc(match.id) + '</h3>' +
+                '<p>Status: ' + esc(match.status) + '</p>' +
+                '<p>Retry count: ' + esc(match.retryCount) + '</p>' +
+                '<p>Next retry: ' + esc(match.nextRetryAt || 'n/a') + '</p>' +
+                '<p>Last error: ' + esc(match.lastError || 'none') + '</p>' +
               '</div>'
             : 'No outbound job found for this message.';
         } else {
