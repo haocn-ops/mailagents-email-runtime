@@ -32,6 +32,7 @@ export interface Env {
   SES_SECRET_KEY?: string;
   WEBHOOK_SHARED_SECRET?: string;
   API_SIGNING_SECRET?: string;
+  SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS?: string;
   ADMIN_API_SECRET?: string;
   ADMIN_ROUTES_ENABLED?: string;
   DEBUG_ROUTES_ENABLED?: string;

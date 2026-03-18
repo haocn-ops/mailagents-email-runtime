@@ -29,7 +29,7 @@ It provides:
 Think in this order:
 
 1. discover capabilities
-2. mint a least-privilege bearer token
+2. obtain a least-privilege bearer token
 3. read state before side effects
 4. create a draft before send
 5. use explicit `idempotencyKey` values for retryable side effects
@@ -85,6 +85,9 @@ Current shared `dev` URLs:
 ## Authentication
 
 Default integration auth is a signed bearer token.
+
+For self-serve mailboxes, the first bearer token may come directly from
+`POST /public/signup` instead of a separate admin mint flow.
 
 Minimum common scopes by job:
 

@@ -13,6 +13,30 @@ The runtime has three authentication surfaces:
 
 For AI agents, bearer tokens are the default integration method.
 
+## Self-Serve Signup Tokens
+
+`POST /public/signup` can also issue a default bearer token for the newly
+created mailbox when `API_SIGNING_SECRET` is configured.
+
+The default self-serve token is:
+
+- mailbox-scoped to the new mailbox
+- agent-scoped to the default agent created during signup
+- returned in the signup API response
+- included in the welcome email
+
+Default scopes:
+
+- `task:read`
+- `mail:read`
+- `draft:create`
+- `draft:read`
+- `draft:send`
+
+The default expiration can be controlled with
+`SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the self-serve token
+defaults to 30 days.
+
 ## Minting a Bearer Token
 
 Use `POST /v1/auth/tokens`.

@@ -1339,8 +1339,12 @@ function renderPublicSignupSuccess(result: SignupSuccessResult): string {
       <li>Agent ID: <span class="mono">${escapeHtml(result.agentId)}</span></li>
       <li>Version ID: <span class="mono">${escapeHtml(result.agentVersionId)}</span></li>
       <li>Deployment ID: <span class="mono">${escapeHtml(result.deploymentId)}</span></li>
+      <li>Default scopes: <span class="mono">${escapeHtml(result.accessTokenScopes.join(", "))}</span></li>
+      ${result.accessTokenExpiresAt ? `<li>Access token expires at: <span class="mono">${escapeHtml(result.accessTokenExpiresAt)}</span></li>` : ""}
       ${result.outboundJobId ? `<li>Welcome outbound job: <span class="mono">${escapeHtml(result.outboundJobId)}</span></li>` : ""}
     </ul>
+    ${result.accessToken ? `<p>Use this mailbox-scoped bearer token for inbound reads, draft creation, and send:</p>
+    <pre class="banner success"><code>${escapeHtml(result.accessToken)}</code></pre>` : "<p>Mailbox resources are ready, but no default bearer token could be issued in this environment.</p>"}
     <p>Check <strong>${escapeHtml(result.operatorEmail)}</strong> for the welcome email sent from the new mailbox.</p>
     <div class="actions">
       <a class="button primary" href="https://mailagents.net/">Back to homepage</a>

@@ -18,6 +18,43 @@ tags:
   - name: Drafts
   - name: Webhooks
 paths:
+  /public/signup:
+    get:
+      tags: [Auth]
+      summary: Redirect to the public signup page
+      security: []
+      responses:
+        '302':
+          description: Redirect to the hosted signup page
+    head:
+      tags: [Auth]
+      summary: Redirect to the public signup page
+      security: []
+      responses:
+        '302':
+          description: Redirect to the hosted signup page
+    post:
+      tags: [Auth]
+      summary: Create a self-serve mailbox and default mailbox-scoped access token
+      operationId: publicSignup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicSignupRequest'
+      responses:
+        '201':
+          description: Mailbox created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSignupResult'
+        '400':
+          description: Invalid signup request
+        '502':
+          description: Provisioning failed
   /v1/auth/tokens:
     post:
       tags: [Auth]
@@ -897,6 +934,69 @@ components:
         role:
           type: string
           enum: [primary, shared, send_only, receive_only]
+    PublicSignupRequest:
+      type: object
+      required: [mailboxAlias, agentName, operatorEmail, productName, useCase]
+      properties:
+        mailboxAlias:
+          type: string
+        agentName:
+          type: string
+        operatorEmail:
+          type: string
+          format: email
+        productName:
+          type: string
+        useCase:
+          type: string
+    PublicSignupResult:
+      type: object
+      required:
+        [
+          productName,
+          operatorEmail,
+          mailboxAddress,
+          mailboxId,
+          agentId,
+          agentVersionId,
+          deploymentId,
+          accessTokenScopes,
+          welcomeStatus
+        ]
+      properties:
+        productName:
+          type: string
+        operatorEmail:
+          type: string
+          format: email
+        mailboxAddress:
+          type: string
+          format: email
+        mailboxId:
+          type: string
+        agentId:
+          type: string
+        agentVersionId:
+          type: string
+        deploymentId:
+          type: string
+        accessToken:
+          type: string
+          description: Mailbox-scoped bearer token issued during self-serve signup when API signing is configured.
+        accessTokenExpiresAt:
+          type: string
+          format: date-time
+        accessTokenScopes:
+          type: array
+          items:
+            type: string
+        outboundJobId:
+          type: string
+        welcomeStatus:
+          type: string
+          enum: [queued, failed]
+        welcomeError:
+          type: string
     AgentPolicy:
       type: object
       required:

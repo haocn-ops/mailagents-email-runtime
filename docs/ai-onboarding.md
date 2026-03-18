@@ -55,6 +55,11 @@ Admin and debug routes are separate from bearer-auth API routes:
 - debug routes should stay disabled outside local or tightly controlled
   environments
 
+For self-serve mailbox creation, `POST /public/signup` can return a default
+mailbox-scoped bearer token for the created mailbox and include the same token
+in the welcome email. This allows newly registered mailboxes to read mail,
+create drafts, and send drafts without a separate operator token-mint step.
+
 ## Minimum Safe Scopes
 
 For a read-and-reply agent, the minimum useful scopes are:
@@ -82,6 +87,13 @@ For local development:
 8. list tasks or messages for the mailbox
 9. create a draft with `POST /v1/agents/{agentId}/drafts`
 10. explicitly send with `POST /v1/drafts/{draftId}/send`
+
+For self-serve production onboarding:
+
+1. call `POST /public/signup`
+2. store the returned mailbox-scoped bearer token
+3. use that token for message reads, draft creation, and send
+4. fall back to `POST /v1/auth/tokens` only for broader operator workflows
 
 For incoming mail handling:
 

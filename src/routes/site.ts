@@ -870,6 +870,7 @@ content-type: application/json
   <li>One default agent</li>
   <li>One published default version</li>
   <li>One active mailbox deployment</li>
+  <li>One default mailbox-scoped access token for read, draft, and send APIs</li>
   <li>One welcome email through the same outbound runtime used by the product</li>
 </ol>
 

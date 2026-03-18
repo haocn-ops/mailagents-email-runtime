@@ -3,6 +3,7 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "./cloudflare-email";
+import { mintAccessToken } from "./auth";
 import { createId } from "./ids";
 import {
   bindMailbox,
@@ -39,6 +40,9 @@ export interface SignupSuccessResult {
   agentId: string;
   agentVersionId: string;
   deploymentId: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
   outboundJobId?: string;
   welcomeStatus: "queued" | "failed";
   welcomeError?: string;
@@ -54,6 +58,14 @@ export const RESERVED_SELF_SERVE_ALIASES = new Set([
   "support",
   "www",
 ]);
+
+export const SELF_SERVE_DEFAULT_SCOPES = [
+  "task:read",
+  "mail:read",
+  "draft:create",
+  "draft:read",
+  "draft:send",
+] as const;
 
 export async function parseSelfServeSignup(request: Request): Promise<
   | { ok: true; values: SignupFormValues }
@@ -214,6 +226,24 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   );
   await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existingRule?.id);
 
+  const accessTokenScopes = [...SELF_SERVE_DEFAULT_SCOPES];
+  let accessToken: string | undefined;
+  let accessTokenExpiresAt: string | undefined;
+
+  if (env.API_SIGNING_SECRET) {
+    const ttlSeconds = parsePositiveInteger(env.SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS) ?? 60 * 60 * 24 * 30;
+    const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+    accessToken = await mintAccessToken(env.API_SIGNING_SECRET, {
+      sub: `self-serve:${mailbox.id}`,
+      tenantId,
+      agentId: agent.id,
+      scopes: accessTokenScopes,
+      mailboxIds: [mailbox.id],
+      exp,
+    });
+    accessTokenExpiresAt = new Date(exp * 1000).toISOString();
+  }
+
   let outboundJobId: string | undefined;
   let welcomeStatus: SignupSuccessResult["welcomeStatus"] = "queued";
   let welcomeError: string | undefined;
@@ -231,11 +261,17 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
           mailboxAddress: address,
           productName: values.productName,
           agentName: values.agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
         }),
         html: buildWelcomeHtml({
           mailboxAddress: address,
           productName: values.productName,
           agentName: values.agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
         }),
         attachments: [],
       },
@@ -256,6 +292,9 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     agentId: agent.id,
     agentVersionId: version.id,
     deploymentId: deployment.id,
+    accessToken,
+    accessTokenExpiresAt,
+    accessTokenScopes,
     outboundJobId,
     welcomeStatus,
     welcomeError,
@@ -274,8 +313,11 @@ export function buildWelcomeText(input: {
   mailboxAddress: string;
   productName: string;
   agentName: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
 }): string {
-  return [
+  const lines = [
     "Your Mailagents mailbox is ready.",
     "",
     `Product: ${input.productName}`,
@@ -283,23 +325,71 @@ export function buildWelcomeText(input: {
     `Mailbox: ${input.mailboxAddress}`,
     "",
     "You can now use this mailbox for inbound email, transactional replies, and managed agent workflows.",
+  ];
+
+  if (input.accessToken) {
+    lines.push(
+      "",
+      "Default API access token",
+      `Scopes: ${input.accessTokenScopes.join(", ")}`,
+      `Expires at: ${input.accessTokenExpiresAt ?? "unknown"}`,
+      "",
+      input.accessToken,
+      "",
+      "Use this bearer token with the Mailagents API and MCP endpoints."
+    );
+  } else {
+    lines.push(
+      "",
+      "Default API access token could not be issued because API signing is not configured in this environment yet."
+    );
+  }
+
+  lines.push(
     "Runtime metadata: https://api.mailagents.net/v2/meta/runtime",
     "Agent guide: https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md",
-  ].join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 export function buildWelcomeHtml(input: {
   mailboxAddress: string;
   productName: string;
   agentName: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
 }): string {
+  const tokenSection = input.accessToken
+    ? `<p><strong>Default API access token</strong><br />
+  <strong>Scopes:</strong> ${escapeHtml(input.accessTokenScopes.join(", "))}<br />
+  <strong>Expires at:</strong> ${escapeHtml(input.accessTokenExpiresAt ?? "unknown")}</p>
+  <pre>${escapeHtml(input.accessToken)}</pre>
+  <p>Use this bearer token with the Mailagents API and MCP endpoints.</p>`
+    : `<p>Default API access token could not be issued because API signing is not configured in this environment yet.</p>`;
+
   return `<p>Your Mailagents mailbox is ready.</p>
   <p><strong>Product:</strong> ${escapeHtml(input.productName)}<br />
   <strong>Agent:</strong> ${escapeHtml(input.agentName)}<br />
   <strong>Mailbox:</strong> ${escapeHtml(input.mailboxAddress)}</p>
   <p>You can now use this mailbox for inbound email, transactional replies, and managed agent workflows.</p>
+  ${tokenSection}
   <p><a href="https://api.mailagents.net/v2/meta/runtime">Runtime metadata</a><br />
   <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md">AI agent guide</a></p>`;
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
 }
 
 export function escapeHtml(value: string): string {
