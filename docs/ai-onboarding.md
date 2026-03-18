@@ -93,7 +93,17 @@ For self-serve production onboarding:
 1. call `POST /public/signup`
 2. store the returned mailbox-scoped bearer token
 3. use that token for message reads, draft creation, and send
-4. fall back to `POST /v1/auth/tokens` only for broader operator workflows or non-self-serve provisioning
+4. if the token expires, call `POST /public/token/reissue`
+5. retrieve the refreshed token from the original `operatorEmail`
+6. fall back to `POST /v1/auth/tokens` only for broader operator workflows or non-self-serve provisioning
+
+`POST /public/token/reissue` is intentionally recovery-only:
+
+- it accepts `mailboxAlias` or `mailboxAddress`
+- it always returns a generic acceptance response
+- it never returns the refreshed token directly
+- it sends the refreshed token only to the original `operatorEmail`
+- mailbox cooldowns and source-IP rate limits apply
 
 For incoming mail handling:
 

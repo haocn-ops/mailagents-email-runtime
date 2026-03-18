@@ -71,7 +71,7 @@ import {
   hasRecentMailboxTokenReissue,
   logTokenReissueRequest,
 } from "../repositories/token-reissue";
-import type { Env } from "../types";
+import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
 
@@ -168,6 +168,56 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
     accepted: true,
     message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
   });
+});
+
+router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const body = await readOptionalJson<{
+    delivery?: "inline" | "self_mailbox" | "both";
+    mailboxId?: string;
+  }>(request);
+  const delivery = body?.delivery ?? "inline";
+  if (!["inline", "self_mailbox", "both"].includes(delivery)) {
+    return badRequest("delivery must be one of: inline, self_mailbox, both");
+  }
+
+  const rotated = await rotateAccessToken(env, auth);
+  if (!rotated.accessToken) {
+    return json({ error: "Unable to issue rotated token" }, { status: 500 });
+  }
+
+  let deliveryStatus: "skipped" | "queued" | "unavailable" = "skipped";
+  let deliveryMailboxId: string | undefined;
+
+  if (delivery === "self_mailbox" || delivery === "both") {
+    const targetMailboxId = resolveRotateMailboxId(auth, body?.mailboxId);
+    if (!targetMailboxId) {
+      return badRequest("mailboxId is required for self_mailbox delivery when the token covers multiple or no mailboxes");
+    }
+
+    const mailboxError = enforceMailboxAccess(auth, targetMailboxId);
+    if (mailboxError) {
+      return mailboxError;
+    }
+
+    const delivered = await deliverRotatedTokenToSelfMailbox(env, auth, targetMailboxId, rotated.accessToken, rotated.accessTokenExpiresAt, rotated.accessTokenScopes);
+    deliveryStatus = delivered ? "queued" : "unavailable";
+    deliveryMailboxId = targetMailboxId;
+  }
+
+  return json({
+    token: delivery === "self_mailbox" ? undefined : rotated.accessToken,
+    expiresAt: rotated.accessTokenExpiresAt,
+    scopes: rotated.accessTokenScopes,
+    delivery,
+    deliveryStatus,
+    deliveryMailboxId,
+    oldTokenRemainsValid: true,
+  }, { status: 201 });
 });
 
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
@@ -1382,6 +1432,104 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
   });
 
   await enqueueDraftSend(env, draft.id);
+}
+
+function resolveRotateMailboxId(claims: AccessTokenClaims, requestedMailboxId: string | undefined): string | null {
+  return requestedMailboxId?.trim()
+    || (claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : null)
+    || null;
+}
+
+async function rotateAccessToken(env: Env, claims: AccessTokenClaims): Promise<{
+  accessToken?: string;
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
+}> {
+  if (!env.API_SIGNING_SECRET) {
+    return { accessTokenScopes: claims.scopes };
+  }
+
+  const ttlSeconds = parseRotateTtlSeconds(env);
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const accessToken = await mintAccessToken(env.API_SIGNING_SECRET, {
+    sub: claims.sub,
+    tenantId: claims.tenantId,
+    agentId: claims.agentId,
+    scopes: claims.scopes,
+    mailboxIds: claims.mailboxIds,
+    exp,
+  });
+
+  return {
+    accessToken,
+    accessTokenExpiresAt: new Date(exp * 1000).toISOString(),
+    accessTokenScopes: claims.scopes,
+  };
+}
+
+function parseRotateTtlSeconds(env: Env): number {
+  const value = env.SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS;
+  const parsed = value ? Number.parseInt(value, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60 * 24 * 30;
+}
+
+async function deliverRotatedTokenToSelfMailbox(
+  env: Env,
+  claims: AccessTokenClaims,
+  mailboxId: string,
+  accessToken: string,
+  accessTokenExpiresAt: string | undefined,
+  accessTokenScopes: string[],
+): Promise<boolean> {
+  const mailbox = await getMailboxById(env, mailboxId);
+  if (!mailbox || mailbox.status !== "active") {
+    return false;
+  }
+
+  const executionTarget = claims.agentId
+    ? { agentId: claims.agentId }
+    : await resolveAgentExecutionTarget(env, mailboxId);
+  if (!executionTarget?.agentId) {
+    return false;
+  }
+
+  const agent = await getAgent(env, executionTarget.agentId);
+  const config = agent?.configR2Key ? await readAgentConfig(env, agent.configR2Key) : null;
+  const productName = typeof config?.productName === "string" && config.productName.trim()
+    ? config.productName.trim()
+    : "Mailagents";
+  const agentName = agent?.name ?? "Mailagents Agent";
+
+  const draft = await createDraft(env, {
+    tenantId: mailbox.tenant_id,
+    agentId: executionTarget.agentId,
+    mailboxId: mailbox.id,
+    payload: {
+      from: mailbox.address,
+      to: [mailbox.address],
+      subject: `Your rotated Mailagents access token for ${mailbox.address}`,
+      text: buildTokenReissueText({
+        mailboxAddress: mailbox.address,
+        productName,
+        agentName,
+        accessToken,
+        accessTokenExpiresAt,
+        accessTokenScopes,
+      }),
+      html: buildTokenReissueHtml({
+        mailboxAddress: mailbox.address,
+        productName,
+        agentName,
+        accessToken,
+        accessTokenExpiresAt,
+        accessTokenScopes,
+      }),
+      attachments: [],
+    },
+  });
+
+  await enqueueDraftSend(env, draft.id);
+  return true;
 }
 
 async function readAgentConfig(env: Env, configR2Key: string): Promise<Record<string, unknown> | null> {

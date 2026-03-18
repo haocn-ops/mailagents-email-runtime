@@ -903,6 +903,7 @@ content-type: application/json
 </ol>
 
 <p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
+<p>If the current token is still valid and the agent wants to rotate proactively without emailing the operator, call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the new token inline and can optionally deliver it back to the mailbox itself.</p>
 
 <h3>1. Sign Up</h3>
 
@@ -996,6 +997,18 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 <p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered to the original <code>operatorEmail</code> from signup.</p>
 <p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
+<h3>7. Rotate a Still-Valid Token</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/auth/token/rotate \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "delivery": "self_mailbox",
+    "mailboxId": "REPLACE_WITH_MAILBOX_ID"
+  }'</code></pre>
+
+<p>This route requires a still-valid bearer token. It does not email the operator. By default it returns the rotated token inline; with <code>delivery: "self_mailbox"</code> or <code>"both"</code> it can also send the refreshed token back to the mailbox itself.</p>
+
 <h3>What Signup Creates</h3>
 
 <ol>
@@ -1006,6 +1019,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>One default mailbox-scoped access token for read, draft, and send APIs</li>
   <li>One welcome email through the same outbound runtime used by the product</li>
   <li>One public token reissue path that only emails refreshed tokens to the original operator inbox</li>
+  <li>One authenticated token rotate path for agents that already hold a valid token and want to rotate without operator email</li>
 </ol>
 
 <h2>Agent Discovery</h2>
@@ -1024,6 +1038,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>Mailbox provisioning is backed by the production runtime, not a demo-only path.</li>
   <li>Self-serve signup returns a mailbox-scoped token when API signing is configured for the environment.</li>
   <li>Expired self-serve tokens can be reissued without the old token, but refreshed credentials are only sent to the original operator inbox.</li>
+  <li>Still-valid self-serve tokens can be rotated without contacting the operator by using the authenticated rotate route.</li>
   <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
   <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
   <li>Operator and compliance contacts are published on this site for review.</li>

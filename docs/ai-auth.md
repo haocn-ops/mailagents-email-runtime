@@ -37,6 +37,16 @@ The default expiration can be controlled with
 `SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the self-serve token
 defaults to 30 days.
 
+If the self-serve token expires, use `POST /public/token/reissue`.
+
+Important behavior:
+
+- provide `mailboxAlias` or `mailboxAddress`
+- the API always returns a generic acceptance response
+- the refreshed token is emailed only to the original `operatorEmail` from signup
+- the refreshed token is never returned inline to the caller
+- mailbox cooldowns and source-IP rate limits apply to reduce abuse
+
 ## Minting a Bearer Token
 
 Use `POST /v1/auth/tokens`.

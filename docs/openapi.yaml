@@ -124,6 +124,24 @@ paths:
                   expiresAt:
                     type: string
                     format: date-time
+  /v1/auth/token/rotate:
+    post:
+      tags: [Auth]
+      summary: Rotate a still-valid bearer token
+      operationId: rotateAccessToken
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RotateAccessTokenRequest'
+      responses:
+        '201':
+          description: Rotated token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateAccessTokenResult'
   /v1/debug/agents/{agentId}:
     get:
       tags: [Debug]
@@ -1037,6 +1055,39 @@ components:
         message:
           type: string
       description: Generic acceptance response. The endpoint does not disclose mailbox existence, applies mailbox cooldowns and source-IP rate limits, and only emails refreshed tokens to the original operator inbox.
+    RotateAccessTokenRequest:
+      type: object
+      properties:
+        delivery:
+          type: string
+          enum: [inline, self_mailbox, both]
+        mailboxId:
+          type: string
+      description: Authenticated proactive rotation for callers that still hold a valid bearer token. Use self_mailbox or both when the refreshed token should also be delivered back to a mailbox covered by the current token.
+    RotateAccessTokenResult:
+      type: object
+      required: [expiresAt, scopes, delivery, deliveryStatus, oldTokenRemainsValid]
+      properties:
+        token:
+          type: string
+          description: Omitted when delivery is self_mailbox only.
+        expiresAt:
+          type: string
+          format: date-time
+        scopes:
+          type: array
+          items:
+            type: string
+        delivery:
+          type: string
+          enum: [inline, self_mailbox, both]
+        deliveryStatus:
+          type: string
+          enum: [skipped, queued, unavailable]
+        deliveryMailboxId:
+          type: string
+        oldTokenRemainsValid:
+          type: boolean
     AgentPolicy:
       type: object
       required:

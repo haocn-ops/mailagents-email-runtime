@@ -48,6 +48,10 @@ Recommended usage:
 For self-serve onboarding, call `POST /public/signup` first and store the
 returned mailbox-scoped bearer token from the signup response.
 
+If that token expires later, call `POST /public/token/reissue`. The runtime
+will only email the refreshed token to the original `operatorEmail` from signup;
+it will not return the new token inline to the caller.
+
 Use `POST /v1/auth/tokens` when you need a broader operator token, a non-self-serve
 workflow, or an environment where the mailbox was provisioned outside the public
 signup path.
