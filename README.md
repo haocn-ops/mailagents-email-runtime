@@ -67,7 +67,6 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-mail-workflows.md`
 - `docs/ai-debug.md`
 - `docs/llms-agent-guide.md`
-- `docs/mcp-tooling-draft.md`
 - `docs/mcp-local.md`
 - `docs/runtime-metadata.md`
 - `docs/runtime-compatibility.md`
