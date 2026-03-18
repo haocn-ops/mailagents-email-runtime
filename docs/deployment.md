@@ -68,6 +68,10 @@ Update [wrangler.toml](../wrangler.toml):
 - set the correct `SES_FROM_DOMAIN` per environment
 - set the correct `SES_CONFIGURATION_SET` per environment
 - set `ADMIN_ROUTES_ENABLED` and `DEBUG_ROUTES_ENABLED` appropriately
+- set `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_EMAIL_DOMAIN`, and `CLOUDFLARE_EMAIL_WORKER`
+  for environments that should expose contact inbox and alias-management features
+- keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED` disabled unless that runtime is
+  intended to automatically own and reconcile managed contact aliases
 - confirm the hourly cron trigger is enabled for idempotency cleanup
 - set `IDEMPOTENCY_COMPLETED_RETENTION_HOURS` and `IDEMPOTENCY_PENDING_RETENTION_HOURS` as needed
 
@@ -97,6 +101,13 @@ Recommended route exposure:
 - `production`
   - `ADMIN_ROUTES_ENABLED = "false"`
   - `DEBUG_ROUTES_ENABLED = "false"`
+  - `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED = "false"` until production should own alias routing
+
+Runtime/site note:
+
+- the main runtime Worker (`src/index.ts`) now includes the public site and admin dashboard routes
+- the standalone profile in [wrangler.site.toml](../wrangler.site.toml) can still be used for a separate site Worker
+- do not enable automatic alias bootstrap in more than one live Worker for the same domain unless you intentionally want them to compete for ownership
 
 ## AWS SES Setup
 
@@ -137,6 +148,7 @@ For each deployed environment, set these as secrets:
 - `WEBHOOK_SHARED_SECRET`
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
+- `CLOUDFLARE_API_TOKEN` when the runtime should manage Cloudflare Email Routing from the admin UI or automatic alias bootstrap
 
 Template helper:
 
@@ -165,6 +177,7 @@ Important split:
   - webhook shared secret
   - token signing secret
   - admin secret
+  - optional Cloudflare API token for Email Routing admin
 
 ## Pre-Deploy Validation
 

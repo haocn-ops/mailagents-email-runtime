@@ -2,7 +2,11 @@ import { notFound } from "./lib/http";
 import { handleEmail } from "./handlers/email";
 import { handleQueue } from "./handlers/queues";
 import { handleScheduled } from "./handlers/scheduled";
-import { cleanupRedundantMailboxWorkerRules, ensureManagedContactAliasRouting } from "./lib/contact-aliases";
+import {
+  cleanupRedundantMailboxWorkerRules,
+  ensureManagedContactAliasRouting,
+  shouldBootstrapContactAliasRouting,
+} from "./lib/contact-aliases";
 import { handleApiRequest } from "./routes/api";
 import { handleMcpRequest } from "./routes/mcp";
 import { handleSiteRequest } from "./routes/site";
@@ -12,6 +16,10 @@ let contactAliasRoutingBootstrapPromise: Promise<void> | null = null;
 let redundantMailboxRuleCleanupPromise: Promise<void> | null = null;
 
 function ensureContactAliasRoutingBootstrapped(env: Env): Promise<void> {
+  if (!shouldBootstrapContactAliasRouting(env)) {
+    return Promise.resolve();
+  }
+
   if (!contactAliasRoutingBootstrapPromise) {
     contactAliasRoutingBootstrapPromise = ensureManagedContactAliasRouting(env).catch((error) => {
       contactAliasRoutingBootstrapPromise = null;
@@ -23,6 +31,10 @@ function ensureContactAliasRoutingBootstrapped(env: Env): Promise<void> {
 }
 
 function ensureRedundantMailboxRulesCleaned(env: Env): Promise<void> {
+  if (!shouldBootstrapContactAliasRouting(env)) {
+    return Promise.resolve();
+  }
+
   if (!redundantMailboxRuleCleanupPromise) {
     redundantMailboxRuleCleanupPromise = cleanupRedundantMailboxWorkerRules(env).catch((error) => {
       redundantMailboxRuleCleanupPromise = null;

@@ -6,6 +6,18 @@ export const CONTACT_ALIAS_LOCALPARTS = ["hello", "security", "privacy", "dmarc"
 export const CONTACT_ALIAS_TENANT_ID = "t_demo";
 const PRESERVED_EXPLICIT_ALIAS_LOCALPARTS = new Set<string>([...CONTACT_ALIAS_LOCALPARTS, "support"]);
 
+function parseEnabledFlag(value: string | undefined, fallback = false): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+export function shouldBootstrapContactAliasRouting(env: Env): boolean {
+  return parseEnabledFlag(env.CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED, false);
+}
+
 export function getContactAliasAddress(env: Env, alias: string): string {
   return `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`.toLowerCase();
 }

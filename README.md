@@ -31,6 +31,9 @@ Inbound email and replay jobs now carry mailbox-specific routing data instead of
 The runtime now also supports a versioned agent registry with mailbox deployments, and the
 shared `dev` environment has been verified end to end for agent registration, inbound mail,
 outbound SES send, and deployment-aware agent execution traces.
+The same runtime module now also includes the public website and admin dashboard routes,
+so the main Worker can serve site, mailbox admin, contact inbox, and alias-management
+features when the corresponding Cloudflare email bindings are configured.
 Production has also been verified end to end for `support@mailagents.net`, including
 mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-aware
 agent execution traces, and a controlled outbound reply through SES with a recorded
@@ -215,6 +218,10 @@ Template scripts:
 - `npm run deploy:dev` updates the existing Cloudflare `dev` environment rather than creating a second one
 - the current shared `dev` worker URL is `https://mailagents-dev.izhenghaocn.workers.dev`
 - `npm run d1:migrate:*` now applies the base schema, versioned agent registry schema, idempotency schema, and deployment-history schema in sequence
+- `wrangler.site.toml` remains available as a standalone site-only deployment profile, but
+  `src/index.ts` now exposes the same site/admin routes for the main runtime worker
+- keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false` outside the environment that should
+  actively own `hello/security/privacy/dmarc` alias routing
 
 ## GitHub Actions Deploy
 
