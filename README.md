@@ -39,6 +39,13 @@ mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-awar
 agent execution traces, and a controlled outbound reply through SES with a recorded
 `provider_message_id`.
 
+Current SES limitation as of 2026-03-18:
+
+- treat external outbound SES delivery as sandbox-limited unless production access is explicitly reapproved in the active AWS account and region
+- internal mailbox routing and internal operator verification flows can still work within the current setup
+- for SES-backed outbound validation, only send to verified identities or verified test recipients
+- successful runtime delivery to `support@mailagents.net` or other verified inboxes does not imply unrestricted outbound sending to arbitrary external customer addresses
+
 ## Quick Start
 
 ```bash

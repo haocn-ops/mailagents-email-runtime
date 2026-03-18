@@ -61,12 +61,15 @@ Observed successful outbound runtime records:
 
 This outbound verification used the same production support thread as the inbound
 test and confirmed the full `draft -> queue -> SES -> D1 sent state` path.
+It should still be treated as a verified-recipient validation only, not proof that
+SES production access has been granted for arbitrary outbound mail.
 
 ## Safety Notes
 
 - keep `ADMIN_ROUTES_ENABLED=false` in production outside the exact bootstrap window
 - prefer a short-lived operator token with one mailbox in `mailboxIds`
 - use a dedicated operator mailbox or verified test recipient for first outbound validation
+- continue using verified recipients for external outbound validation while SES remains sandbox-limited
 - do not run demo seed data in production
 - do not reuse `agt_demo` or `mbx_demo` identifiers in production
 - if you test inbound by sending from SES, check the SES account suppression list first

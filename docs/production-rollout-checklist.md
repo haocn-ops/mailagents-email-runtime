@@ -15,6 +15,12 @@ Resolved during this rollout:
 - production support mailbox routing verified through a real inbound message
 - production support outbound reply verified through SES with a stored `provider_message_id`
 
+Current SES access limitation:
+
+- treat external outbound delivery as sandbox-limited until SES production access is explicitly approved for the live AWS account and region
+- production verification so far proves internal mailbox handling and verified-recipient validation paths
+- unrestricted sends to arbitrary external customer recipients are still out of scope for rollout sign-off
+
 ## 1. Cloudflare Production Resources
 
 Provide or create:
@@ -113,7 +119,7 @@ After deploy:
 - verify admin/debug routes are disabled
 - run `npm run smoke:production:readonly`
 - verify at least one real inbound mailbox path end to end
-- verify at least one controlled outbound reply path end to end
+- verify at least one controlled outbound reply path end to end using a verified recipient while SES remains sandbox-limited
 
 ## 6. Domain Binding
 

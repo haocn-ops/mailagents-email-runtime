@@ -145,6 +145,12 @@ One earlier outbound attempt intentionally revealed an environment dependency:
 That failure was resolved by creating the missing SES configuration set
 `mailagents-production` in `us-east-1`, after which the reply path succeeded.
 
+Important SES sandbox note:
+
+- these production checks prove the runtime can handle internal mailbox flows and can send through SES to verified paths used during operator validation
+- until SES production access is approved for unrestricted sending in the active AWS account and region, do not assume delivery to arbitrary external recipients will succeed
+- black-box outbound tests for external delivery should continue to use verified inboxes such as internal operator mailboxes
+
 ## Sample SES fixtures
 
 Fixtures live in:
@@ -168,5 +174,6 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - It asserts key response fields with `jq` so obvious regressions fail fast.
 - Debug endpoints are admin-secret protected and intended only for local/dev verification.
 - For production confidence, add real integration tests around D1 state assertions and SES callback handling.
+- If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either
   `resource_mailbox_not_found` or `access_mailbox_denied`, depending on token mailbox scope.

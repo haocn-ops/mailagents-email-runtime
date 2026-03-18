@@ -126,6 +126,13 @@ Recommended:
 - a dedicated subdomain for outbound mail
 - keep admin/debug APIs disabled outside local or tightly controlled environments
 
+Current SES restriction as of 2026-03-18:
+
+- assume the project is still operating under SES sandbox constraints for external-recipient planning
+- internal mailbox routing and internal operator inbox flows are not blocked by that SES production-access decision
+- validate SES outbound only with verified sender identities and verified recipient addresses
+- do not treat a successful send to an internal or verified inbox as proof that arbitrary external customer delivery is enabled
+
 ## Local Secret File
 
 Fill [.dev.vars.example](../.dev.vars.example) into `.dev.vars` with real values for:
@@ -220,6 +227,7 @@ Note:
 
 - with fake SES credentials, the outbound job should move to `retry`
 - with real SES credentials, the outbound send should progress further and produce a real `providerMessageId`
+- if the AWS account or active SES region still lacks production access, real external outbound validation remains limited to verified recipients
 
 ## Remote D1
 
