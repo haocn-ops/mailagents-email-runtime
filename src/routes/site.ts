@@ -392,7 +392,21 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (draft) {
       await markDraftStatus(env, draft.id, "queued");
     }
-    await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId: job.id });
+    try {
+      await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId: job.id });
+    } catch (error) {
+      await updateOutboundJobStatus(env, {
+        outboundJobId: job.id,
+        status: job.status,
+        retryCount: job.retryCount,
+        lastError: job.lastError ?? null,
+        nextRetryAt: job.nextRetryAt ?? null,
+      }).catch(() => undefined);
+      if (draft) {
+        await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+      }
+      throw error;
+    }
 
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
   } catch (error) {
@@ -2030,9 +2044,22 @@ function renderAdmin(url: URL): string {
       }
 
       const response = await fetch(path, { ...init, headers });
-      const payload = await response.json();
+      const raw = await response.text();
+      let payload = null;
+      if (raw) {
+        try {
+          payload = JSON.parse(raw);
+        } catch {
+          payload = { error: raw.slice(0, 500) };
+        }
+      } else {
+        payload = {};
+      }
       if (!response.ok) {
-        throw new Error(payload.error || "Request failed");
+        throw new Error(
+          (payload && typeof payload.error === 'string' && payload.error) ||
+          ('Request failed (' + response.status + ')')
+        );
       }
       return payload;
     }

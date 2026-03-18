@@ -545,6 +545,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   if (draft.status !== "draft" && draft.status !== "approved") {
     throw new Error(`Draft status ${draft.status} cannot be enqueued for send`);
   }
+  const priorDraftStatus = draft.status;
   const outboundJobId = createId("obj");
   const timestamp = nowIso();
   const outboundMessageId = createId("msg");
@@ -593,7 +594,20 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
   ).bind("queued", timestamp, draftId));
 
-  await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId });
+  try {
+    await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId });
+  } catch (error) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM outbound_jobs WHERE id = ?`
+    ).bind(outboundJobId)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM messages WHERE id = ?`
+    ).bind(outboundMessageId)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
+    ).bind(priorDraftStatus, nowIso(), draftId)).catch(() => undefined);
+    throw error;
+  }
 
   return {
     outboundJobId,
