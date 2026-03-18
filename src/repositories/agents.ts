@@ -1,7 +1,17 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { nowIso } from "../lib/time";
-import type { AgentMailboxBindingRecord, AgentPolicyRecord, AgentRecord, Env, MailboxRecord } from "../types";
+import type {
+  AgentCapabilityRecord,
+  AgentDeploymentRecord,
+  AgentMailboxBindingRecord,
+  AgentPolicyRecord,
+  AgentRecord,
+  AgentToolBindingSummary,
+  AgentVersionRecord,
+  Env,
+  MailboxRecord,
+} from "../types";
 
 interface MailboxRow {
   id: string;
@@ -24,10 +34,51 @@ function mapMailboxRecord(row: MailboxRow): MailboxRecord {
 interface AgentRow {
   id: string;
   tenant_id: string;
+  slug: string | null;
   name: string;
+  description: string | null;
   status: AgentRecord["status"];
   mode: AgentRecord["mode"];
   config_r2_key: string | null;
+  default_version_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface AgentVersionRow {
+  id: string;
+  agent_id: string;
+  version: string;
+  model: string | null;
+  config_r2_key: string | null;
+  manifest_r2_key: string | null;
+  status: AgentVersionRecord["status"];
+  created_at: string;
+}
+
+interface AgentCapabilityRow {
+  id: string;
+  agent_version_id: string;
+  capability: string;
+  config_json: string | null;
+}
+
+interface AgentToolBindingRow {
+  id: string;
+  agent_version_id: string;
+  tool_name: string;
+  enabled: number;
+  config_json: string | null;
+}
+
+interface AgentDeploymentRow {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  agent_version_id: string;
+  target_type: AgentDeploymentRecord["targetType"];
+  target_id: string;
+  status: AgentDeploymentRecord["status"];
   created_at: string;
   updated_at: string;
 }
@@ -70,10 +121,59 @@ function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
     tenantId: row.tenant_id,
+    slug: row.slug ?? undefined,
     name: row.name,
+    description: row.description ?? undefined,
     status: row.status,
     mode: row.mode,
     configR2Key: row.config_r2_key ?? undefined,
+    defaultVersionId: row.default_version_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function parseJsonObject(value: string | null): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function mapCapabilityRow(row: AgentCapabilityRow): AgentCapabilityRecord {
+  return {
+    id: row.id,
+    capability: row.capability,
+    config: parseJsonObject(row.config_json),
+  };
+}
+
+function mapToolBindingRow(row: AgentToolBindingRow): AgentToolBindingSummary {
+  return {
+    id: row.id,
+    toolName: row.tool_name,
+    enabled: Boolean(row.enabled),
+    config: parseJsonObject(row.config_json),
+  };
+}
+
+function mapDeploymentRow(row: AgentDeploymentRow): AgentDeploymentRecord {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    agentId: row.agent_id,
+    agentVersionId: row.agent_version_id,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -106,7 +206,9 @@ function mapPolicyRow(row: AgentPolicyRow): AgentPolicyRecord {
 
 export async function createAgent(env: Env, input: {
   tenantId: string;
+  slug?: string;
   name: string;
+  description?: string;
   mode: AgentRecord["mode"];
   config: unknown;
 }): Promise<AgentRecord> {
@@ -119,15 +221,19 @@ export async function createAgent(env: Env, input: {
   });
 
   await execute(env.D1_DB.prepare(
-    `INSERT INTO agents (id, tenant_id, name, status, mode, config_r2_key, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO agents (
+       id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     id,
     input.tenantId,
+    input.slug ?? null,
     input.name,
+    input.description ?? null,
     "active",
     input.mode,
     configR2Key,
+    null,
     timestamp,
     timestamp
   ));
@@ -138,7 +244,7 @@ export async function createAgent(env: Env, input: {
 export async function getAgent(env: Env, agentId: string): Promise<AgentRecord | null> {
   const row = await firstRow<AgentRow>(
     env.D1_DB.prepare(
-      `SELECT id, tenant_id, name, status, mode, config_r2_key, created_at, updated_at
+      `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
        FROM agents
        WHERE id = ?`
     ).bind(agentId)
@@ -147,11 +253,31 @@ export async function getAgent(env: Env, agentId: string): Promise<AgentRecord |
   return row ? mapAgentRow(row) : null;
 }
 
+export async function listAgents(env: Env, tenantId?: string): Promise<AgentRecord[]> {
+  const rows = tenantId
+    ? await allRows<AgentRow>(env.D1_DB.prepare(
+        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+         FROM agents
+         WHERE tenant_id = ?
+         ORDER BY created_at DESC`
+      ).bind(tenantId))
+    : await allRows<AgentRow>(env.D1_DB.prepare(
+        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+         FROM agents
+         ORDER BY created_at DESC`
+      ));
+
+  return rows.map(mapAgentRow);
+}
+
 export async function updateAgent(env: Env, agentId: string, patch: {
+  slug?: string;
   name?: string;
+  description?: string;
   status?: AgentRecord["status"];
   mode?: AgentRecord["mode"];
   config?: unknown;
+  defaultVersionId?: string;
 }): Promise<AgentRecord> {
   const current = requireRow(await getAgent(env, agentId), "Agent not found");
   const updatedAt = nowIso();
@@ -166,18 +292,219 @@ export async function updateAgent(env: Env, agentId: string, patch: {
 
   await execute(env.D1_DB.prepare(
     `UPDATE agents
-     SET name = ?, status = ?, mode = ?, config_r2_key = ?, updated_at = ?
+     SET slug = ?, name = ?, description = ?, status = ?, mode = ?, config_r2_key = ?, default_version_id = ?, updated_at = ?
      WHERE id = ?`
   ).bind(
+    patch.slug ?? current.slug ?? null,
     patch.name ?? current.name,
+    patch.description ?? current.description ?? null,
     patch.status ?? current.status,
     patch.mode ?? current.mode,
     configR2Key ?? null,
+    patch.defaultVersionId ?? current.defaultVersionId ?? null,
     updatedAt,
     agentId
   ));
 
   return requireRow(await getAgent(env, agentId), "Failed to load updated agent");
+}
+
+async function listVersionCapabilities(env: Env, agentVersionId: string): Promise<AgentCapabilityRecord[]> {
+  const rows = await allRows<AgentCapabilityRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_version_id, capability, config_json
+       FROM agent_capabilities
+       WHERE agent_version_id = ?
+       ORDER BY capability ASC`
+    ).bind(agentVersionId)
+  );
+
+  return rows.map(mapCapabilityRow);
+}
+
+async function listVersionTools(env: Env, agentVersionId: string): Promise<AgentToolBindingSummary[]> {
+  const rows = await allRows<AgentToolBindingRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_version_id, tool_name, enabled, config_json
+       FROM agent_tool_bindings
+       WHERE agent_version_id = ?
+       ORDER BY tool_name ASC`
+    ).bind(agentVersionId)
+  );
+
+  return rows.map(mapToolBindingRow);
+}
+
+async function mapAgentVersion(env: Env, row: AgentVersionRow): Promise<AgentVersionRecord> {
+  const [capabilities, tools] = await Promise.all([
+    listVersionCapabilities(env, row.id),
+    listVersionTools(env, row.id),
+  ]);
+
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    version: row.version,
+    model: row.model ?? undefined,
+    configR2Key: row.config_r2_key ?? undefined,
+    manifestR2Key: row.manifest_r2_key ?? undefined,
+    status: row.status,
+    capabilities,
+    tools,
+    createdAt: row.created_at,
+  };
+}
+
+export async function createAgentVersion(env: Env, input: {
+  agentId: string;
+  version: string;
+  model?: string;
+  config?: unknown;
+  manifest?: unknown;
+  status?: AgentVersionRecord["status"];
+  capabilities?: Array<{ capability: string; config?: Record<string, unknown> }>;
+  tools?: Array<{ toolName: string; enabled?: boolean; config?: Record<string, unknown> }>;
+}): Promise<AgentVersionRecord> {
+  const id = createId("agv");
+  const timestamp = nowIso();
+  const configR2Key = input.config !== undefined ? `agent-config/${input.agentId}/${id}.json` : null;
+  const manifestR2Key = input.manifest !== undefined ? `agent-manifest/${input.agentId}/${id}.json` : null;
+
+  if (configR2Key) {
+    await env.R2_EMAIL.put(configR2Key, JSON.stringify(input.config, null, 2), {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+    });
+  }
+
+  if (manifestR2Key) {
+    await env.R2_EMAIL.put(manifestR2Key, JSON.stringify(input.manifest, null, 2), {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+    });
+  }
+
+  await execute(env.D1_DB.prepare(
+    `INSERT INTO agent_versions (
+       id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.agentId,
+    input.version,
+    input.model ?? null,
+    configR2Key,
+    manifestR2Key,
+    input.status ?? "draft",
+    timestamp
+  ));
+
+  for (const capability of input.capabilities ?? []) {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_capabilities (id, agent_version_id, capability, config_json, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(
+      createId("agc"),
+      id,
+      capability.capability,
+      capability.config ? JSON.stringify(capability.config) : null,
+      timestamp
+    ));
+  }
+
+  for (const tool of input.tools ?? []) {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_tool_bindings (id, agent_version_id, tool_name, enabled, config_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(
+      createId("agtb"),
+      id,
+      tool.toolName,
+      Number(tool.enabled ?? true),
+      tool.config ? JSON.stringify(tool.config) : null,
+      timestamp
+    ));
+  }
+
+  return requireRow(await getAgentVersion(env, input.agentId, id), "Failed to load created agent version");
+}
+
+export async function getAgentVersion(env: Env, agentId: string, versionId: string): Promise<AgentVersionRecord | null> {
+  const row = await firstRow<AgentVersionRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
+       FROM agent_versions
+       WHERE id = ? AND agent_id = ?`
+    ).bind(versionId, agentId)
+  );
+
+  return row ? await mapAgentVersion(env, row) : null;
+}
+
+export async function listAgentVersions(env: Env, agentId: string): Promise<AgentVersionRecord[]> {
+  const rows = await allRows<AgentVersionRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
+       FROM agent_versions
+       WHERE agent_id = ?
+       ORDER BY created_at DESC`
+    ).bind(agentId)
+  );
+
+  return await Promise.all(rows.map((row) => mapAgentVersion(env, row)));
+}
+
+export async function createAgentDeployment(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  agentVersionId: string;
+  targetType: AgentDeploymentRecord["targetType"];
+  targetId: string;
+  status?: AgentDeploymentRecord["status"];
+}): Promise<AgentDeploymentRecord> {
+  const id = createId("agd");
+  const timestamp = nowIso();
+
+  await execute(env.D1_DB.prepare(
+    `INSERT INTO agent_deployments (
+       id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    input.agentId,
+    input.agentVersionId,
+    input.targetType,
+    input.targetId,
+    input.status ?? "active",
+    timestamp,
+    timestamp
+  ));
+
+  return requireRow(await getAgentDeployment(env, input.agentId, id), "Failed to load created agent deployment");
+}
+
+export async function getAgentDeployment(env: Env, agentId: string, deploymentId: string): Promise<AgentDeploymentRecord | null> {
+  const row = await firstRow<AgentDeploymentRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+       FROM agent_deployments
+       WHERE id = ? AND agent_id = ?`
+    ).bind(deploymentId, agentId)
+  );
+
+  return row ? mapDeploymentRow(row) : null;
+}
+
+export async function listAgentDeployments(env: Env, agentId: string): Promise<AgentDeploymentRecord[]> {
+  const rows = await allRows<AgentDeploymentRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+       FROM agent_deployments
+       WHERE agent_id = ?
+       ORDER BY created_at DESC`
+    ).bind(agentId)
+  );
+
+  return rows.map(mapDeploymentRow);
 }
 
 export async function bindMailbox(env: Env, input: {

@@ -16,9 +16,15 @@ import { normalizeSesEvent } from "../lib/ses-events";
 import {
   bindMailbox,
   createAgent,
+  createAgentDeployment,
+  createAgentVersion,
   getAgent,
+  getAgentVersion,
   getMailboxById,
+  listAgentDeployments,
   listAgentMailboxes,
+  listAgents,
+  listAgentVersions,
   updateAgent,
   upsertAgentPolicy,
 } from "../repositories/agents";
@@ -222,7 +228,14 @@ router.on("POST", "/v1/agents", async (request, env) => {
     return auth;
   }
 
-  const body = await readJson<{ tenantId?: string; name?: string; mode?: "assistant" | "autonomous" | "review_only"; config?: unknown }>(request);
+  const body = await readJson<{
+    tenantId?: string;
+    slug?: string;
+    name?: string;
+    description?: string;
+    mode?: "assistant" | "autonomous" | "review_only";
+    config?: unknown;
+  }>(request);
   if (!body.tenantId || !body.name || !body.mode) {
     return badRequest("tenantId, name, and mode are required");
   }
@@ -233,12 +246,32 @@ router.on("POST", "/v1/agents", async (request, env) => {
 
   const agent = await createAgent(env, {
     tenantId: body.tenantId,
+    slug: body.slug,
     name: body.name,
+    description: body.description,
     mode: body.mode,
     config: body.config ?? {},
   });
 
   return json(agent, { status: 201 });
+});
+
+router.on("GET", "/v1/agents", async (request, env) => {
+  const auth = await requireAuth(request, env, ["agent:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const url = new URL(request.url);
+  const tenantId = url.searchParams.get("tenantId") ?? undefined;
+  if (tenantId) {
+    const tenantError = enforceTenantAccess(auth, tenantId);
+    if (tenantError) {
+      return tenantError;
+    }
+  }
+
+  return json({ items: await listAgents(env, tenantId) });
 });
 
 router.on("GET", "/v1/agents/:agentId", async (_request, env, _ctx, route) => {
@@ -284,8 +317,199 @@ router.on("PATCH", "/v1/agents/:agentId", async (request, env, _ctx, route) => {
     return agentError;
   }
 
-  const body = await readJson<{ name?: string; status?: "active" | "disabled"; mode?: "assistant" | "autonomous" | "review_only"; config?: unknown }>(request);
+  const body = await readJson<{
+    slug?: string;
+    name?: string;
+    description?: string;
+    status?: "draft" | "active" | "disabled" | "archived";
+    mode?: "assistant" | "autonomous" | "review_only";
+    config?: unknown;
+    defaultVersionId?: string;
+  }>(request);
   return json(await updateAgent(env, route.params.agentId, body));
+});
+
+router.on("POST", "/v1/agents/:agentId/versions", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:update"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const body = await readJson<{
+    version?: string;
+    model?: string;
+    config?: unknown;
+    manifest?: unknown;
+    status?: "draft" | "published" | "deprecated";
+    capabilities?: Array<{ capability?: string; config?: Record<string, unknown> }>;
+    tools?: Array<{ toolName?: string; enabled?: boolean; config?: Record<string, unknown> }>;
+  }>(request);
+
+  if (!body.version) {
+    return badRequest("version is required");
+  }
+
+  return json(await createAgentVersion(env, {
+    agentId: route.params.agentId,
+    version: body.version,
+    model: body.model,
+    config: body.config,
+    manifest: body.manifest,
+    status: body.status,
+    capabilities: (body.capabilities ?? [])
+      .filter((item): item is { capability: string; config?: Record<string, unknown> } => Boolean(item.capability))
+      .map((item) => ({ capability: item.capability, config: item.config })),
+    tools: (body.tools ?? [])
+      .filter((item): item is { toolName: string; enabled?: boolean; config?: Record<string, unknown> } => Boolean(item.toolName))
+      .map((item) => ({ toolName: item.toolName, enabled: item.enabled, config: item.config })),
+  }), { status: 201 });
+});
+
+router.on("GET", "/v1/agents/:agentId/versions", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  return json({ items: await listAgentVersions(env, route.params.agentId) });
+});
+
+router.on("GET", "/v1/agents/:agentId/versions/:versionId", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const version = await getAgentVersion(env, route.params.agentId, route.params.versionId);
+  if (!version) {
+    return json({ error: "Agent version not found" }, { status: 404 });
+  }
+
+  return json(version);
+});
+
+router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:update"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  const body = await readJson<{
+    tenantId?: string;
+    agentVersionId?: string;
+    targetType?: "mailbox" | "workflow" | "tenant_default";
+    targetId?: string;
+    status?: "active" | "paused" | "rolled_back";
+  }>(request);
+
+  if (!body.tenantId || !body.agentVersionId || !body.targetType || !body.targetId) {
+    return badRequest("tenantId, agentVersionId, targetType, and targetId are required");
+  }
+
+  const deploymentTenantError = enforceTenantAccess(auth, body.tenantId);
+  if (deploymentTenantError) {
+    return deploymentTenantError;
+  }
+
+  if (body.targetType === "mailbox") {
+    const mailboxError = enforceMailboxAccess(auth, body.targetId);
+    if (mailboxError) {
+      return mailboxError;
+    }
+  }
+
+  const version = await getAgentVersion(env, route.params.agentId, body.agentVersionId);
+  if (!version) {
+    return json({ error: "Agent version not found" }, { status: 404 });
+  }
+
+  return json(await createAgentDeployment(env, {
+    tenantId: body.tenantId,
+    agentId: route.params.agentId,
+    agentVersionId: body.agentVersionId,
+    targetType: body.targetType,
+    targetId: body.targetId,
+    status: body.status,
+  }), { status: 201 });
+});
+
+router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["agent:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, agent.id);
+  if (agentError) {
+    return agentError;
+  }
+
+  return json({ items: await listAgentDeployments(env, route.params.agentId) });
 });
 
 router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, route) => {

@@ -1,5 +1,7 @@
 export type AgentMode = "assistant" | "autonomous" | "review_only";
-export type AgentStatus = "active" | "disabled";
+export type AgentStatus = "draft" | "active" | "disabled" | "archived";
+export type AgentVersionStatus = "draft" | "published" | "deprecated";
+export type AgentDeploymentStatus = "active" | "paused" | "rolled_back";
 export type TaskStatus = "queued" | "running" | "done" | "needs_review" | "failed";
 export type DraftStatus = "draft" | "approved" | "queued" | "sent" | "cancelled" | "failed";
 export type MessageStatus = "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
@@ -44,10 +46,51 @@ export interface Env {
 export interface AgentRecord {
   id: string;
   tenantId: string;
+  slug?: string;
   name: string;
+  description?: string;
   status: AgentStatus;
   mode: AgentMode;
   configR2Key?: string;
+  defaultVersionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentCapabilityRecord {
+  id: string;
+  capability: string;
+  config?: Record<string, unknown>;
+}
+
+export interface AgentToolBindingSummary {
+  id: string;
+  toolName: string;
+  enabled: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface AgentVersionRecord {
+  id: string;
+  agentId: string;
+  version: string;
+  model?: string;
+  configR2Key?: string;
+  manifestR2Key?: string;
+  status: AgentVersionStatus;
+  capabilities: AgentCapabilityRecord[];
+  tools: AgentToolBindingSummary[];
+  createdAt: string;
+}
+
+export interface AgentDeploymentRecord {
+  id: string;
+  tenantId: string;
+  agentId: string;
+  agentVersionId: string;
+  targetType: "mailbox" | "workflow" | "tenant_default";
+  targetId: string;
+  status: AgentDeploymentStatus;
   createdAt: string;
   updatedAt: string;
 }
