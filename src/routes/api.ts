@@ -223,12 +223,21 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
   return json(buildRuntimeMetadata(env));
 });
+router.on("HEAD", "/v2/meta/runtime", async (_request, env) => {
+  return json(buildRuntimeMetadata(env));
+});
 
 router.on("GET", "/v2/meta/compatibility", async (_request, env) => {
   return json(buildCompatibilityContract(env));
 });
+router.on("HEAD", "/v2/meta/compatibility", async (_request, env) => {
+  return json(buildCompatibilityContract(env));
+});
 
 router.on("GET", "/v2/meta/compatibility/schema", async (_request, _env) => {
+  return json(COMPATIBILITY_CONTRACT_SCHEMA);
+});
+router.on("HEAD", "/v2/meta/compatibility/schema", async (_request, _env) => {
   return json(COMPATIBILITY_CONTRACT_SCHEMA);
 });
 
