@@ -70,6 +70,8 @@ Admin and debug behavior
   created self-serve mailbox
 - POST /public/token/reissue can email a refreshed self-serve token to the
   original operatorEmail when the previous token expires
+- POST /v1/auth/token/rotate can proactively rotate a still-valid self-serve
+  token inline, back to the mailbox itself, or both
 - POST /v1/auth/tokens requires x-admin-secret
 - debug endpoints require x-admin-secret
 - admin and debug routes may be disabled by environment flags
@@ -129,6 +131,8 @@ Recommended workflow for a new integration
 3. read tasks or messages for that mailbox
 4. if the self-serve token expires, call POST /public/token/reissue
 5. retrieve the refreshed token from the original operatorEmail
+6. if the token is still valid and the agent wants to rotate it without
+   emailing the operator, call POST /v1/auth/token/rotate
 6. create a draft with POST /v1/agents/{agentId}/drafts
 7. explicitly send with POST /v1/drafts/{draftId}/send
 8. use POST /v1/auth/tokens with x-admin-secret only for broader operator or non-self-serve flows

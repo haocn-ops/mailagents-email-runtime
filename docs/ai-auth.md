@@ -47,6 +47,17 @@ Important behavior:
 - the refreshed token is never returned inline to the caller
 - mailbox cooldowns and source-IP rate limits apply to reduce abuse
 
+If the self-serve token is still valid and the agent wants to rotate
+proactively without emailing the operator, use `POST /v1/auth/token/rotate`.
+
+Important behavior:
+
+- the current bearer token must still be valid
+- the route can return the rotated token inline
+- the route can optionally deliver the rotated token to the mailbox itself
+- the route does not email the original `operatorEmail`
+- the old token remains valid unless a future revoke flow is added separately
+
 ## Minting a Bearer Token
 
 Use `POST /v1/auth/tokens`.

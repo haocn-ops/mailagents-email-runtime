@@ -95,7 +95,13 @@ For self-serve production onboarding:
 3. use that token for message reads, draft creation, and send
 4. if the token expires, call `POST /public/token/reissue`
 5. retrieve the refreshed token from the original `operatorEmail`
-6. fall back to `POST /v1/auth/tokens` only for broader operator workflows or non-self-serve provisioning
+6. if the token is still valid and the agent wants to rotate it proactively,
+   call `POST /v1/auth/token/rotate`
+7. use `delivery: "inline"` for immediate return, `delivery: "self_mailbox"`
+   to send the refreshed token back to the mailbox itself, or `delivery:
+   "both"` for both channels
+8. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
+   non-self-serve provisioning
 
 `POST /public/token/reissue` is intentionally recovery-only:
 
@@ -104,6 +110,14 @@ For self-serve production onboarding:
 - it never returns the refreshed token directly
 - it sends the refreshed token only to the original `operatorEmail`
 - mailbox cooldowns and source-IP rate limits apply
+
+`POST /v1/auth/token/rotate` is the proactive, authenticated path:
+
+- it requires a still-valid bearer token
+- it can return the rotated token inline
+- it can optionally send the rotated token to the mailbox itself
+- it does not email the original `operatorEmail`
+- the previous token remains valid
 
 For incoming mail handling:
 
