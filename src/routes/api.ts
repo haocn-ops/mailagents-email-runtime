@@ -63,6 +63,7 @@ import {
   releaseIdempotencyKey,
   reserveIdempotencyKey,
   addSuppression,
+  updateTaskStatus,
   updateOutboundJobStatus,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
@@ -1104,12 +1105,20 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           status: "queued",
           assignedAgent: replayAgentTarget!.agentId,
         });
-        await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: replayTask.id,
-          agentId: replayAgentTarget!.agentId,
-          agentVersionId: replayAgentTarget!.agentVersionId,
-          deploymentId: replayAgentTarget!.deploymentId,
-        });
+        try {
+          await env.AGENT_EXECUTE_QUEUE.send({
+            taskId: replayTask.id,
+            agentId: replayAgentTarget!.agentId,
+            agentVersionId: replayAgentTarget!.agentVersionId,
+            deploymentId: replayAgentTarget!.deploymentId,
+          });
+        } catch (error) {
+          await updateTaskStatus(env, {
+            taskId: replayTask.id,
+            status: "failed",
+          }).catch(() => undefined);
+          throw error;
+        }
       }
 
       await completeIdempotencyKey(env, {
@@ -1149,12 +1158,20 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       status: "queued",
       assignedAgent: replayAgentTarget.agentId,
     });
-    await env.AGENT_EXECUTE_QUEUE.send({
-      taskId: replayTask.id,
-      agentId: replayAgentTarget.agentId,
-      agentVersionId: replayAgentTarget.agentVersionId,
-      deploymentId: replayAgentTarget.deploymentId,
-    });
+    try {
+      await env.AGENT_EXECUTE_QUEUE.send({
+        taskId: replayTask.id,
+        agentId: replayAgentTarget.agentId,
+        agentVersionId: replayAgentTarget.agentVersionId,
+        deploymentId: replayAgentTarget.deploymentId,
+      });
+    } catch (error) {
+      await updateTaskStatus(env, {
+        taskId: replayTask.id,
+        status: "failed",
+      }).catch(() => undefined);
+      throw error;
+    }
   }
 
   return accepted({

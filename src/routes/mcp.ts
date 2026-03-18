@@ -33,6 +33,7 @@ import {
   listTasks,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateTaskStatus,
 } from "../repositories/mail";
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
@@ -1108,12 +1109,20 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
             status: "queued",
             assignedAgent: replayAgentTarget.agentId,
           });
-          await env.AGENT_EXECUTE_QUEUE.send({
-            taskId: replayTask.id,
-            agentId: replayAgentTarget.agentId,
-            agentVersionId: replayAgentTarget.agentVersionId,
-            deploymentId: replayAgentTarget.deploymentId,
-          });
+          try {
+            await env.AGENT_EXECUTE_QUEUE.send({
+              taskId: replayTask.id,
+              agentId: replayAgentTarget.agentId,
+              agentVersionId: replayAgentTarget.agentVersionId,
+              deploymentId: replayAgentTarget.deploymentId,
+            });
+          } catch (error) {
+            await updateTaskStatus(env, {
+              taskId: replayTask.id,
+              status: "failed",
+            }).catch(() => undefined);
+            throw error;
+          }
         }
         await completeIdempotencyKey(env, {
           operation: "message_replay",
@@ -1152,12 +1161,20 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         status: "queued",
         assignedAgent: replayAgentTarget.agentId,
       });
-      await env.AGENT_EXECUTE_QUEUE.send({
-        taskId: replayTask.id,
-        agentId: replayAgentTarget.agentId,
-        agentVersionId: replayAgentTarget.agentVersionId,
-        deploymentId: replayAgentTarget.deploymentId,
-      });
+      try {
+        await env.AGENT_EXECUTE_QUEUE.send({
+          taskId: replayTask.id,
+          agentId: replayAgentTarget.agentId,
+          agentVersionId: replayAgentTarget.agentVersionId,
+          deploymentId: replayAgentTarget.deploymentId,
+        });
+      } catch (error) {
+        await updateTaskStatus(env, {
+          taskId: replayTask.id,
+          status: "failed",
+        }).catch(() => undefined);
+        throw error;
+      }
     }
 
     return response;
