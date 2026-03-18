@@ -1,5 +1,10 @@
 import { requireAdminSecret } from "../lib/auth";
 import {
+  CONTACT_ALIAS_LOCALPARTS,
+  CONTACT_ALIAS_TENANT_ID,
+  getContactAliasAddress,
+} from "../lib/contact-aliases";
+import {
   deleteEmailRoutingRule,
   listEmailRoutingRules,
   requireCloudflareEmailConfig,
@@ -70,8 +75,8 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
 
   try {
     const rules = await listEmailRoutingRules(env);
-    const aliases = ["hello", "security", "privacy", "dmarc"].map((alias) => {
-      const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+    const aliases = CONTACT_ALIAS_LOCALPARTS.map((alias) => {
+      const address = getContactAliasAddress(env, alias);
       const rule = rules.find((entry) =>
         entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
       );
@@ -128,7 +133,7 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
     );
     const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
     const mailbox = await ensureMailbox(env, {
-      tenantId: "t_demo",
+      tenantId: CONTACT_ALIAS_TENANT_ID,
       address,
     });
     return json({ ok: true, rule, mailbox });
@@ -156,11 +161,10 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
 
   try {
     const rules = await listEmailRoutingRules(env);
-    const aliases = ["hello", "security", "privacy", "dmarc"];
     const results = [];
 
-    for (const alias of aliases) {
-      const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+    for (const alias of CONTACT_ALIAS_LOCALPARTS) {
+      const address = getContactAliasAddress(env, alias);
       const existing = rules.find((entry) =>
         entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
       );
@@ -172,7 +176,7 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
 
       const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
       const mailbox = await ensureMailbox(env, {
-        tenantId: "t_demo",
+        tenantId: CONTACT_ALIAS_TENANT_ID,
         address,
       });
       results.push({ alias, skipped: false, ruleId: rule.id, mailboxId: mailbox.id });

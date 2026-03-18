@@ -1,5 +1,6 @@
 import { createId } from "../lib/ids";
 import { nowIso } from "../lib/time";
+import { ensureManagedContactAliasMailbox, isManagedContactAliasAddress } from "../lib/contact-aliases";
 import { getMailboxByAddress } from "../repositories/agents";
 import type { EmailIngestJob, Env } from "../types";
 
@@ -12,7 +13,13 @@ interface ForwardableEmailMessage {
 }
 
 export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
-  const mailbox = await getMailboxByAddress(env, message.to.toLowerCase());
+  const normalizedTo = message.to.toLowerCase();
+  let mailbox = await getMailboxByAddress(env, normalizedTo);
+  if (!mailbox && isManagedContactAliasAddress(env, normalizedTo)) {
+    await ensureManagedContactAliasMailbox(env, normalizedTo);
+    mailbox = await getMailboxByAddress(env, normalizedTo);
+  }
+
   if (!mailbox || mailbox.status !== "active") {
     message.setReject("Unknown mailbox");
     return;
@@ -38,7 +45,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
     "cloudflare",
     message.headers.get("message-id"),
     message.from,
-    message.to,
+    normalizedTo,
     "received",
     rawR2Key,
     receivedAt,
