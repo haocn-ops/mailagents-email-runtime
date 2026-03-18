@@ -43,9 +43,16 @@ Recommended usage:
 - use `/v2/meta/compatibility/schema` in CI or SDK validation
 - use `docs/agent-capabilities.json` as a fixed example fixture when live calls are not desirable
 
-## 2. Mint a Scoped Bearer Token
+## 2. Obtain a Scoped Bearer Token
 
-This requires `x-admin-secret` and admin routes enabled in the environment.
+For self-serve onboarding, call `POST /public/signup` first and store the
+returned mailbox-scoped bearer token from the signup response.
+
+Use `POST /v1/auth/tokens` when you need a broader operator token, a non-self-serve
+workflow, or an environment where the mailbox was provisioned outside the public
+signup path.
+
+Admin minting requires `x-admin-secret` and admin routes enabled in the environment.
 
 ```bash
 curl -sS -X POST https://mailagents-dev.izhenghaocn.workers.dev/v1/auth/tokens \

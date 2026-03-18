@@ -11,7 +11,7 @@ Current support:
 ## Prerequisites
 
 1. start the local worker with `npm run dev:local`
-2. mint a bearer token as described in [docs/local-dev.md](../docs/local-dev.md)
+2. obtain a bearer token as described in [docs/local-dev.md](../docs/local-dev.md)
 3. export it:
 
 ```bash

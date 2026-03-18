@@ -123,7 +123,7 @@
   "recommendedStartupSequence": [
     "read /v2/meta/compatibility",
     "validate against /v2/meta/compatibility/schema",
-    "mint a least-privilege bearer token",
+    "obtain a least-privilege bearer token",
     "call MCP tools/list",
     "prefer read tools before side effects",
     "create drafts before sends",

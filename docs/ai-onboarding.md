@@ -93,7 +93,7 @@ For self-serve production onboarding:
 1. call `POST /public/signup`
 2. store the returned mailbox-scoped bearer token
 3. use that token for message reads, draft creation, and send
-4. fall back to `POST /v1/auth/tokens` only for broader operator workflows
+4. fall back to `POST /v1/auth/tokens` only for broader operator workflows or non-self-serve provisioning
 
 For incoming mail handling:
 

@@ -66,6 +66,8 @@ Access rules:
 
 Admin and debug behavior
 
+- POST /public/signup may return a mailbox-scoped bearer token for a newly
+  created self-serve mailbox
 - POST /v1/auth/tokens requires x-admin-secret
 - debug endpoints require x-admin-secret
 - admin and debug routes may be disabled by environment flags
@@ -120,18 +122,18 @@ For MCP:
 
 Recommended workflow for a new integration
 
-1. mint a bearer token using POST /v1/auth/tokens and x-admin-secret
-2. create an agent with POST /v1/agents
-3. bind a mailbox with POST /v1/agents/{agentId}/mailboxes
-4. read tasks or messages for that mailbox
-5. create a draft with POST /v1/agents/{agentId}/drafts
-6. explicitly send with POST /v1/drafts/{draftId}/send
+1. if you are using self-serve onboarding, call POST /public/signup first
+2. store the returned mailbox-scoped bearer token
+3. read tasks or messages for that mailbox
+4. create a draft with POST /v1/agents/{agentId}/drafts
+5. explicitly send with POST /v1/drafts/{draftId}/send
+6. use POST /v1/auth/tokens with x-admin-secret only for broader operator or non-self-serve flows
 
 Recommended workflow for an external agent integration
 
 1. read /v2/meta/compatibility
 2. validate it against /v2/meta/compatibility/schema
-3. mint a least-privilege bearer token
+3. obtain a least-privilege bearer token
 4. call MCP tools/list
 5. prefer read operations first
 6. create drafts before sends
