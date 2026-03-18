@@ -1087,24 +1087,18 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
 
     try {
       if (body.mode === "normalize") {
-        if (!replayRawR2Key) {
-          return badRequest("normalize replay requires the message to have raw email content");
-        }
         await env.EMAIL_INGEST_QUEUE.send({
           messageId: route.params.messageId,
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
-          rawR2Key: replayRawR2Key,
+          rawR2Key: replayRawR2Key!,
         });
       } else {
-        if (!replayAgentTarget) {
-          return badRequest("agentId is required for rerun_agent replay");
-        }
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: createId("tsk"),
-          agentId: replayAgentTarget.agentId,
-          agentVersionId: replayAgentTarget.agentVersionId,
-          deploymentId: replayAgentTarget.deploymentId,
+          agentId: replayAgentTarget!.agentId,
+          agentVersionId: replayAgentTarget!.agentVersionId,
+          deploymentId: replayAgentTarget!.deploymentId,
         });
       }
 
