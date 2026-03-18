@@ -149,8 +149,8 @@ That failure was resolved by creating the missing SES configuration set
 
 Fixtures live in:
 
-- [fixtures/ses/delivery.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/fixtures/ses/delivery.json)
-- [fixtures/ses/bounce.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/fixtures/ses/bounce.json)
+- [fixtures/ses/delivery.json](../fixtures/ses/delivery.json)
+- [fixtures/ses/bounce.json](../fixtures/ses/bounce.json)
 
 You can post them manually:
 

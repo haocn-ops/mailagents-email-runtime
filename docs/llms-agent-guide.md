@@ -39,21 +39,21 @@ Think in this order:
 
 Read these in order:
 
-1. [docs/ai-onboarding.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-onboarding.md)
-2. [docs/ai-auth.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-auth.md)
-3. [docs/runtime-metadata.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-metadata.md)
-4. [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
-5. [docs/agent-sdk-examples.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-sdk-examples.md)
-6. [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
+1. [docs/ai-onboarding.md](../docs/ai-onboarding.md)
+2. [docs/ai-auth.md](../docs/ai-auth.md)
+3. [docs/runtime-metadata.md](../docs/runtime-metadata.md)
+4. [docs/runtime-compatibility.md](../docs/runtime-compatibility.md)
+5. [docs/agent-sdk-examples.md](../docs/agent-sdk-examples.md)
+6. [docs/agent-client-helper.md](../docs/agent-client-helper.md)
 
 Use these as deeper references:
 
-- [docs/ai-decision-rules.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-decision-rules.md)
-- [docs/agent-workflow-packs.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-workflow-packs.md)
-- [docs/agent-capabilities.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
-- [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
-- [docs/mcp-local.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mcp-local.md)
-- [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
+- [docs/ai-decision-rules.md](../docs/ai-decision-rules.md)
+- [docs/agent-workflow-packs.md](../docs/agent-workflow-packs.md)
+- [docs/agent-capabilities.json](../docs/agent-capabilities.json)
+- [docs/agent-client-helper.md](../docs/agent-client-helper.md)
+- [docs/mcp-local.md](../docs/mcp-local.md)
+- [docs/openapi.yaml](../docs/openapi.yaml)
 - `npm run example:agent:discover`
 - `npm run example:agent:reply-draft`
 - `npm run example:agent:operator-send`
@@ -80,7 +80,7 @@ Current shared `dev` URLs:
 - [runtime metadata](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/runtime)
 - [compatibility contract](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility)
 - [compatibility schema](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility/schema)
-- [agent capabilities snapshot](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
+- [agent capabilities snapshot](../docs/agent-capabilities.json)
 
 ## Authentication
 
@@ -176,21 +176,21 @@ Suggested behavior:
 If you are trying to:
 
 - understand the product and safety model
-  - [docs/ai-onboarding.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-onboarding.md)
+  - [docs/ai-onboarding.md](../docs/ai-onboarding.md)
 - understand auth and scopes
-  - [docs/ai-auth.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/ai-auth.md)
+  - [docs/ai-auth.md](../docs/ai-auth.md)
 - orchestrate reply and send workflows
-  - [docs/agent-workflow-packs.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-workflow-packs.md)
+  - [docs/agent-workflow-packs.md](../docs/agent-workflow-packs.md)
 - copy working requests quickly
-  - [docs/agent-sdk-examples.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-sdk-examples.md)
+  - [docs/agent-sdk-examples.md](../docs/agent-sdk-examples.md)
 - start from a lightweight TypeScript helper
-  - [docs/agent-client-helper.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-helper.md)
+  - [docs/agent-client-helper.md](../docs/agent-client-helper.md)
 - integrate against the stable contract
-  - [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
+  - [docs/runtime-compatibility.md](../docs/runtime-compatibility.md)
 - validate compatibility in CI
-  - [docs/runtime-compatibility.schema.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.schema.json)
+  - [docs/runtime-compatibility.schema.json](../docs/runtime-compatibility.schema.json)
 - start from a pinned fixture instead of a live endpoint
-  - [docs/agent-capabilities.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-capabilities.json)
+  - [docs/agent-capabilities.json](../docs/agent-capabilities.json)
 
 ## Recommended External-Agent Startup Sequence
 

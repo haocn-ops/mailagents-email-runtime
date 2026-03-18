@@ -60,7 +60,7 @@ Recommended:
 
 ## 3. Repo Config Changes
 
-Update [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml):
+Update [wrangler.toml](../wrangler.toml):
 
 - replace `REPLACE_WITH_PRODUCTION_D1_DATABASE_ID`
 - confirm production `SES_FROM_DOMAIN`

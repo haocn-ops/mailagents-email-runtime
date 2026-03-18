@@ -166,7 +166,7 @@ Cleanup can be driven by:
 
 ## Best References
 
-- OpenAPI: [`docs/openapi.yaml`](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
-- local setup: [`docs/local-dev.md`](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/local-dev.md)
-- smoke flow: [`docs/testing.md`](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/testing.md)
-- product and security model: [`docs/mvp-spec.md`](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/mvp-spec.md)
+- OpenAPI: [`docs/openapi.yaml`](../docs/openapi.yaml)
+- local setup: [`docs/local-dev.md`](../docs/local-dev.md)
+- smoke flow: [`docs/testing.md`](../docs/testing.md)
+- product and security model: [`docs/mvp-spec.md`](../docs/mvp-spec.md)

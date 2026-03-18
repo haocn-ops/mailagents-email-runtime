@@ -5,9 +5,9 @@ a published package.
 
 Related files:
 
-- [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
-- [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
-- [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
+- [packages/mailagents-agent-client/package.json](../packages/mailagents-agent-client/package.json)
+- [packages/mailagents-agent-client/CHANGELOG.md](../packages/mailagents-agent-client/CHANGELOG.md)
+- [docs/runtime-compatibility.md](../docs/runtime-compatibility.md)
 
 ## Goals
 
@@ -51,7 +51,7 @@ Use major releases for:
 
 The runtime publishes its own compatibility contract:
 
-- [docs/runtime-compatibility.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/runtime-compatibility.md)
+- [docs/runtime-compatibility.md](../docs/runtime-compatibility.md)
 
 The package should follow these rules:
 
@@ -82,8 +82,8 @@ It should avoid:
 
 For each release:
 
-1. update [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
-2. confirm the exported API in [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
+1. update [packages/mailagents-agent-client/CHANGELOG.md](../packages/mailagents-agent-client/CHANGELOG.md)
+2. confirm the exported API in [packages/mailagents-agent-client/src/index.ts](../packages/mailagents-agent-client/src/index.ts)
 3. run `npm run check:agent-client`
 4. run `npm run build:agent-client`
 5. run `npm_config_cache=/tmp/mailagents-npm-cache npm run pack:agent-client:dry-run`

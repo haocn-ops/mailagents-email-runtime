@@ -3,8 +3,8 @@
 This repository includes a minimal TypeScript helper for external agent
 integrations:
 
-- [tools/agent_client.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/tools/agent_client.ts)
-- [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
+- [tools/agent_client.ts](../tools/agent_client.ts)
+- [packages/mailagents-agent-client/src/index.ts](../packages/mailagents-agent-client/src/index.ts)
 
 It is intentionally lightweight:
 
@@ -68,8 +68,8 @@ Expected environment variables:
 
 Package skeleton:
 
-- [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
-- [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
+- [packages/mailagents-agent-client/package.json](../packages/mailagents-agent-client/package.json)
+- [packages/mailagents-agent-client/README.md](../packages/mailagents-agent-client/README.md)
 - run `npx tsc -p packages/mailagents-agent-client/tsconfig.json --noEmit` to check it
 - or use `npm run check:agent-client`
 - or use `npm run build:agent-client`
@@ -83,4 +83,4 @@ If this helper proves useful, the next natural evolution is:
 - publish a small npm client for external integrators
 
 For the release-oriented next step, see
-[docs/agent-client-release.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-release.md).
+[docs/agent-client-release.md](../docs/agent-client-release.md).

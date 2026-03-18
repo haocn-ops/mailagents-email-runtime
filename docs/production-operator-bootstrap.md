@@ -6,8 +6,8 @@ agent online in production.
 Use this only after:
 
 - production deploy is complete
-- [docs/production-rollout-checklist.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/production-rollout-checklist.md) is green
-- [scripts/production_readonly_smoke.sh](/Users/zh/Documents/codeX/mailagents_cloudflare2/scripts/production_readonly_smoke.sh) passes
+- [docs/production-rollout-checklist.md](../docs/production-rollout-checklist.md) is green
+- [scripts/production_readonly_smoke.sh](../scripts/production_readonly_smoke.sh) passes
 
 ## Goal
 

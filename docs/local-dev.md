@@ -18,7 +18,7 @@ npm install
 
 ## 2. Configure Wrangler
 
-Update [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml):
+Update [wrangler.toml](../wrangler.toml):
 
 - replace `database_id`
 - replace `bucket_name` if needed
@@ -27,7 +27,7 @@ Update [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler
 
 ## 3. Configure secrets for local development
 
-Copy [.dev.vars.example](/Users/zh/Documents/codeX/mailagents_cloudflare2/.dev.vars.example) to `.dev.vars` and fill in:
+Copy [.dev.vars.example](../.dev.vars.example) to `.dev.vars` and fill in:
 
 - `SES_ACCESS_KEY_ID`
 - `SES_SECRET_ACCESS_KEY`
@@ -73,7 +73,7 @@ This inserts:
 - seeded inbound message `msg_demo_inbound`
 - mailbox binding and basic policy
 
-The SQL lives in [seeds/0001_demo.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/seeds/0001_demo.sql).
+The SQL lives in [seeds/0001_demo.sql](../seeds/0001_demo.sql).
 
 ## 6. Start the local worker
 

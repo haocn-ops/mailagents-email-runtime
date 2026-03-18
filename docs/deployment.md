@@ -2,8 +2,8 @@
 
 This document covers the minimum setup required to connect the project to real Cloudflare and AWS SES resources.
 
-For the first real environment, see [docs/dev-bootstrap.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/dev-bootstrap.md).
-For Worker secret setup templates, see [scripts/bootstrap_worker_secrets.sh](/Users/zh/Documents/codeX/mailagents_cloudflare2/scripts/bootstrap_worker_secrets.sh).
+For the first real environment, see [docs/dev-bootstrap.md](../docs/dev-bootstrap.md).
+For Worker secret setup templates, see [scripts/bootstrap_worker_secrets.sh](../scripts/bootstrap_worker_secrets.sh).
 
 ## Environments
 
@@ -13,7 +13,7 @@ This project now assumes three Cloudflare deployment environments:
 - `staging`
 - `production`
 
-Local development continues to use the top-level bindings in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml).
+Local development continues to use the top-level bindings in [wrangler.toml](../wrangler.toml).
 
 Current deployed `dev` environment:
 
@@ -40,11 +40,11 @@ Important:
 Current production status as of 2026-03-17:
 
 - `mailagents-production` Worker is now deployed
-- `env.production` in [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml)
+- `env.production` in [wrangler.toml](../wrangler.toml)
   now points at the real production D1 database
 - production route is attached as `api.mailagents.net/*`
 - DNS for `api.mailagents.net` is still the remaining blocker
-- see [docs/production-rollout-checklist.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/production-rollout-checklist.md)
+- see [docs/production-rollout-checklist.md](../docs/production-rollout-checklist.md)
   before attempting a production deploy or domain bind
 
 ## Cloudflare Resources
@@ -59,7 +59,7 @@ Create or identify, per environment:
   - `outbound-send`
   - `dead-letter`
 
-Update [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml):
+Update [wrangler.toml](../wrangler.toml):
 
 - set the real `database_id` for each environment
 - set the real `bucket_name` for each environment
@@ -117,7 +117,7 @@ Recommended:
 
 ## Local Secret File
 
-Fill [.dev.vars.example](/Users/zh/Documents/codeX/mailagents_cloudflare2/.dev.vars.example) into `.dev.vars` with real values for:
+Fill [.dev.vars.example](../.dev.vars.example) into `.dev.vars` with real values for:
 
 - `SES_ACCESS_KEY_ID`
 - `SES_SECRET_ACCESS_KEY`
@@ -277,7 +277,7 @@ older mailbox-to-agent fallback path.
 
 ## GitHub Actions
 
-This repository includes a manual GitHub Actions workflow at [`.github/workflows/deploy.yml`](/Users/zh/Documents/codeX/mailagents_cloudflare2/.github/workflows/deploy.yml).
+This repository includes a manual GitHub Actions workflow at [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
 
 Required repository or environment secrets:
 

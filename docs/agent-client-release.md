@@ -5,12 +5,12 @@ skeleton into a real published npm package.
 
 Current package skeleton:
 
-- [packages/mailagents-agent-client/package.json](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/package.json)
-- [packages/mailagents-agent-client/src/index.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/src/index.ts)
-- [packages/mailagents-agent-client/README.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/README.md)
-- [packages/mailagents-agent-client/CHANGELOG.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/packages/mailagents-agent-client/CHANGELOG.md)
-- [docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
-- [docs/agent-client-release-notes-0.1.0.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-release-notes-0.1.0.md)
+- [packages/mailagents-agent-client/package.json](../packages/mailagents-agent-client/package.json)
+- [packages/mailagents-agent-client/src/index.ts](../packages/mailagents-agent-client/src/index.ts)
+- [packages/mailagents-agent-client/README.md](../packages/mailagents-agent-client/README.md)
+- [packages/mailagents-agent-client/CHANGELOG.md](../packages/mailagents-agent-client/CHANGELOG.md)
+- [docs/agent-client-versioning.md](../docs/agent-client-versioning.md)
+- [docs/agent-client-release-notes-0.1.0.md](../docs/agent-client-release-notes-0.1.0.md)
 
 ## Current State
 
@@ -102,7 +102,7 @@ Avoid in v1:
 ## Versioning Guidance
 
 Use the package policy in
-[docs/agent-client-versioning.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/agent-client-versioning.md)
+[docs/agent-client-versioning.md](../docs/agent-client-versioning.md)
 when deciding whether a change is patch, minor, or major.
 
 ## Suggested Future Enhancements

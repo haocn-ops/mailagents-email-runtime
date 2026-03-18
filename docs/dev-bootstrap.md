@@ -41,7 +41,7 @@ wrangler queues create mailagents-dev-dead-letter
 When `wrangler d1 create mailagents-dev` succeeds, Cloudflare returns a `database_id`.
 Paste that value into:
 
-- [wrangler.toml](/Users/zh/Documents/codeX/mailagents_cloudflare2/wrangler.toml)
+- [wrangler.toml](../wrangler.toml)
 
 Specifically:
 
