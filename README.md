@@ -56,6 +56,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-decision-rules.md`
 - `docs/ai-auth.md`
 - `docs/ai-agents.md`
+- `docs/agent-registry.md`
 - `docs/ai-mail-workflows.md`
 - `docs/ai-debug.md`
 - `docs/llms-agent-guide.md`
@@ -129,6 +130,12 @@ See [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for:
 - a lightweight TypeScript client wrapper
 - a copyable starting point for external SDKs
 - a path toward a future published client
+
+See [`docs/agent-registry.md`](docs/agent-registry.md) for:
+
+- the versioned agent registry model
+- agent versions, capabilities, tools, and deployments
+- the migration path from MVP agent records to a real control plane
 
 See [`docs/agent-client-release.md`](docs/agent-client-release.md) for:
 

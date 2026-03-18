@@ -167,6 +167,28 @@ paths:
         '200':
           description: Suppression state
   /v1/agents:
+    get:
+      tags: [Agents]
+      summary: List agents
+      operationId: listAgents
+      parameters:
+        - name: tenantId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
     post:
       tags: [Agents]
       summary: Create an agent
@@ -300,6 +322,99 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Task'
+  /v1/agents/{agentId}/versions:
+    post:
+      tags: [Agents]
+      summary: Create an agent version
+      operationId: createAgentVersion
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentVersionRequest'
+      responses:
+        '201':
+          description: Agent version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersion'
+    get:
+      tags: [Agents]
+      summary: List versions for an agent
+      operationId: listAgentVersions
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentVersion'
+  /v1/agents/{agentId}/versions/{versionId}:
+    get:
+      tags: [Agents]
+      summary: Get an agent version
+      operationId: getAgentVersion
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+        - $ref: '#/components/parameters/VersionId'
+      responses:
+        '200':
+          description: Agent version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentVersion'
+  /v1/agents/{agentId}/deployments:
+    post:
+      tags: [Agents]
+      summary: Create an agent deployment
+      operationId: createAgentDeployment
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentDeploymentRequest'
+      responses:
+        '201':
+          description: Agent deployment created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDeployment'
+    get:
+      tags: [Agents]
+      summary: List deployments for an agent
+      operationId: listAgentDeployments
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Agent deployments
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentDeployment'
   /v1/messages/{messageId}:
     get:
       tags: [Messages]
@@ -468,13 +583,25 @@ components:
       required: true
       schema:
         type: string
+    VersionId:
+      name: versionId
+      in: path
+      required: true
+      schema:
+        type: string
   schemas:
     AgentMode:
       type: string
       enum: [assistant, autonomous, review_only]
     AgentStatus:
       type: string
-      enum: [active, disabled]
+      enum: [draft, active, disabled, archived]
+    AgentVersionStatus:
+      type: string
+      enum: [draft, published, deprecated]
+    AgentDeploymentStatus:
+      type: string
+      enum: [active, paused, rolled_back]
     TaskStatus:
       type: string
       enum: [queued, running, done, needs_review, failed]
@@ -495,13 +622,19 @@ components:
           type: string
         tenantId:
           type: string
+        slug:
+          type: string
         name:
+          type: string
+        description:
           type: string
         status:
           $ref: '#/components/schemas/AgentStatus'
         mode:
           $ref: '#/components/schemas/AgentMode'
         configR2Key:
+          type: string
+        defaultVersionId:
           type: string
         createdAt:
           type: string
@@ -515,7 +648,11 @@ components:
       properties:
         tenantId:
           type: string
+        slug:
+          type: string
         name:
+          type: string
+        description:
           type: string
         mode:
           $ref: '#/components/schemas/AgentMode'
@@ -527,6 +664,10 @@ components:
       properties:
         name:
           type: string
+        slug:
+          type: string
+        description:
+          type: string
         status:
           $ref: '#/components/schemas/AgentStatus'
         mode:
@@ -534,6 +675,117 @@ components:
         config:
           type: object
           additionalProperties: true
+        defaultVersionId:
+          type: string
+    AgentVersion:
+      type: object
+      required: [id, agentId, version, status, createdAt]
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        version:
+          type: string
+        model:
+          type: string
+        configR2Key:
+          type: string
+        manifestR2Key:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentVersionStatus'
+        createdAt:
+          type: string
+          format: date-time
+    CreateAgentVersionRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: string
+        model:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        manifest:
+          type: object
+          additionalProperties: true
+        status:
+          $ref: '#/components/schemas/AgentVersionStatus'
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCapability'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentToolBinding'
+    AgentCapability:
+      type: object
+      required: [capability]
+      properties:
+        id:
+          type: string
+        capability:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+    AgentToolBinding:
+      type: object
+      required: [toolName]
+      properties:
+        id:
+          type: string
+        toolName:
+          type: string
+        enabled:
+          type: boolean
+        config:
+          type: object
+          additionalProperties: true
+    AgentDeployment:
+      type: object
+      required: [id, tenantId, agentId, agentVersionId, targetType, targetId, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        agentId:
+          type: string
+        agentVersionId:
+          type: string
+        targetType:
+          type: string
+          enum: [mailbox, workflow, tenant_default]
+        targetId:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentDeploymentStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateAgentDeploymentRequest:
+      type: object
+      required: [tenantId, agentVersionId, targetType, targetId]
+      properties:
+        tenantId:
+          type: string
+        agentVersionId:
+          type: string
+        targetType:
+          type: string
+          enum: [mailbox, workflow, tenant_default]
+        targetId:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentDeploymentStatus'
     AgentMailboxBinding:
       type: object
       required: [id, agentId, mailboxId, role, status, createdAt]

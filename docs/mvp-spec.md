@@ -168,28 +168,98 @@ The control plane defines who an agent is and what it may do.
 Primary resources:
 
 - `Agent`
+- `AgentVersion`
+- `AgentCapability`
+- `AgentToolBinding`
+- `AgentDeployment`
 - `Mailbox`
 - `AgentMailboxBinding`
 - `AgentPolicy`
 
 ### Agent
 
-Represents an AI worker that can process email-derived tasks.
+Represents the stable identity of an AI worker family.
 
 Fields:
 
 - `id`
 - `tenant_id`
+- `slug`
 - `name`
+- `description`
 - `status`
 - `mode`
 - `config_r2_key`
+- `default_version_id`
 
 `mode` values:
 
 - `assistant`
 - `autonomous`
 - `review_only`
+
+`status` values should evolve to:
+
+- `draft`
+- `active`
+- `disabled`
+- `archived`
+
+### AgentVersion
+
+Represents an immutable version of agent configuration.
+
+Fields:
+
+- `id`
+- `agent_id`
+- `version`
+- `model`
+- `config_r2_key`
+- `manifest_r2_key`
+- `status`
+- `created_at`
+
+This is the missing layer between an agent identity and runtime execution.
+
+### AgentCapability
+
+Declares what an agent version can do.
+
+Fields:
+
+- `id`
+- `agent_version_id`
+- `capability`
+- `config_json`
+
+### AgentToolBinding
+
+Declares which tools are available to one agent version.
+
+Fields:
+
+- `id`
+- `agent_version_id`
+- `tool_name`
+- `enabled`
+- `config_json`
+
+### AgentDeployment
+
+Pins a concrete agent version to a runtime target.
+
+Fields:
+
+- `id`
+- `tenant_id`
+- `agent_id`
+- `agent_version_id`
+- `target_type`
+- `target_id`
+- `status`
+
+This is what lets mailbox routing resolve to a specific version instead of only `agent_id`.
 
 ### Mailbox
 
@@ -233,6 +303,30 @@ Fields:
 - `allowed_recipient_domains_json`
 - `blocked_sender_domains_json`
 - `allowed_tools_json`
+
+## Agent Registry Upgrade
+
+The MVP runtime already has an agent table, but the long-term control plane should use
+versioned registry records.
+
+Recommended control plane API additions:
+
+- `GET /v1/agents`
+- `POST /v1/agents/{agentId}/versions`
+- `GET /v1/agents/{agentId}/versions`
+- `GET /v1/agents/{agentId}/versions/{versionId}`
+- `POST /v1/agents/{agentId}/deployments`
+- `GET /v1/agents/{agentId}/deployments`
+
+Recommended runtime resolution:
+
+1. resolve mailbox
+2. find active `agent_deployments` record
+3. load pinned `agent_version`
+4. load `agent_capabilities` and `agent_tool_bindings`
+5. execute the run using that exact version
+
+This change is what turns the current agent record model into infrastructure-grade registry behavior.
 
 ## Data Plane
 
