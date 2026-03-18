@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
-SMOKE_SCRIPT="${1:-$SCRIPT_DIR/local_smoke.sh}"
+SMOKE_SCRIPT_INPUT="${1:-$SCRIPT_DIR/local_smoke.sh}"
+SMOKE_SCRIPT=""
 WORKER_LOG="$(mktemp -t mailagents-local-worker.XXXXXX.log)"
 WORKER_PID=""
 
@@ -19,6 +20,10 @@ cleanup() {
   if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" >/dev/null 2>&1; then
     kill "$WORKER_PID" >/dev/null 2>&1 || true
     wait "$WORKER_PID" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -f "$WORKER_LOG" ]]; then
+    rm -f "$WORKER_LOG"
   fi
 }
 
@@ -42,10 +47,17 @@ wait_for_server() {
 }
 
 require_cmd curl
+require_cmd mktemp
 require_cmd npm
 
-if [[ ! -f "$SMOKE_SCRIPT" ]]; then
-  echo "Smoke script not found: $SMOKE_SCRIPT" >&2
+if [[ "$SMOKE_SCRIPT_INPUT" = /* ]]; then
+  SMOKE_SCRIPT="$SMOKE_SCRIPT_INPUT"
+elif [[ -f "$SMOKE_SCRIPT_INPUT" ]]; then
+  SMOKE_SCRIPT="$(cd "$(dirname "$SMOKE_SCRIPT_INPUT")" && pwd)/$(basename "$SMOKE_SCRIPT_INPUT")"
+elif [[ -f "$REPO_ROOT/$SMOKE_SCRIPT_INPUT" ]]; then
+  SMOKE_SCRIPT="$(cd "$REPO_ROOT/$(dirname "$SMOKE_SCRIPT_INPUT")" && pwd)/$(basename "$SMOKE_SCRIPT_INPUT")"
+else
+  echo "Smoke script not found: $SMOKE_SCRIPT_INPUT" >&2
   exit 1
 fi
 
