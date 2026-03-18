@@ -1036,6 +1036,7 @@ components:
           type: boolean
         message:
           type: string
+      description: Generic acceptance response. The endpoint does not disclose mailbox existence, applies mailbox cooldowns and source-IP rate limits, and only emails refreshed tokens to the original operator inbox.
     AgentPolicy:
       type: object
       required:

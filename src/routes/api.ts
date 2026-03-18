@@ -63,6 +63,14 @@ import {
   addSuppression,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
+import {
+  countRecentIpTokenReissues,
+  getIpMaxRequests,
+  getIpWindowSeconds,
+  getMailboxCooldownSeconds,
+  hasRecentMailboxTokenReissue,
+  logTokenReissueRequest,
+} from "../repositories/token-reissue";
 import type { Env } from "../types";
 
 const router = new Router<Env>();
@@ -119,9 +127,38 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
     return badRequest("mailboxAlias or mailboxAddress is required");
   }
 
+  const requesterIpHash = await hashRequesterIp(request.headers.get("cf-connecting-ip"));
+  const mailboxCooldownSince = isoSecondsAgo(getMailboxCooldownSeconds(env));
+  const ipWindowSince = isoSecondsAgo(getIpWindowSeconds(env));
+
+  try {
+    if (await hasRecentMailboxTokenReissue(env, mailboxAddress, mailboxCooldownSince)) {
+      return accepted({
+        accepted: true,
+        message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
+      });
+    }
+
+    if (requesterIpHash) {
+      const recentIpRequests = await countRecentIpTokenReissues(env, requesterIpHash, ipWindowSince);
+      if (recentIpRequests >= getIpMaxRequests(env)) {
+        return accepted({
+          accepted: true,
+          message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
+        });
+      }
+    }
+  } catch {
+    // If the rate-limit table is unavailable, fail open and continue with the generic flow.
+  }
+
   if (env.API_SIGNING_SECRET) {
     try {
       await reissueMailboxAccessToken(env, mailboxAddress);
+      await logTokenReissueRequest(env, {
+        mailboxAddress,
+        requesterIpHash: requesterIpHash ?? undefined,
+      }).catch(() => undefined);
     } catch {
       // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
     }
@@ -1268,6 +1305,20 @@ function normalizeMailboxLookup(env: Env, input: { mailboxAlias?: string; mailbo
 
   const domain = env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net";
   return /^[a-z0-9][a-z0-9._+-]{2,31}$/.test(alias) ? `${alias}@${domain}` : null;
+}
+
+function isoSecondsAgo(seconds: number): string {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}
+
+async function hashRequesterIp(ip: string | null): Promise<string | null> {
+  const normalizedIp = ip?.trim();
+  if (!normalizedIp) {
+    return null;
+  }
+
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalizedIp));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Promise<void> {

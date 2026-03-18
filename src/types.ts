@@ -42,6 +42,9 @@ export interface Env {
   CLOUDFLARE_ZONE_ID?: string;
   CLOUDFLARE_EMAIL_DOMAIN?: string;
   CLOUDFLARE_EMAIL_WORKER?: string;
+  PUBLIC_TOKEN_REISSUE_MAILBOX_COOLDOWN_SECONDS?: string;
+  PUBLIC_TOKEN_REISSUE_IP_WINDOW_SECONDS?: string;
+  PUBLIC_TOKEN_REISSUE_IP_MAX_REQUESTS?: string;
 }
 
 export interface AgentRecord {

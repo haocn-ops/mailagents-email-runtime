@@ -994,6 +994,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   }'</code></pre>
 
 <p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered to the original <code>operatorEmail</code> from signup.</p>
+<p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
 <h3>What Signup Creates</h3>
 
