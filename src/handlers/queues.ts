@@ -175,8 +175,9 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
 
 async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
+    let outboundJob = null as Awaited<ReturnType<typeof getOutboundJob>> | null;
     try {
-      const outboundJob = await getOutboundJob(env, message.body.outboundJobId);
+      outboundJob = await getOutboundJob(env, message.body.outboundJobId);
       if (!outboundJob) {
         throw new Error("Outbound job not found");
       }
@@ -278,6 +279,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       await updateOutboundJobStatus(env, {
         outboundJobId: message.body.outboundJobId,
         status: "retry",
+        retryCount: outboundJob ? outboundJob.retryCount + 1 : undefined,
         lastError: error instanceof Error ? error.message : "unknown_error",
       }).catch(() => undefined);
       await enqueueDeadLetter(env, deadLetterFromError("outbound-send", message.body.outboundJobId, error));
