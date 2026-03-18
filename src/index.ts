@@ -45,10 +45,31 @@ function ensureRedundantMailboxRulesCleaned(env: Env): Promise<void> {
   return redundantMailboxRuleCleanupPromise;
 }
 
+function logContactAliasMaintenanceError(operation: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.error(`[contact-aliases] ${operation} failed: ${reason}`);
+}
+
+function scheduleContactAliasMaintenance(env: Env, ctx?: ExecutionContext): void {
+  if (!shouldBootstrapContactAliasRouting(env)) {
+    return;
+  }
+
+  const maintenance = Promise.all([
+    ensureContactAliasRoutingBootstrapped(env),
+    ensureRedundantMailboxRulesCleaned(env),
+  ]).catch((error) => {
+    logContactAliasMaintenanceError("bootstrap", error);
+  });
+
+  if (ctx) {
+    ctx.waitUntil(maintenance);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    await ensureContactAliasRoutingBootstrapped(env);
-    await ensureRedundantMailboxRulesCleaned(env);
+    scheduleContactAliasMaintenance(env, ctx);
 
     const mcpResponse = await handleMcpRequest(request, env, ctx);
     if (mcpResponse) {
@@ -65,20 +86,17 @@ export default {
   },
 
   async email(message: Parameters<typeof handleEmail>[0], env: Env): Promise<void> {
-    await ensureContactAliasRoutingBootstrapped(env);
-    await ensureRedundantMailboxRulesCleaned(env);
+    scheduleContactAliasMaintenance(env);
     await handleEmail(message, env);
   },
 
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-    await ensureContactAliasRoutingBootstrapped(env);
-    await ensureRedundantMailboxRulesCleaned(env);
+    scheduleContactAliasMaintenance(env);
     await handleQueue(batch, env);
   },
 
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
-    await ensureContactAliasRoutingBootstrapped(env);
-    await ensureRedundantMailboxRulesCleaned(env);
+    scheduleContactAliasMaintenance(env);
     await handleScheduled(event, env);
   },
 };

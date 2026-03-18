@@ -18,6 +18,7 @@ import {
   createAgent,
   getAgent,
   getMailboxById,
+  resolveAgentExecutionTarget,
   upsertAgentPolicy,
 } from "../repositories/agents";
 import {
@@ -1036,6 +1037,14 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
     const agentId = optionalString(args.agentId);
     const idempotencyKey = optionalString(args.idempotencyKey);
+    if (mode === "normalize" && !message.rawR2Key) {
+      throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
+    }
+    const replayRawR2Key = mode === "normalize" ? message.rawR2Key : undefined;
+    const replayTarget = mode === "rerun_agent"
+      ? await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId)
+      : null;
+    const replayAgentTarget = replayTarget ?? undefined;
     const response = {
       messageId,
       mode,
@@ -1067,16 +1076,24 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
       try {
         if (mode === "normalize") {
+          if (!replayRawR2Key) {
+            throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
+          }
           await env.EMAIL_INGEST_QUEUE.send({
             messageId,
             tenantId: message.tenantId,
             mailboxId: message.mailboxId,
-            rawR2Key: message.rawR2Key ?? `raw/replay/${messageId}.eml`,
+            rawR2Key: replayRawR2Key,
           });
         } else {
+          if (!replayAgentTarget) {
+            throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
+          }
           await env.AGENT_EXECUTE_QUEUE.send({
             taskId: createId("tsk"),
-            agentId: agentId ?? "agt_demo",
+            agentId: replayAgentTarget.agentId,
+            agentVersionId: replayAgentTarget.agentVersionId,
+            deploymentId: replayAgentTarget.deploymentId,
           });
         }
         await completeIdempotencyKey(env, {
@@ -1094,16 +1111,24 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     if (mode === "normalize") {
+      if (!replayRawR2Key) {
+        throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
+      }
       await env.EMAIL_INGEST_QUEUE.send({
         messageId,
         tenantId: message.tenantId,
         mailboxId: message.mailboxId,
-        rawR2Key: message.rawR2Key ?? `raw/replay/${messageId}.eml`,
+        rawR2Key: replayRawR2Key,
       });
     } else {
+      if (!replayAgentTarget) {
+        throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
+      }
       await env.AGENT_EXECUTE_QUEUE.send({
         taskId: createId("tsk"),
-        agentId: agentId ?? "agt_demo",
+        agentId: replayAgentTarget.agentId,
+        agentVersionId: replayAgentTarget.agentVersionId,
+        deploymentId: replayAgentTarget.deploymentId,
       });
     }
 
@@ -1111,6 +1136,51 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
   }
 
   throw new Error(`Unsupported tool: ${toolName}`);
+}
+
+async function resolveReplayAgentTarget(
+  env: Env,
+  claims: AccessTokenClaims,
+  mailboxId: string,
+  requestedAgentId: string | undefined,
+): Promise<{ agentId: string; agentVersionId?: string; deploymentId?: string }> {
+  const agentId = requestedAgentId?.trim();
+  if (agentId) {
+    const agentError = enforceAgentAccess(claims, agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+    const agent = await getAgent(env, agentId);
+    if (!agent) {
+      throw new McpToolError("resource_agent_not_found", "Agent not found");
+    }
+    const tenantError = enforceTenantAccess(claims, agent.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+
+    return { agentId };
+  }
+
+  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  if (!target?.agentId) {
+    throw new McpToolError("invalid_arguments", "agentId is required when the mailbox has no active agent deployment");
+  }
+
+  const agentError = enforceAgentAccess(claims, target.agentId);
+  if (agentError) {
+    await throwIfResponseError(agentError);
+  }
+  const agent = await getAgent(env, target.agentId);
+  if (!agent) {
+    throw new McpToolError("resource_agent_not_found", "Agent not found");
+  }
+  const tenantError = enforceTenantAccess(claims, agent.tenantId);
+  if (tenantError) {
+    await throwIfResponseError(tenantError);
+  }
+
+  return target;
 }
 
 router.on("POST", "/mcp", async (request, env) => {

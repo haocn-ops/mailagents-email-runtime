@@ -1,4 +1,4 @@
-import { requireAdminSecret } from "../lib/auth";
+import { requireAdminRoutesEnabled, requireAdminSecret } from "../lib/auth";
 import {
   CONTACT_ALIAS_LOCALPARTS,
   CONTACT_ALIAS_TENANT_ID,
@@ -51,21 +51,35 @@ site.on("GET", "/contact", () => html(layout("contact", "Contact", renderContact
 site.on("HEAD", "/contact", () => html(layout("contact", "Contact", renderContact())));
 site.on("GET", "/signup", () => redirect("/"));
 site.on("HEAD", "/signup", () => redirect("/"));
-site.on("GET", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
-site.on("HEAD", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
+site.on("GET", "/admin", (_request, env, _ctx, route) => {
+  const routeError = requireAdminRoutesEnabled(env);
+  if (routeError) {
+    return routeError;
+  }
+
+  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url)));
+});
+site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
+  const routeError = requireAdminRoutesEnabled(env);
+  if (routeError) {
+    return routeError;
+  }
+
+  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url)));
+});
 site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   return json(buildRuntimeMetadata(env));
 });
 
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   const configError = requireCloudflareEmailConfig(env);
@@ -104,9 +118,9 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   const configError = requireCloudflareEmailConfig(env);
@@ -142,9 +156,9 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   const configError = requireCloudflareEmailConfig(env);
@@ -188,9 +202,9 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
   }
 });
 site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   const configError = requireCloudflareEmailConfig(env);
@@ -216,9 +230,9 @@ site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx
   }
 });
 site.on("GET", "/admin/api/mailboxes", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -228,9 +242,9 @@ site.on("GET", "/admin/api/mailboxes", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -253,9 +267,9 @@ site.on("GET", "/admin/api/messages", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -269,9 +283,9 @@ site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, rout
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/content", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -281,9 +295,9 @@ site.on("GET", "/admin/api/messages/:messageId/content", async (request, env, _c
   }
 });
 site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -297,9 +311,9 @@ site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route)
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/events", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -309,9 +323,9 @@ site.on("GET", "/admin/api/messages/:messageId/events", async (request, env, _ct
   }
 });
 site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -330,9 +344,9 @@ site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -355,9 +369,9 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
   }
 });
 site.on("GET", "/admin/api/drafts", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -378,9 +392,9 @@ site.on("GET", "/admin/api/drafts", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -394,9 +408,9 @@ site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) =
   }
 });
 site.on("POST", "/admin/api/send", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   const body = await request.json<{
@@ -506,9 +520,9 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 });
 
 site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -525,9 +539,9 @@ site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, en
 });
 
 site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) => {
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return adminError;
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
   }
 
   try {
@@ -551,6 +565,15 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
 
 export async function handleSiteRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   return await site.handle(request, env, ctx);
+}
+
+function requireSiteAdminAccess(request: Request, env: Env): Response | null {
+  const routeError = requireAdminRoutesEnabled(env);
+  if (routeError) {
+    return routeError;
+  }
+
+  return requireAdminSecret(request, env);
 }
 
 function html(markup: string, init: ResponseInit = {}): Response {

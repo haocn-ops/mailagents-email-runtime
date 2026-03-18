@@ -1007,6 +1007,9 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   if (!body.mode) {
     return badRequest("mode is required");
   }
+  if (body.mode !== "normalize" && body.mode !== "rerun_agent") {
+    return badRequest("mode must be normalize or rerun_agent");
+  }
   const existingMessage = await getMessage(env, route.params.messageId);
   if (!existingMessage) {
     return json({ error: "Message not found" }, { status: 404 });
@@ -1019,11 +1022,23 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   if (mailboxError) {
     return mailboxError;
   }
+  if (body.mode === "normalize" && !existingMessage.rawR2Key) {
+    return badRequest("normalize replay requires the message to have raw email content");
+  }
+  const replayRawR2Key = body.mode === "normalize" ? existingMessage.rawR2Key : undefined;
 
   const idempotencyKey = body.idempotencyKey?.trim();
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
+
+  const replayTarget = body.mode === "rerun_agent"
+    ? await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId)
+    : null;
+  if (replayTarget instanceof Response) {
+    return replayTarget;
+  }
+  const replayAgentTarget = replayTarget ?? undefined;
 
   const replayResponse = {
     messageId: route.params.messageId,
@@ -1056,16 +1071,24 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
 
     try {
       if (body.mode === "normalize") {
+        if (!replayRawR2Key) {
+          return badRequest("normalize replay requires the message to have raw email content");
+        }
         await env.EMAIL_INGEST_QUEUE.send({
           messageId: route.params.messageId,
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
-          rawR2Key: existingMessage.rawR2Key ?? `raw/replay/${route.params.messageId}.eml`,
+          rawR2Key: replayRawR2Key,
         });
       } else {
+        if (!replayAgentTarget) {
+          return badRequest("agentId is required for rerun_agent replay");
+        }
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: createId("tsk"),
-          agentId: body.agentId ?? "agt_demo",
+          agentId: replayAgentTarget.agentId,
+          agentVersionId: replayAgentTarget.agentVersionId,
+          deploymentId: replayAgentTarget.deploymentId,
         });
       }
 
@@ -1084,16 +1107,24 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   }
 
   if (body.mode === "normalize") {
+    if (!replayRawR2Key) {
+      return badRequest("normalize replay requires the message to have raw email content");
+    }
     await env.EMAIL_INGEST_QUEUE.send({
       messageId: route.params.messageId,
       tenantId: existingMessage.tenantId,
       mailboxId: existingMessage.mailboxId,
-      rawR2Key: existingMessage.rawR2Key ?? `raw/replay/${route.params.messageId}.eml`,
+      rawR2Key: replayRawR2Key,
     });
   } else {
+    if (!replayAgentTarget) {
+      return badRequest("agentId is required for rerun_agent replay");
+    }
     await env.AGENT_EXECUTE_QUEUE.send({
       taskId: createId("tsk"),
-      agentId: body.agentId ?? "agt_demo",
+      agentId: replayAgentTarget.agentId,
+      agentVersionId: replayAgentTarget.agentVersionId,
+      deploymentId: replayAgentTarget.deploymentId,
     });
   }
 
@@ -1539,6 +1570,54 @@ async function deliverRotatedTokenToSelfMailbox(
 
   await enqueueDraftSend(env, draft.id);
   return true;
+}
+
+async function resolveReplayAgentTarget(
+  env: Env,
+  claims: AccessTokenClaims,
+  mailboxId: string,
+  requestedAgentId: string | undefined,
+): Promise<
+  | { agentId: string; agentVersionId?: string; deploymentId?: string }
+  | Response
+> {
+  const agentId = requestedAgentId?.trim();
+  if (agentId) {
+    const agentError = enforceAgentAccess(claims, agentId);
+    if (agentError) {
+      return agentError;
+    }
+    const agent = await getAgent(env, agentId);
+    if (!agent) {
+      return json({ error: "Agent not found" }, { status: 404 });
+    }
+    const tenantError = enforceTenantAccess(claims, agent.tenantId);
+    if (tenantError) {
+      return tenantError;
+    }
+
+    return { agentId };
+  }
+
+  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  if (!target?.agentId) {
+    return badRequest("agentId is required when the mailbox has no active agent deployment");
+  }
+
+  const agentError = enforceAgentAccess(claims, target.agentId);
+  if (agentError) {
+    return agentError;
+  }
+  const agent = await getAgent(env, target.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(claims, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  return target;
 }
 
 async function readAgentConfig(env: Env, configR2Key: string): Promise<Record<string, unknown> | null> {
