@@ -46,6 +46,7 @@ export interface Env {
   PUBLIC_TOKEN_REISSUE_MAILBOX_COOLDOWN_SECONDS?: string;
   PUBLIC_TOKEN_REISSUE_IP_WINDOW_SECONDS?: string;
   PUBLIC_TOKEN_REISSUE_IP_MAX_REQUESTS?: string;
+  OUTBOUND_SEND_MAX_RETRIES?: string;
 }
 
 export interface AgentRecord {

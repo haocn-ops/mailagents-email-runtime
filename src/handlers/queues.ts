@@ -20,6 +20,12 @@ import {
 } from "../repositories/mail";
 import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJob } from "../types";
 
+function getOutboundSendMaxRetries(env: Env): number {
+  const raw = env.OUTBOUND_SEND_MAX_RETRIES;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
+}
+
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
@@ -176,6 +182,7 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
 async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     let outboundJob = null as Awaited<ReturnType<typeof getOutboundJob>> | null;
+    let draft = null as Awaited<ReturnType<typeof getDraftByR2Key>> | null;
     try {
       outboundJob = await getOutboundJob(env, message.body.outboundJobId);
       if (!outboundJob) {
@@ -194,7 +201,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       }
 
       const draftPayload = await draftObject.json<Record<string, unknown>>();
-      const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+      draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
       const outboundMessage = await getMessage(env, outboundJob.messageId);
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
@@ -276,14 +283,25 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
 
       message.ack();
     } catch (error) {
+      const nextRetryCount = outboundJob ? outboundJob.retryCount + 1 : undefined;
+      const maxRetries = getOutboundSendMaxRetries(env);
+      const exhausted = nextRetryCount !== undefined && nextRetryCount > maxRetries;
+
       await updateOutboundJobStatus(env, {
         outboundJobId: message.body.outboundJobId,
-        status: "retry",
-        retryCount: outboundJob ? outboundJob.retryCount + 1 : undefined,
+        status: exhausted ? "failed" : "retry",
+        retryCount: nextRetryCount,
         lastError: error instanceof Error ? error.message : "unknown_error",
       }).catch(() => undefined);
+      if (draft && exhausted) {
+        await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+      }
       await enqueueDeadLetter(env, deadLetterFromError("outbound-send", message.body.outboundJobId, error));
-      message.retry();
+      if (exhausted) {
+        message.ack();
+      } else {
+        message.retry();
+      }
     }
   }
 }

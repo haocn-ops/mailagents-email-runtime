@@ -355,7 +355,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
-    if (job.status !== "retry" && job.status !== "failed") {
+    if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
     }
 
