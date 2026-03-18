@@ -1664,7 +1664,7 @@ async function resolveReplayAgentTarget(
       return tenantError;
     }
 
-    return { agentId };
+    return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
   }
 
   const target = await resolveAgentExecutionTarget(env, mailboxId);

@@ -606,21 +606,32 @@ export async function listAgentDeployments(env: Env, agentId: string): Promise<A
   return rows.map(mapDeploymentRow);
 }
 
-export async function resolveAgentExecutionTarget(env: Env, mailboxId: string): Promise<AgentExecutionTarget | null> {
+export async function resolveAgentExecutionTarget(
+  env: Env,
+  mailboxId: string,
+  requestedAgentId?: string,
+): Promise<AgentExecutionTarget | null> {
   try {
+    const deploymentQuery = requestedAgentId
+      ? env.D1_DB.prepare(
+          `SELECT id, agent_id, agent_version_id
+           FROM agent_deployments
+           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+           ORDER BY created_at DESC
+           LIMIT 1`
+        ).bind(mailboxId, requestedAgentId)
+      : env.D1_DB.prepare(
+          `SELECT id, agent_id, agent_version_id
+           FROM agent_deployments
+           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+           ORDER BY created_at DESC
+           LIMIT 1`
+        ).bind(mailboxId);
     const deployment = await firstRow<{
       id: string;
       agent_id: string;
       agent_version_id: string;
-    }>(
-      env.D1_DB.prepare(
-        `SELECT id, agent_id, agent_version_id
-         FROM agent_deployments
-         WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
-         ORDER BY created_at DESC
-         LIMIT 1`
-      ).bind(mailboxId)
-    );
+    }>(deploymentQuery);
 
     if (deployment) {
       return {
@@ -633,6 +644,18 @@ export async function resolveAgentExecutionTarget(env: Env, mailboxId: string): 
     if (!isMissingTableError(error)) {
       throw error;
     }
+  }
+
+  if (requestedAgentId) {
+    const agent = await getAgent(env, requestedAgentId);
+    if (!agent) {
+      return null;
+    }
+
+    return {
+      agentId: requestedAgentId,
+      agentVersionId: agent.defaultVersionId ?? undefined,
+    };
   }
 
   const fallback = await firstRow<{ agent_id: string }>(
