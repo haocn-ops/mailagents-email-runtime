@@ -25,6 +25,7 @@ import {
   createDraft,
   enqueueDraftSend,
   getDraft,
+  getDraftByR2Key,
   getMessage,
   getMessageContent,
   getOutboundJob,
@@ -35,6 +36,7 @@ import {
   listDrafts,
   listMessages,
   listOutboundJobs,
+  markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
   updateOutboundJobStatus,
@@ -365,6 +367,10 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       lastError: null,
       nextRetryAt: null,
     });
+    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    if (draft) {
+      await markDraftStatus(env, draft.id, "queued");
+    }
     await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId: job.id });
 
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
@@ -2309,7 +2315,7 @@ function renderAdmin(url: URL): string {
               '<p>Message: ' + job.messageId + '</p>' +
               '<p>Updated: ' + job.updatedAt + '</p>' +
               '<p>' + (job.lastError || 'No error') + '</p>' +
-              '<p style="margin-top:12px;">' + ((job.status === 'failed' || job.status === 'retry')
+              '<p style="margin-top:12px;">' + (job.status === 'failed'
                 ? '<button data-job="' + job.id + '" class="button secondary retry-job" type="button">Retry Job</button>'
                 : '') + '</p>' +
             '</div>'
