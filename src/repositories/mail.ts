@@ -797,6 +797,21 @@ export async function getOutboundJobByMessageId(env: Env, messageId: string): Pr
   return row ? mapOutboundJobRow(row) : null;
 }
 
+export async function getOutboundJobByDraftR2Key(env: Env, draftR2Key: string): Promise<OutboundJobRecord | null> {
+  const row = await firstRow<OutboundJobRow>(
+    env.D1_DB.prepare(
+      `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+              last_error, draft_r2_key, created_at, updated_at
+       FROM outbound_jobs
+       WHERE draft_r2_key = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(draftR2Key)
+  );
+
+  return row ? mapOutboundJobRow(row) : null;
+}
+
 export async function updateInboundMessageNormalized(env: Env, input: {
   messageId: string;
   threadId: string;

@@ -26,6 +26,7 @@ import {
   createDraft,
   enqueueDraftSend,
   getDraft,
+  getOutboundJobByDraftR2Key,
   getMessage,
   getMessageContent,
   getThread,
@@ -623,11 +624,26 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      const completedDraftId = reservation.record.resourceId;
+      const completedDraft = completedDraftId ? await getDraft(env, completedDraftId) : null;
+      const completedOutboundJob = completedDraft
+        ? await getOutboundJobByDraftR2Key(env, completedDraft.draftR2Key)
+        : null;
+      if (!completedDraft || !completedOutboundJob) {
+        throw new McpToolError("http_error", "Stored reply workflow result is incomplete", { status: 500 });
+      }
+
+      return {
+        draft: completedDraft,
+        sendRequested: true,
         sendResult: {
-          draftId: reservation.record.resourceId,
-          outboundJobId: reservation.record.resourceId,
-          status: "queued",
+          draftId: completedDraft.id,
+          outboundJobId: completedOutboundJob.id,
+          status: completedOutboundJob.status,
         },
         sourceMessage: message,
         usedThreadContext: Boolean(thread),
@@ -771,8 +787,27 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       throw new McpToolError("idempotency_in_progress", "An operator send request with this idempotency key is already in progress");
     }
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      const completedDraftId = reservation.record.resourceId;
+      const completedDraft = completedDraftId ? await getDraft(env, completedDraftId) : null;
+      const completedOutboundJob = completedDraft
+        ? await getOutboundJobByDraftR2Key(env, completedDraft.draftR2Key)
+        : null;
+      if (!completedDraft || !completedOutboundJob) {
+        throw new McpToolError("http_error", "Stored operator send result is incomplete", { status: 500 });
+      }
+
+      return {
+        draft: completedDraft,
         sendRequested: true,
+        sendResult: {
+          draftId: completedDraft.id,
+          outboundJobId: completedOutboundJob.id,
+          status: completedOutboundJob.status,
+        },
       };
     }
 
