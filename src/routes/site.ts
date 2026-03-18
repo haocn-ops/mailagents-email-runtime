@@ -815,6 +815,7 @@ function renderHome(url: URL): string {
   <li><strong>Service type:</strong> mailbox orchestration plus transactional email runtime</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup endpoint:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
+  <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
   <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
@@ -863,6 +864,28 @@ content-type: application/json
   <li><code>useCase</code>: short description of the mailbox workflow</li>
 </ul>
 
+<h3>Signup Response</h3>
+
+<p>A successful signup returns mailbox metadata plus a default mailbox-scoped bearer token that can immediately read inbound messages, create drafts, inspect drafts, and send drafts for the newly created mailbox.</p>
+
+<pre><code>{
+  "mailboxAddress": "agent-demo@mailagents.net",
+  "mailboxId": "mbx_example",
+  "agentId": "agt_example",
+  "agentVersionId": "agv_example",
+  "deploymentId": "agd_example",
+  "accessToken": "REDACTED",
+  "accessTokenExpiresAt": "2026-04-17T05:24:03.000Z",
+  "accessTokenScopes": [
+    "task:read",
+    "mail:read",
+    "draft:create",
+    "draft:read",
+    "draft:send"
+  ],
+  "welcomeStatus": "queued"
+}</code></pre>
+
 <h3>What Signup Creates</h3>
 
 <ol>
@@ -888,6 +911,7 @@ content-type: application/json
 
 <ul>
   <li>Mailbox provisioning is backed by the production runtime, not a demo-only path.</li>
+  <li>Self-serve signup returns a mailbox-scoped token when API signing is configured for the environment.</li>
   <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
   <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
   <li>Operator and compliance contacts are published on this site for review.</li>
@@ -899,6 +923,15 @@ content-type: application/json
 category: AI-first email infrastructure
 signup_mode: api_only
 signup_endpoint: ${signupApi}
+signup_default_access:
+  token_type: bearer
+  scope_model: mailbox_scoped
+  default_scopes:
+    - task:read
+    - mail:read
+    - draft:create
+    - draft:read
+    - draft:send
 runtime_metadata: ${runtimeMetadata}
 compatibility_contract: ${compatibilityApi}
 fallback_contact: ${accessEmail}
