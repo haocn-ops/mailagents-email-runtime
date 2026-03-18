@@ -52,6 +52,16 @@ The resulting trace confirmed:
 - `agentVersionId = agv_support_v1`
 - `deploymentId = agd_support_primary_v1`
 
+Observed successful outbound runtime records:
+
+- draft id: `drf_0609d3589a034460960f807fe0031cd3`
+- outbound job id: `obj_c1745e2c87e741baaf10b9e783ba7560`
+- outbound message id: `msg_7a423d1ac5234bdbb17cda24c1dce175`
+- SES provider message id: `0100019cfef70701-b1f4aed7-daca-4655-9377-8497545211a9-000000`
+
+This outbound verification used the same production support thread as the inbound
+test and confirmed the full `draft -> queue -> SES -> D1 sent state` path.
+
 ## Safety Notes
 
 - keep `ADMIN_ROUTES_ENABLED=false` in production outside the exact bootstrap window
@@ -61,6 +71,9 @@ The resulting trace confirmed:
 - do not reuse `agt_demo` or `mbx_demo` identifiers in production
 - if you test inbound by sending from SES, check the SES account suppression list first
 - Cloudflare Email Routing rules must exist before inbound verification is meaningful
+- the SES configuration set referenced by `SES_CONFIGURATION_SET` must already exist,
+  or outbound jobs will fall into `retry` with a `Configuration set ... does not exist`
+  error
 
 ## Suggested Naming
 
@@ -82,6 +95,12 @@ If inbound does not arrive:
 1. inspect Cloudflare Email Routing rules for the target address
 2. confirm the rule action points to the production worker
 3. verify the destination address is not on the SES account suppression list
+
+If outbound falls into `retry` immediately:
+
+1. inspect `outbound_jobs.last_error`
+2. confirm the configured SES configuration set exists in the target AWS region
+3. retry the failed outbound job only after the AWS-side dependency is fixed
 
 ## Rollout Model
 

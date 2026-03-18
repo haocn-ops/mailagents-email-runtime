@@ -32,8 +32,9 @@ The runtime now also supports a versioned agent registry with mailbox deployment
 shared `dev` environment has been verified end to end for agent registration, inbound mail,
 outbound SES send, and deployment-aware agent execution traces.
 Production has also been verified end to end for `support@mailagents.net`, including
-mailbox bootstrap, Cloudflare Email Routing, inbound task creation, and version-aware
-agent execution traces.
+mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-aware
+agent execution traces, and a controlled outbound reply through SES with a recorded
+`provider_message_id`.
 
 ## Quick Start
 

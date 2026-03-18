@@ -13,6 +13,7 @@ Resolved during this rollout:
 - production route attached: `api.mailagents.net/*`
 - production read-only smoke passed
 - production support mailbox routing verified through a real inbound message
+- production support outbound reply verified through SES with a stored `provider_message_id`
 
 ## 1. Cloudflare Production Resources
 
@@ -112,6 +113,7 @@ After deploy:
 - verify admin/debug routes are disabled
 - run `npm run smoke:production:readonly`
 - verify at least one real inbound mailbox path end to end
+- verify at least one controlled outbound reply path end to end
 
 ## 6. Domain Binding
 
@@ -129,11 +131,13 @@ Two production-specific pitfalls showed up during the real bootstrap:
 
 - Cloudflare Email Routing must have an explicit worker rule for each new production alias you want to receive
 - AWS SES suppression can make inbound verification appear broken even when routing is correct, if the test address has previously bounced
+- AWS SES will reject outbound sends if the configured configuration set does not already exist in the active region
 
 For the verified `support@mailagents.net` rollout, both had to be addressed:
 
 - a `support inbox` routing rule was added for `mailagents-production`
 - `support@mailagents.net` was removed from the SES account suppression list before final verification
+- the SES configuration set `mailagents-production` was created before the successful outbound retry
 
 ## 8. Minimum Cloudflare Permissions
 

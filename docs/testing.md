@@ -119,6 +119,32 @@ The validation sequence was:
 8. fetch the trace object from remote R2 and verify it contains `agentVersionId` and `deploymentId`
 9. roll the mailbox target to a newer deployment and then roll it back, confirming only one deployment remains `active`
 
+## Live `production` Verification
+
+As of 2026-03-18, production has been live-verified for:
+
+- inbound email to `support@mailagents.net`
+- task creation for `agt_support_primary`
+- version-aware run tracing for `agv_support_v1`
+- controlled outbound reply through SES
+
+Verified production records:
+
+- inbound message: `msg_48e8daa3d719442fadd210d33d298590`
+- task: `tsk_842060e1e2904cb5be11612d0174573b`
+- run: `run_tsk_842060e1e2904cb5be11612d0174573b`
+- successful outbound draft: `drf_0609d3589a034460960f807fe0031cd3`
+- successful outbound job: `obj_c1745e2c87e741baaf10b9e783ba7560`
+- successful outbound message: `msg_7a423d1ac5234bdbb17cda24c1dce175`
+
+One earlier outbound attempt intentionally revealed an environment dependency:
+
+- failed outbound job: `obj_c175ddc4f9cd4581b230f802d95e4d72`
+- failure cause: `Configuration set <mailagents-production> does not exist.`
+
+That failure was resolved by creating the missing SES configuration set
+`mailagents-production` in `us-east-1`, after which the reply path succeeded.
+
 ## Sample SES fixtures
 
 Fixtures live in:
