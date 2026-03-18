@@ -346,6 +346,22 @@ site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
     return json({ error: error instanceof Error ? error.message : "Unable to load outbound jobs" }, { status: 502 });
   }
 });
+site.on("GET", "/admin/api/messages/:messageId/outbound-job", async (request, env, _ctx, route) => {
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
+  }
+
+  try {
+    const job = await getOutboundJobByMessageId(env, route.params.messageId);
+    if (!job) {
+      return json({ error: "Outbound job not found" }, { status: 404 });
+    }
+    return json(job);
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load outbound job" }, { status: 502 });
+  }
+});
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request, env, _ctx, route) => {
   const accessError = requireSiteAdminAccess(request, env);
   if (accessError) {
@@ -2548,8 +2564,14 @@ function renderAdmin(url: URL): string {
           : 'No delivery events recorded for this message yet.';
 
         if (message.direction === 'outbound') {
-          const job = await api('/admin/api/outbound-jobs?limit=50');
-          const match = (job.items || []).find((item) => item.messageId === message.id);
+          let match = null;
+          try {
+            match = await api('/admin/api/messages/' + encodeURIComponent(message.id) + '/outbound-job');
+          } catch (error) {
+            if (!String(error && error.message || '').includes('Outbound job not found')) {
+              throw error;
+            }
+          }
           outboxDetail.innerHTML = match
             ? '<div class="faq-item">' +
                 '<h3>Outbound job ' + match.id + '</h3>' +
