@@ -364,6 +364,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     await updateOutboundJobStatus(env, {
       outboundJobId: job.id,
       status: "queued",
+      retryCount: 0,
       lastError: null,
       nextRetryAt: null,
     });
