@@ -97,6 +97,26 @@ Before running remote smoke:
 - apply `npm run d1:seed:remote:dev` if the seeded inbound MCP flow is needed
 - confirm `ADMIN_API_SECRET`, `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` are configured as Worker secrets for `dev`
 
+## Live `dev` Verification
+
+As of 2026-03-18, the shared `dev` environment has been live-verified for:
+
+- agent registration
+- outbound SES send
+- inbound email to `agent@mailagents.net`
+- versioned registry resolution via `agent_versions` and `agent_deployments`
+
+The validation sequence was:
+
+1. deploy the latest `dev` Worker
+2. apply remote D1 migrations including `0002_agent_registry.sql`
+3. create a demo agent version for `agt_demo`
+4. create an active mailbox deployment for `mbx_demo`
+5. send a live email to `agent@mailagents.net`
+6. confirm a new `tasks` row exists
+7. confirm the new `agent_runs` row has a non-null `trace_r2_key`
+8. fetch the trace object from remote R2 and verify it contains `agentVersionId` and `deploymentId`
+
 ## Sample SES fixtures
 
 Fixtures live in:

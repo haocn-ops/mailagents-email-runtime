@@ -23,6 +23,13 @@ Current deployed `dev` environment:
 - R2 bucket: `mailagents-dev-email`
 - Queues: `mailagents-dev-*`
 
+As of 2026-03-18, the shared `dev` environment has also been validated with:
+
+- remote D1 migration including `0002_agent_registry.sql`
+- a published demo agent version for `agt_demo`
+- an active mailbox deployment for `mbx_demo`
+- a live inbound email that produced a deployment-aware `agent_run` trace in R2
+
 Important:
 
 - `npm run deploy:dev` updates this existing shared `dev` environment
@@ -218,9 +225,16 @@ npm run d1:seed:remote:production
 
 Do this only after confirming the correct D1 database is configured in `wrangler.toml`.
 
-If `mailagents-dev` was created before `migrations/0002_idempotency_keys.sql` existed,
-run `npm run d1:migrate:remote:dev` again before testing send, replay, or composite MCP
-send flows. Those paths require the `idempotency_keys` table.
+These migration commands now apply all required schema layers in order:
+
+1. `0001_initial.sql`
+2. `0002_agent_registry.sql`
+3. `0002_idempotency_keys.sql`
+
+If `mailagents-dev` was created before either `migrations/0002_agent_registry.sql` or
+`migrations/0002_idempotency_keys.sql` existed, run `npm run d1:migrate:remote:dev`
+again before testing versioned agent execution, send, replay, or composite MCP send
+flows.
 
 ## Deploy
 
@@ -243,6 +257,19 @@ For the current shared `dev` environment, keep these aligned before smoke testin
 The default deployment also schedules the Worker every hour to prune stale
 idempotency keys. Operators can manually verify or trigger cleanup through the
 admin maintenance endpoints in controlled environments.
+
+## Versioned Registry Verification
+
+After running the remote migration, you can validate the versioned registry path in `dev`:
+
+1. create an agent version for a seeded agent such as `agt_demo`
+2. create an active mailbox deployment targeting `mbx_demo`
+3. send a real test email to `agent@mailagents.net`
+4. confirm the newest `agent_runs.trace_r2_key` is non-null
+5. fetch that R2 trace object and verify it includes both `agentVersionId` and `deploymentId`
+
+This is the key check that distinguishes the new deployment-aware runtime from the
+older mailbox-to-agent fallback path.
 
 ## GitHub Actions
 

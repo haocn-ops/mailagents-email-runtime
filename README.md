@@ -14,11 +14,11 @@ An email-first AI agent runtime built on:
 This repository includes:
 
 - product and architecture documentation in `docs/`
-- initial D1 schema in `migrations/`
+- D1 migrations in `migrations/`
 - OpenAPI draft in `docs/openapi.yaml`
 - Cloudflare Worker scaffold in `src/`
 
-The code is still a scaffold, but the HTTP API now uses D1-backed repositories for
+The code started as a scaffold, but the HTTP API now uses D1-backed repositories for
 agents, mailbox bindings, policies, tasks, messages, threads, and drafts.
 Agent configs and draft payloads are stored in R2, and the outbound queue now contains
 the first real SES sender implementation using SigV4-signed API v2 requests.
@@ -28,6 +28,9 @@ The HTTP API now enforces tenant-scoped signed bearer tokens for agent, task, ma
 and draft operations.
 Outbound sending now supports SES `Raw` MIME when drafts include reply headers or attachments.
 Inbound email and replay jobs now carry mailbox-specific routing data instead of relying on demo defaults.
+The runtime now also supports a versioned agent registry with mailbox deployments, and the
+shared `dev` environment has been verified end to end for agent registration, inbound mail,
+outbound SES send, and deployment-aware agent execution traces.
 
 ## Quick Start
 
@@ -80,6 +83,8 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `llms-full.txt`
 - `fixtures/ses/delivery.json`
 - `migrations/0001_initial.sql`
+- `migrations/0002_agent_registry.sql`
+- `migrations/0002_idempotency_keys.sql`
 - `seeds/0001_demo.sql`
 - `wrangler.toml`
 - `src/index.ts`
@@ -160,6 +165,7 @@ See [`docs/testing.md`](docs/testing.md) for:
 
 - local smoke flow
 - deployed `dev` smoke flow
+- live inbound/outbound verification notes
 - SES webhook fixtures
 - smoke script usage
 
@@ -196,6 +202,7 @@ Template scripts:
 - keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
 - `npm run deploy:dev` updates the existing Cloudflare `dev` environment rather than creating a second one
 - the current shared `dev` worker URL is `https://mailagents-dev.izhenghaocn.workers.dev`
+- `npm run d1:migrate:*` now applies the base schema, versioned agent registry schema, and idempotency schema in sequence
 
 ## GitHub Actions Deploy
 
@@ -216,11 +223,11 @@ You can also choose whether to run the demo seed during the deployment.
 
 ## Next Steps
 
-1. Replace placeholder IDs and domains in `wrangler.toml`, then run `npm run config:check:dev`, `npm run config:check:staging`, or `npm run config:check:production`.
-2. Connect real SES credentials and verify a true outbound send path.
-3. Replace the MVP email parser with a full RFC-aware MIME parser if needed.
-4. Add deeper D1/R2 integration assertions or a real test suite.
-5. Further harden queue/webhook tenant ownership checks.
+1. Keep `0002_agent_registry.sql` in all future environment migrations so versioned runtime resolution stays enabled.
+2. Replace the MVP email parser with a full RFC-aware MIME parser if needed.
+3. Add deeper D1/R2 integration assertions or a real test suite.
+4. Further harden queue/webhook tenant ownership checks.
+5. Add richer operator workflows around approvals, replay, and deployment rollout/rollback.
 
 ## License
 
