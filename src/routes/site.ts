@@ -2068,19 +2068,20 @@ function renderAdmin(url: URL): string {
       statMessages.textContent = String(latestMessages.length);
       statJobs.textContent = String(latestJobs.length);
       statAliases.textContent = String(latestAliases.filter((item) => item.configured).length);
+      const runtimeDomain = latestAliases[0] ? latestAliases[0].address.split('@')[1] : 'mailagents.net';
 
       overviewMailRuntime.innerHTML = [
-        '<div class="faq-item"><h3>Active domain</h3><p>${domain}</p></div>',
-        '<div class="faq-item"><h3>Mailbox source</h3><p>' + (mailboxIndex.length ? mailboxIndex.length + ' live mailboxes loaded.' : 'No mailbox loaded yet.') + '</p></div>',
-        '<div class="faq-item"><h3>Reply workflow</h3><p>' + (currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
+        '<div class="faq-item"><h3>Active domain</h3><p>' + esc(runtimeDomain) + '</p></div>',
+        '<div class="faq-item"><h3>Mailbox source</h3><p>' + esc(mailboxIndex.length ? mailboxIndex.length + ' live mailboxes loaded.' : 'No mailbox loaded yet.') + '</p></div>',
+        '<div class="faq-item"><h3>Reply workflow</h3><p>' + esc(currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
       ].join("");
 
       overviewAliasStatus.innerHTML = latestAliases.length
         ? latestAliases.map((item) =>
             '<div class="faq-item">' +
-              '<h3>' + item.address + '</h3>' +
-              '<p>' + (item.configured ? 'Configured' : 'Missing') + '</p>' +
-              '<p>' + (item.mode === 'internal'
+              '<h3>' + esc(item.address) + '</h3>' +
+              '<p>' + esc(item.configured ? 'Configured' : 'Missing') + '</p>' +
+              '<p>' + esc(item.mode === 'internal'
                 ? 'Internal inbox via worker ' + (item.worker || 'n/a')
                 : item.destination || 'No inbox rule yet') + '</p>' +
             '</div>'
@@ -2095,10 +2096,10 @@ function renderAdmin(url: URL): string {
       const compositeTools = toolMeta.filter((tool) => tool.composite);
       overviewAiPolicy.innerHTML = toolMeta.length
         ? [
-            '<div class="faq-item"><h3>High-risk tools</h3><p>' + (highRiskTools.length ? highRiskTools.map((tool) => tool.name).join(', ') : 'None exposed.') + '</p></div>',
-            '<div class="faq-item"><h3>Human review expected</h3><p>' + (reviewRequiredTools.length ? reviewRequiredTools.map((tool) => tool.name).join(', ') : 'No tools currently flagged.') + '</p></div>',
-            '<div class="faq-item"><h3>Composite workflows</h3><p>' + (compositeTools.length ? compositeTools.map((tool) => tool.name).join(', ') : 'No composite tools published.') + '</p></div>',
-            '<div class="faq-item"><h3>Route gates</h3><p>Admin routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.adminEnabled ? 'enabled' : 'disabled') + ' · Debug routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.debugEnabled ? 'enabled' : 'disabled') + '</p></div>',
+            '<div class="faq-item"><h3>High-risk tools</h3><p>' + esc(highRiskTools.length ? highRiskTools.map((tool) => tool.name).join(', ') : 'None exposed.') + '</p></div>',
+            '<div class="faq-item"><h3>Human review expected</h3><p>' + esc(reviewRequiredTools.length ? reviewRequiredTools.map((tool) => tool.name).join(', ') : 'No tools currently flagged.') + '</p></div>',
+            '<div class="faq-item"><h3>Composite workflows</h3><p>' + esc(compositeTools.length ? compositeTools.map((tool) => tool.name).join(', ') : 'No composite tools published.') + '</p></div>',
+            '<div class="faq-item"><h3>Route gates</h3><p>' + esc('Admin routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.adminEnabled ? 'enabled' : 'disabled') + ' · Debug routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.debugEnabled ? 'enabled' : 'disabled')) + '</p></div>',
           ].join('')
         : 'Unlock the dashboard to inspect MCP risk policy.';
     }
@@ -2117,14 +2118,14 @@ function renderAdmin(url: URL): string {
       latestAliases = aliases;
       aliasList.innerHTML = aliases.map((item) => {
         const target = item.mode === "internal"
-          ? 'Internal inbox via worker <strong>' + (item.worker || 'n/a') + '</strong>'
-          : item.destination || "<em>Not configured</em>";
+          ? 'Internal inbox via worker <strong>' + esc(item.worker || 'n/a') + '</strong>'
+          : esc(item.destination || 'Not configured');
         const action = item.configured
-          ? '<button data-alias="' + item.alias + '" class="button secondary delete-alias" type="button">Delete</button>'
+          ? '<button data-alias="' + esc(item.alias) + '" class="button secondary delete-alias" type="button">Delete</button>'
           : "";
         return '<div class="faq-item">' +
-          '<h3>' + item.address + '</h3>' +
-          '<p>Status: ' + (item.configured ? 'Configured' : 'Missing') + '</p>' +
+          '<h3>' + esc(item.address) + '</h3>' +
+          '<p>Status: ' + esc(item.configured ? 'Configured' : 'Missing') + '</p>' +
           '<p>Route: ' + target + '</p>' +
           '<p style="margin-top:12px;">' + action + '</p>' +
         '</div>';
@@ -2164,14 +2165,14 @@ function renderAdmin(url: URL): string {
       mailboxIndex = items;
       mailboxList.innerHTML = items.map((item) =>
         '<div class="faq-item">' +
-          '<h3>' + item.address + '</h3>' +
-          '<p>Status: ' + item.status + '</p>' +
-          '<p style="margin-top:12px;"><button data-mailbox="' + item.id + '" class="button secondary mailbox-button" type="button">Open Mailbox</button></p>' +
+          '<h3>' + esc(item.address) + '</h3>' +
+          '<p>Status: ' + esc(item.status) + '</p>' +
+          '<p style="margin-top:12px;"><button data-mailbox="' + esc(item.id) + '" class="button secondary mailbox-button" type="button">Open Mailbox</button></p>' +
         '</div>'
       ).join("");
 
       sendMailbox.innerHTML = '<option value="">Choose mailbox</option>' + items.map((item) =>
-        '<option value="' + item.id + '">' + item.address + '</option>'
+        '<option value="' + esc(item.id) + '">' + esc(item.address) + '</option>'
       ).join("");
 
       document.querySelectorAll(".mailbox-button").forEach((button) => {
@@ -2446,11 +2447,11 @@ function renderAdmin(url: URL): string {
             const draft = await api('/admin/api/drafts/' + encodeURIComponent(draftId));
             outboxDetail.innerHTML =
               '<div class="faq-item">' +
-                '<h3>Draft ' + draft.id + '</h3>' +
-                '<p>Status: ' + draft.status + '</p>' +
-                '<p>Mailbox: ' + draft.mailboxId + '</p>' +
-                '<p>Thread: ' + (draft.threadId || 'n/a') + '</p>' +
-                '<p>Updated: ' + draft.updatedAt + '</p>' +
+                '<h3>Draft ' + esc(draft.id) + '</h3>' +
+                '<p>Status: ' + esc(draft.status) + '</p>' +
+                '<p>Mailbox: ' + esc(draft.mailboxId) + '</p>' +
+                '<p>Thread: ' + esc(draft.threadId || 'n/a') + '</p>' +
+                '<p>Updated: ' + esc(draft.updatedAt) + '</p>' +
               '</div>';
           } catch (error) {
             outboxDetail.textContent = error.message;
