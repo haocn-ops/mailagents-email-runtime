@@ -1,6 +1,8 @@
 import {
+  isCatchAllWorkerRule,
   listEmailRoutingRules,
   requireCloudflareEmailConfig,
+  upsertCatchAllWorkerRule,
   upsertWorkerRule,
 } from "../cloudflare-email";
 import { createId } from "../ids";
@@ -34,6 +36,7 @@ export interface SignupPageState {
 }
 
 export interface SignupSuccessResult {
+  tenantId: string;
   productName: string;
   operatorEmail: string;
   mailboxAddress: string;
@@ -214,10 +217,10 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   });
 
   const rules = await listEmailRoutingRules(env);
-  const existingRule = rules.find((entry) =>
-    entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
-  );
-  await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existingRule?.id);
+  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
+  if (!catchAllRule) {
+    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
+  }
 
   const access = await issueSelfServeAccessToken({
     env,
@@ -267,6 +270,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   }
 
   return {
+    tenantId,
     productName: values.productName,
     operatorEmail: values.operatorEmail,
     mailboxAddress: address,

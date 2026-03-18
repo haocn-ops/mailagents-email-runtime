@@ -128,6 +128,49 @@ export async function upsertWorkerRule(
   );
 }
 
+export async function upsertCatchAllWorkerRule(
+  env: Env,
+  workerName: string
+): Promise<EmailRoutingRule> {
+  const body = {
+    enabled: true,
+    matchers: [
+      {
+        type: "all",
+      },
+    ],
+    actions: [
+      {
+        type: "worker",
+        value: [workerName],
+      },
+    ],
+  };
+
+  return await callCloudflare<EmailRoutingRule>(
+    env,
+    `/zones/${env.CLOUDFLARE_ZONE_ID}/email/routing/rules/catch_all`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export function isCatchAllWorkerRule(rule: EmailRoutingRule, workerName?: string): boolean {
+  const hasAllMatcher = rule.matchers.some((matcher) => matcher.type === "all");
+  const workerAction = rule.actions.find((action) => action.type === "worker");
+  if (!hasAllMatcher || !workerAction) {
+    return false;
+  }
+
+  if (!workerName) {
+    return true;
+  }
+
+  return workerAction.value?.includes(workerName) ?? false;
+}
+
 export async function deleteEmailRoutingRule(env: Env, ruleId: string): Promise<void> {
   await callCloudflare<EmailRoutingRule>(
     env,

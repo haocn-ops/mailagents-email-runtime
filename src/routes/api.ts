@@ -1335,6 +1335,7 @@ function renderPublicSignupSuccess(result: SignupSuccessResult): string {
     <div class="banner ${bannerClass}">${escapeHtml(bannerText)}</div>
     <p>Your first mailbox, default agent, published version, and active deployment have been created inside Mailagents.</p>
     <ul>
+      <li>Tenant ID: <span class="mono">${escapeHtml(result.tenantId)}</span></li>
       <li>Mailbox: <span class="mono">${escapeHtml(result.mailboxAddress)}</span></li>
       <li>Agent ID: <span class="mono">${escapeHtml(result.agentId)}</span></li>
       <li>Version ID: <span class="mono">${escapeHtml(result.agentVersionId)}</span></li>

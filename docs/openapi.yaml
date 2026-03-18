@@ -953,6 +953,7 @@ components:
       type: object
       required:
         [
+          tenantId,
           productName,
           operatorEmail,
           mailboxAddress,
@@ -964,6 +965,8 @@ components:
           welcomeStatus
         ]
       properties:
+        tenantId:
+          type: string
         productName:
           type: string
         operatorEmail:

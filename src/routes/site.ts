@@ -869,6 +869,7 @@ content-type: application/json
 <p>A successful signup returns mailbox metadata plus a default mailbox-scoped bearer token that can immediately read inbound messages, create drafts, inspect drafts, and send drafts for the newly created mailbox.</p>
 
 <pre><code>{
+  "tenantId": "tnt_example",
   "mailboxAddress": "agent-demo@mailagents.net",
   "mailboxId": "mbx_example",
   "agentId": "agt_example",
@@ -885,6 +886,98 @@ content-type: application/json
   ],
   "welcomeStatus": "queued"
 }</code></pre>
+
+<h2>Quick Start</h2>
+
+<p>If you want the shortest path from signup to sending a real email, use this sequence.</p>
+
+<ol>
+  <li>Call <code>/public/signup</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
+  <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
+  <li>Create a draft with <code>POST /v1/agents/{agentId}/drafts</code>.</li>
+  <li>Send the draft with <code>POST /v1/drafts/{draftId}/send</code>.</li>
+</ol>
+
+<h3>1. Sign Up</h3>
+
+<pre><code>curl -sS -X POST ${signupApi} \
+  -H 'content-type: application/json' \
+  -d '{
+    "mailboxAlias": "agent-demo",
+    "agentName": "Agent Demo",
+    "operatorEmail": "operator@example.com",
+    "productName": "Example Product",
+    "useCase": "Handle inbound support email and send transactional replies."
+  }'</code></pre>
+
+<p>Save these values from the response:</p>
+
+<ul>
+  <li><code>accessToken</code></li>
+  <li><code>tenantId</code></li>
+  <li><code>agentId</code></li>
+  <li><code>mailboxId</code></li>
+  <li><code>mailboxAddress</code></li>
+  <li><code>operatorEmail</code></li>
+</ul>
+
+<h3>2. Discover Available Tools</h3>
+
+<pre><code>curl -sS ${runtimeMetadata} | jq
+
+curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list",
+    "params": {}
+  }' | jq</code></pre>
+
+<h3>3. Create a Draft</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/agents/$AGENT_ID/drafts \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"tenantId\": \"$TENANT_ID\",
+    \"mailboxId\": \"$MAILBOX_ID\",
+    \"from\": \"$MAILBOX_ADDRESS\",
+    \"to\": [\"recipient@example.com\"],
+    \"subject\": \"Hello from Mailagents\",
+    \"text\": \"This message was created with the self-serve signup token.\"
+  }"</code></pre>
+
+<p>The draft response returns a <code>draftId</code>.</p>
+
+<h3>4. Send the Draft</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/drafts/$DRAFT_ID/send \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "idempotencyKey": "send-demo-001"
+  }'</code></pre>
+
+<h3>5. Read Incoming Replies</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "list_agent_tasks",
+      "arguments": {
+        "agentId": "REPLACE_WITH_AGENT_ID"
+      }
+    }
+  }' | jq</code></pre>
+
+<p>Use the returned <code>sourceMessageId</code> with <code>get_message</code> and <code>get_message_content</code>, or call <code>reply_to_inbound_email</code> to reply on the same thread.</p>
 
 <h3>What Signup Creates</h3>
 
