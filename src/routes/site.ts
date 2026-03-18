@@ -8,15 +8,9 @@ import {
 import { badRequest, json } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildRuntimeMetadata } from "../lib/runtime-metadata";
-import {
-  escapeHtml,
-  type SignupFormValues,
-  type SignupPageState,
-  type SignupSuccessResult,
-} from "../lib/self-serve";
+import { escapeHtml } from "../lib/self-serve";
 import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import {
-  bindMailbox,
   ensureMailbox,
   listMailboxes,
 } from "../repositories/agents";
@@ -50,8 +44,8 @@ site.on("GET", "/terms", () => html(layout("terms", "Terms of Service", renderTe
 site.on("HEAD", "/terms", () => html(layout("terms", "Terms of Service", renderTerms())));
 site.on("GET", "/contact", () => html(layout("contact", "Contact", renderContact())));
 site.on("HEAD", "/contact", () => html(layout("contact", "Contact", renderContact())));
-site.on("GET", "/signup", (_request, _env, _ctx, route) => html(layout("contact", "Start Signup", renderSignup(route.url))));
-site.on("HEAD", "/signup", (_request, _env, _ctx, route) => html(layout("contact", "Start Signup", renderSignup(route.url))));
+site.on("GET", "/signup", () => redirect("/"));
+site.on("HEAD", "/signup", () => redirect("/"));
 site.on("GET", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
 site.on("HEAD", "/admin", (_request, _env, _ctx, route) => html(layout("admin", "Admin Dashboard", renderAdmin(route.url))));
 site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
@@ -566,6 +560,15 @@ function html(markup: string, init: ResponseInit = {}): Response {
   });
 }
 
+function redirect(location: string, status = 302): Response {
+  return new Response(null, {
+    status,
+    headers: {
+      location,
+    },
+  });
+}
+
 function layout(active: string, title: string, content: string): string {
   const pageTitle = title === "Mailagents" ? "Mailagents" : `${title} · Mailagents`;
 
@@ -807,73 +810,6 @@ function layout(active: string, title: string, content: string): string {
     .hero-note strong {
       color: var(--ink);
     }
-    .signup-grid {
-      display: grid;
-      grid-template-columns: 1.05fr 0.95fr;
-      gap: 18px;
-      align-items: start;
-    }
-    .signup-form {
-      display: grid;
-      gap: 14px;
-    }
-    .field-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-    }
-    .field {
-      display: grid;
-      gap: 8px;
-    }
-    .field label {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--brand-deep);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .field input,
-    .field textarea {
-      width: 100%;
-      padding: 12px 14px;
-      border-radius: 14px;
-      border: 1px solid rgba(28, 25, 22, 0.12);
-      background: rgba(255, 255, 255, 0.94);
-      color: inherit;
-      font: inherit;
-    }
-    .field textarea {
-      min-height: 120px;
-      resize: vertical;
-    }
-    .field small {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-    }
-    .status-banner {
-      padding: 14px 16px;
-      border-radius: 16px;
-      font-size: 14px;
-      line-height: 1.7;
-      border: 1px solid rgba(28, 25, 22, 0.08);
-    }
-    .status-banner.error {
-      background: rgba(181, 95, 51, 0.12);
-      border-color: rgba(181, 95, 51, 0.22);
-      color: #7a3f20;
-    }
-    .status-banner.success {
-      background: rgba(31, 106, 69, 0.1);
-      border-color: rgba(31, 106, 69, 0.24);
-      color: #184e34;
-    }
-    .status-banner.info {
-      background: rgba(34, 73, 61, 0.08);
-      border-color: rgba(34, 73, 61, 0.18);
-      color: var(--brand-deep);
-    }
     .section-head {
       display: flex;
       align-items: end;
@@ -1027,7 +963,6 @@ function layout(active: string, title: string, content: string): string {
     }
     @media (max-width: 980px) {
       .hero,
-      .signup-grid,
       .stats,
       .cards,
       .steps,
@@ -1091,20 +1026,20 @@ function renderHome(url: URL): string {
   const compatibilityDoc = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/runtime-compatibility.md";
   const runtimeMetadata = "https://api.mailagents.net/v2/meta/runtime";
   const compatibilityApi = "https://api.mailagents.net/v2/meta/compatibility";
+  const signupApi = "https://api.mailagents.net/public/signup";
   const accessEmail = "hello@mailagents.net";
-  const signupPath = "/signup";
   return `<section class="hero">
     <article class="hero-card">
       <div class="eyebrow">AI-First Email Runtime</div>
       <h1>Give your agent a real inbox, a safe send path, and a clear way to start.</h1>
       <p class="lead">Mailagents is email infrastructure for agent-native products. You can provision inboxes, route inbound mail into workflows, and send transactional email with operator controls, delivery policy, and auditability built in from the start.</p>
       <div class="hero-note">
-        <strong>Self-serve signup is live.</strong> You can now create a mailbox, a default agent, and a first welcome email from the public site. If you need higher-volume access or custom routing help, contact <a href="mailto:${accessEmail}">${accessEmail}</a>.
+        <strong>Registration is API-first.</strong> Agents should provision mailboxes through <a href="${signupApi}" target="_blank" rel="noreferrer"><code>/public/signup</code></a>. If you need higher-volume access or custom routing help, contact <a href="mailto:${accessEmail}">${accessEmail}</a>.
       </div>
       <div class="hero-actions">
-        <a class="button primary" href="${signupPath}">Start Signup</a>
+        <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>
         ${isMarketingSite ? `<a class="button secondary" href="${agentDocs}" target="_blank" rel="noreferrer">AI Agent Docs</a>` : ""}
-        <a class="button secondary" href="#get-started">How to Start</a>
+        <a class="button secondary" href="#get-started">API Onboarding</a>
         <a class="button secondary" href="/contact">Contact</a>
       </div>
     </article>
@@ -1115,11 +1050,11 @@ function renderHome(url: URL): string {
         <div class="signal-grid">
           <div class="mini">
             <div class="label">Registration</div>
-            <strong>Public self-serve signup</strong>
+            <strong>API-only signup</strong>
           </div>
           <div class="mini">
             <div class="label">Access Path</div>
-            <strong>Homepage to /signup</strong>
+            <strong>POST /public/signup</strong>
           </div>
           <div class="mini">
             <div class="label">Best For</div>
@@ -1136,8 +1071,8 @@ function renderHome(url: URL): string {
         <div class="command-panel">
           <pre>service: Mailagents
 category: AI-first email infrastructure
-self_serve_signup: true
-signup_endpoint: ${signupPath}
+signup_mode: api_only
+signup_endpoint: ${signupApi}
 fallback_contact: ${accessEmail}
 ideal_use_cases:
   - agent inbox provisioning
@@ -1156,15 +1091,15 @@ avoid_use_cases:
     <div class="section-head">
       <div>
         <div class="eyebrow">Get Started</div>
-        <h2>Three steps from homepage to a working agent mailbox.</h2>
+        <h2>Three steps from discovery to a working agent mailbox.</h2>
       </div>
-      <p>The first job of this page is to remove ambiguity. If you want a mailbox, here is the exact public path.</p>
+      <p>The first job of this page is to remove ambiguity. If your agent wants a mailbox, here is the exact API path.</p>
     </div>
     <div class="steps">
       <div class="card">
         <div class="step-number">1</div>
-        <h3>Open signup</h3>
-        <p>Use the public signup form to choose a mailbox alias, name your first agent, and provide the operator email that should receive the welcome message.</p>
+        <h3>Call signup API</h3>
+        <p>POST mailbox alias, agent name, operator email, product name, and use case to <code>/public/signup</code>.</p>
       </div>
       <div class="card">
         <div class="step-number">2</div>
@@ -1177,17 +1112,18 @@ avoid_use_cases:
         <p>Your newly created mailbox sends a welcome message to the operator email so you can confirm outbound delivery before wiring agent workflows.</p>
       </div>
     </div>
-  </section>
-
-  <section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Self-Serve Signup</div>
-        <h2>Create one mailbox and one default agent in a single step.</h2>
-      </div>
-      <p>This is the public onboarding path intended for real agent builders. It provisions a mailbox plus a default agent and queues a first welcome email.</p>
+    <div class="command-panel" style="margin-top:18px;">
+      <h3>Example request</h3>
+      <pre>curl -X POST ${signupApi} \
+  -H "content-type: application/json" \
+  -d '{
+    "mailboxAlias": "agent-demo",
+    "agentName": "Agent Demo",
+    "operatorEmail": "operator@example.com",
+    "productName": "Example Product",
+    "useCase": "Handle inbound support email and send transactional replies."
+  }'</pre>
     </div>
-    ${renderSignupForm({})}
   </section>
 
   ${isMarketingSite ? `<section class="panel section">
@@ -1289,7 +1225,7 @@ avoid_use_cases:
     </div>
     <div class="proof">
       <div class="proof-item">
-        <h3>What self-serve signup asks for</h3>
+        <h3>What the signup API expects</h3>
         <ul class="checklist">
           <li>Your desired mailbox alias.</li>
           <li>Your first agent name.</li>
@@ -1300,8 +1236,8 @@ avoid_use_cases:
       </div>
       <div class="proof-item">
         <h3>What an integrating agent should assume</h3>
-        <p><span class="inline-code">signup_endpoint = ${signupPath}</span></p>
-        <p><span class="inline-code">onboarding_mode = self_serve_with_guardrails</span></p>
+        <p><span class="inline-code">signup_endpoint = ${signupApi}</span></p>
+        <p><span class="inline-code">onboarding_mode = api_first_with_guardrails</span></p>
         <p><span class="inline-code">fallback_contact = ${accessEmail}</span></p>
         <p><span class="inline-code">intended_use = transactional and mailbox workflows</span></p>
         <p><span class="inline-code">unsupported = cold outreach, bulk marketing</span></p>
@@ -1338,7 +1274,7 @@ avoid_use_cases:
       </div>
     </div>
     <div class="hero-actions">
-      <a class="button primary" href="${signupPath}">Start Signup</a>
+      <a class="button primary" href="${agentDocs}" target="_blank" rel="noreferrer">Open docs</a>
       <a class="button secondary" href="/privacy">View data handling</a>
       <a class="button secondary" href="/terms">View terms</a>
     </div>
@@ -1355,7 +1291,7 @@ avoid_use_cases:
     <div class="faq">
       <div class="faq-item">
         <h3>How do I register for Mailagents?</h3>
-        <p>Use the public self-serve signup form at <a href="${signupPath}">${signupPath}</a> to create one mailbox and one default agent. For custom onboarding or higher-volume setups, email <a href="mailto:${accessEmail}">${accessEmail}</a>.</p>
+        <p>Provision through the public API at <a href="${signupApi}"><code>${signupApi}</code></a>. The website no longer provides a manual signup form. For custom onboarding or higher-volume setups, email <a href="mailto:${accessEmail}">${accessEmail}</a>.</p>
       </div>
       <div class="faq-item">
         <h3>Does Mailagents send marketing campaigns?</h3>
@@ -1471,10 +1407,6 @@ function renderContact(): string {
     </div>
     <div class="contact-grid">
       <section class="card">
-        <h3>Self-serve signup</h3>
-        <p>Need a mailbox right now? Use the public <a href="/signup">signup flow</a> to create one mailbox, one default agent, and send the first welcome email automatically.</p>
-      </section>
-      <section class="card">
         <h3>General inquiries</h3>
         <p>Email <a href="mailto:hello@mailagents.net">hello@mailagents.net</a> for product, onboarding, account, or partnership questions.</p>
       </section>
@@ -1497,126 +1429,6 @@ function renderContact(): string {
       <section class="card">
         <h3>Review context</h3>
         <p>This website describes the live Mailagents product, its intended transactional use, and the public contact channels used for operational and compliance review.</p>
-      </section>
-    </div>
-  </section>`;
-}
-
-function renderSignup(url: URL, state: SignupPageState = {}): string {
-  const isMarketingSite = url.host === "mailagents.net" || url.host === "www.mailagents.net";
-  return `<section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Self-Serve Signup</div>
-        <h2>Create a mailbox and your first agent.</h2>
-      </div>
-      <p>This public signup provisions one mailbox, one default agent, one published version, and one active mailbox deployment. It also queues a welcome email to your operator inbox.</p>
-    </div>
-    ${renderSignupForm(state)}
-    ${isMarketingSite ? `<div class="hero-actions" style="margin-top:18px;">
-      <a class="button secondary" href="/">Back to overview</a>
-      <a class="button secondary" href="https://api.mailagents.net/v2/meta/runtime" target="_blank" rel="noreferrer">Runtime Metadata</a>
-    </div>` : ""}
-  </section>`;
-}
-
-function renderSignupForm(state: SignupPageState): string {
-  const values = state.values ?? {};
-  return `<div class="signup-grid">
-    <section class="card">
-      ${state.error ? `<div class="status-banner error">${escapeHtml(state.error)}</div>` : ""}
-      ${state.notice ? `<div class="status-banner info">${escapeHtml(state.notice)}</div>` : ""}
-      <form class="signup-form" method="post" action="https://api.mailagents.net/public/signup">
-        <div class="field-grid">
-          <div class="field">
-            <label for="mailboxAlias">Mailbox Alias</label>
-            <input id="mailboxAlias" name="mailboxAlias" required pattern="[a-z0-9._+-]{3,32}" value="${escapeHtml(values.mailboxAlias ?? "")}" />
-            <small>Becomes <code>alias@mailagents.net</code>. Lowercase letters, numbers, dot, dash, underscore, plus only.</small>
-          </div>
-          <div class="field">
-            <label for="agentName">Agent Name</label>
-            <input id="agentName" name="agentName" required value="${escapeHtml(values.agentName ?? "")}" />
-            <small>This becomes the name of the default agent bound to the mailbox.</small>
-          </div>
-        </div>
-        <div class="field-grid">
-          <div class="field">
-            <label for="operatorEmail">Operator Email</label>
-            <input id="operatorEmail" name="operatorEmail" type="email" required value="${escapeHtml(values.operatorEmail ?? "")}" />
-            <small>The welcome and test message is sent here from your newly created mailbox.</small>
-          </div>
-          <div class="field">
-            <label for="productName">Product Name</label>
-            <input id="productName" name="productName" required value="${escapeHtml(values.productName ?? "")}" />
-            <small>Used for agent metadata and onboarding context.</small>
-          </div>
-        </div>
-        <div class="field">
-          <label for="useCase">Use Case</label>
-          <textarea id="useCase" name="useCase" required>${escapeHtml(values.useCase ?? "")}</textarea>
-          <small>Describe what the agent needs to do with inbound and outbound email.</small>
-        </div>
-        <div class="hero-actions">
-          <button class="button primary" type="submit">Create Mailbox</button>
-          <a class="button secondary" href="/contact">Need manual help?</a>
-        </div>
-      </form>
-    </section>
-    <section class="card">
-      <h3>What gets created</h3>
-      <ul class="checklist">
-        <li>One active mailbox on <code>mailagents.net</code>.</li>
-        <li>One default agent in assistant mode.</li>
-        <li>One published <code>self-serve-v1</code> agent version.</li>
-        <li>One active mailbox deployment pinned to that version.</li>
-        <li>One welcome email queued through the same outbound path used by the runtime.</li>
-      </ul>
-      <h3 style="margin-top:18px;">Current guardrails</h3>
-      <ul class="checklist">
-        <li>Reserved aliases such as <code>hello</code>, <code>security</code>, <code>privacy</code>, and <code>support</code> cannot be claimed.</li>
-        <li>This signup path is for transactional and managed mailbox workflows.</li>
-        <li>Cold outreach and bulk marketing remain unsupported.</li>
-      </ul>
-    </section>
-  </div>`;
-}
-
-function renderSignupSuccess(result: SignupSuccessResult): string {
-  const bannerClass = result.welcomeStatus === "queued" ? "success" : "info";
-  const bannerMessage = result.welcomeStatus === "queued"
-    ? `Mailbox created and welcome email queued successfully.`
-    : `Mailbox created, but the welcome email could not be queued automatically: ${result.welcomeError ?? "unknown error"}`;
-
-  return `<section class="panel section">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Signup Complete</div>
-        <h2>${escapeHtml(result.mailboxAddress)} is ready.</h2>
-      </div>
-      <p>The first mailbox, default agent, published version, and active deployment have been created.</p>
-    </div>
-    <div class="status-banner ${bannerClass}">${escapeHtml(bannerMessage)}</div>
-    <div class="signup-grid" style="margin-top:18px;">
-      <section class="card">
-        <h3>Provisioned Resources</h3>
-        <p><span class="inline-code">mailbox = ${escapeHtml(result.mailboxAddress)}</span></p>
-        <p><span class="inline-code">mailbox_id = ${escapeHtml(result.mailboxId)}</span></p>
-        <p><span class="inline-code">agent_id = ${escapeHtml(result.agentId)}</span></p>
-        <p><span class="inline-code">agent_version_id = ${escapeHtml(result.agentVersionId)}</span></p>
-        <p><span class="inline-code">deployment_id = ${escapeHtml(result.deploymentId)}</span></p>
-        ${result.outboundJobId ? `<p><span class="inline-code">welcome_outbound_job = ${escapeHtml(result.outboundJobId)}</span></p>` : ""}
-      </section>
-      <section class="card">
-        <h3>Next Steps</h3>
-        <ul class="checklist">
-          <li>Check ${escapeHtml(result.operatorEmail)} for the welcome email from ${escapeHtml(result.mailboxAddress)}.</li>
-          <li>Use the new mailbox as your first inbound address.</li>
-          <li>Use <a href="https://api.mailagents.net/v2/meta/runtime" target="_blank" rel="noreferrer">runtime metadata</a> and the <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md" target="_blank" rel="noreferrer">AI agent guide</a> to integrate safely.</li>
-        </ul>
-        <div class="hero-actions">
-          <a class="button primary" href="/">Back to overview</a>
-          <a class="button secondary" href="/signup">Create another mailbox</a>
-        </div>
       </section>
     </div>
   </section>`;
