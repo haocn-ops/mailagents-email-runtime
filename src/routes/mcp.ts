@@ -27,6 +27,7 @@ import {
   createTask,
   deleteTask,
   enqueueDraftSend,
+  getAttachmentOwnerByR2Key,
   getDraft,
   getMessage,
   getMessageContent,
@@ -151,6 +152,30 @@ async function validateDraftReferences(env: Env, input: {
     }
     if (input.threadId && sourceMessage.threadId !== input.threadId) {
       throw new McpToolError("invalid_arguments", "Source message does not belong to thread");
+    }
+  }
+}
+
+async function validateDraftAttachments(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+}) {
+  for (const attachment of input.attachments) {
+    const r2Key = typeof attachment.r2Key === "string" ? attachment.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new McpToolError("invalid_arguments", "Attachment r2Key is required");
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new McpToolError("invalid_arguments", "Attachment not found");
+    }
+    if (owner.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Attachment does not belong to tenant");
+    }
+    if (owner.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Attachment does not belong to mailbox");
     }
   }
 }
@@ -664,6 +689,11 @@ async function createAndSendDraftForMcp(env: Env, input: {
     mailboxId: input.mailboxId,
     threadId: input.threadId,
     sourceMessageId: input.sourceMessageId,
+  });
+  await validateDraftAttachments(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    attachments: input.payload.attachments,
   });
 
   if (!idempotencyKey) {

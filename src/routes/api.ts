@@ -50,6 +50,7 @@ import {
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
+  getAttachmentOwnerByR2Key,
   getMessage,
   getMessageByProviderMessageId,
   getMessageContent,
@@ -177,6 +178,30 @@ async function validateDraftReferences(env: Env, input: {
     }
     if (input.threadId && sourceMessage.threadId !== input.threadId) {
       throw new RouteRequestError("Source message does not belong to thread", 409);
+    }
+  }
+}
+
+async function validateDraftAttachments(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+}) {
+  for (const attachment of input.attachments) {
+    const r2Key = typeof attachment.r2Key === "string" ? attachment.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new RouteRequestError("Attachment r2Key is required", 400);
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new RouteRequestError("Attachment not found", 404);
+    }
+    if (owner.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Attachment does not belong to tenant", 409);
+    }
+    if (owner.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Attachment does not belong to mailbox", 409);
     }
   }
 }
@@ -1678,6 +1703,11 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
     threadId: body.threadId,
     sourceMessageId: body.sourceMessageId,
   });
+  await validateDraftAttachments(env, {
+    tenantId: body.tenantId,
+    mailboxId: body.mailboxId,
+    attachments: body.attachments ?? [],
+  });
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,
@@ -2085,6 +2115,11 @@ async function createAndSendDraft(env: Env, input: {
     mailboxId: input.mailboxId,
     threadId: input.threadId,
     sourceMessageId: input.sourceMessageId,
+  });
+  await validateDraftAttachments(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    attachments: input.payload.attachments,
   });
 
   if (!idempotencyKey) {

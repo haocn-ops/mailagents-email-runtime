@@ -69,6 +69,12 @@ interface AttachmentRow {
   r2_key: string;
 }
 
+interface AttachmentOwnerRow {
+  message_id: string;
+  tenant_id: string;
+  mailbox_id: string;
+}
+
 interface OutboundJobRow {
   id: string;
   message_id: string;
@@ -400,6 +406,32 @@ export async function getMessageContent(env: Env, messageId: string): Promise<Me
   };
 }
 
+export async function getAttachmentOwnerByR2Key(env: Env, r2Key: string): Promise<{
+  messageId: string;
+  tenantId: string;
+  mailboxId: string;
+} | null> {
+  const row = await firstRow<AttachmentOwnerRow>(
+    env.D1_DB.prepare(
+      `SELECT a.message_id, m.tenant_id, m.mailbox_id
+       FROM attachments a
+       JOIN messages m ON m.id = a.message_id
+       WHERE a.r2_key = ?
+       LIMIT 1`
+    ).bind(r2Key)
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    messageId: row.message_id,
+    tenantId: row.tenant_id,
+    mailboxId: row.mailbox_id,
+  };
+}
+
 export async function getThread(env: Env, threadId: string): Promise<ThreadRecord | null> {
   const thread = await firstRow<ThreadRow>(
     env.D1_DB.prepare(
@@ -720,6 +752,9 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+  const attachmentRefs = Array.isArray(draftPayload.attachments)
+    ? draftPayload.attachments.filter((item): item is { r2Key?: unknown } => typeof item === "object" && item !== null)
+    : [];
   const mailbox = await firstRow<MailboxAddressRow>(
     env.D1_DB.prepare(
       `SELECT address, status
@@ -741,6 +776,23 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   }
   if (fromAddress !== mailboxAddress) {
     throw new Error("Draft from address must match the mailbox address");
+  }
+  for (const ref of attachmentRefs) {
+    const r2Key = typeof ref.r2Key === "string" ? ref.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new Error("Attachment r2Key is required");
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new Error(`Attachment not found: ${r2Key}`);
+    }
+    if (owner.tenantId !== draft.tenantId) {
+      throw new Error("Attachment does not belong to tenant");
+    }
+    if (owner.mailboxId !== draft.mailboxId) {
+      throw new Error("Attachment does not belong to mailbox");
+    }
   }
 
   await execute(env.D1_DB.prepare(
