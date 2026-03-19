@@ -68,7 +68,7 @@ curl -sS http://127.0.0.1:8787/mcp \
   }'
 ```
 
-Example: create a draft
+Example: list messages for the mailbox bound to the current token
 
 ```bash
 curl -sS http://127.0.0.1:8787/mcp \
@@ -77,6 +77,69 @@ curl -sS http://127.0.0.1:8787/mcp \
   -d '{
     "jsonrpc": "2.0",
     "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "list_messages",
+      "arguments": {
+        "limit": 10,
+        "direction": "inbound"
+      }
+    }
+  }'
+```
+
+Example: send email in one MCP call
+
+```bash
+curl -sS http://127.0.0.1:8787/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4.25,
+    "method": "tools/call",
+    "params": {
+      "name": "send_email",
+      "arguments": {
+        "to": ["user@example.com"],
+        "subject": "Hello from MCP",
+        "text": "Sent directly through the high-level MCP send tool.",
+        "idempotencyKey": "mcp-send-email-001"
+      }
+    }
+  }'
+```
+
+Example: reply to an inbound message and send immediately
+
+```bash
+curl -sS http://127.0.0.1:8787/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4.5,
+    "method": "tools/call",
+    "params": {
+      "name": "reply_to_message",
+      "arguments": {
+        "messageId": "REPLACE_WITH_MESSAGE_ID",
+        "text": "Thanks for the note. We have processed it.",
+        "idempotencyKey": "mcp-reply-001"
+      }
+    }
+  }'
+```
+
+Advanced example: create a draft explicitly
+
+```bash
+curl -sS http://127.0.0.1:8787/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4.75,
     "method": "tools/call",
     "params": {
       "name": "create_draft",
@@ -93,70 +156,7 @@ curl -sS http://127.0.0.1:8787/mcp \
   }'
 ```
 
-Example: list messages for the mailbox bound to the current token
-
-```bash
-curl -sS http://127.0.0.1:8787/mcp \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4.25,
-    "method": "tools/call",
-    "params": {
-      "name": "list_messages",
-      "arguments": {
-        "limit": 10,
-        "direction": "inbound"
-      }
-    }
-  }'
-```
-
-Example: run the composite reply workflow without sending
-
-```bash
-curl -sS http://127.0.0.1:8787/mcp \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4.5,
-    "method": "tools/call",
-    "params": {
-      "name": "reply_to_inbound_email",
-      "arguments": {
-        "agentId": "agt_demo",
-        "messageId": "REPLACE_WITH_MESSAGE_ID",
-        "replyText": "Thanks for your message. We are looking into it now."
-      }
-    }
-  }'
-```
-
-Example: send email in one MCP call
-
-```bash
-curl -sS http://127.0.0.1:8787/mcp \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4.75,
-    "method": "tools/call",
-    "params": {
-      "name": "send_email",
-      "arguments": {
-        "to": ["user@example.com"],
-        "subject": "Hello from MCP",
-        "text": "Sent directly through the high-level MCP send tool.",
-        "idempotencyKey": "mcp-send-email-001"
-      }
-    }
-  }'
-```
-
-Example: send a draft idempotently
+Advanced example: send a draft idempotently
 
 ```bash
 curl -sS http://127.0.0.1:8787/mcp \
@@ -176,7 +176,7 @@ curl -sS http://127.0.0.1:8787/mcp \
   }'
 ```
 
-Example: reply to an inbound message and send immediately
+Advanced example: run the composite reply workflow without sending
 
 ```bash
 curl -sS http://127.0.0.1:8787/mcp \
@@ -187,11 +187,11 @@ curl -sS http://127.0.0.1:8787/mcp \
     "id": 5.5,
     "method": "tools/call",
     "params": {
-      "name": "reply_to_message",
+      "name": "reply_to_inbound_email",
       "arguments": {
+        "agentId": "agt_demo",
         "messageId": "REPLACE_WITH_MESSAGE_ID",
-        "text": "Thanks for the note. We have processed it.",
-        "idempotencyKey": "mcp-reply-001"
+        "replyText": "Thanks for your message. We are looking into it now."
       }
     }
   }'
@@ -221,11 +221,13 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `tools/list` only shows tools allowed by the current token scopes
 - `tools/list` also returns tool annotations for `riskLevel`, `sideEffecting`, `humanReviewRequired`, `composite`, `supportsPartialAuthorization`, and `sendAdditionalScopes`
 - `tools/call` reuses the same access checks as the HTTP API
+- for mailbox-scoped agents, prefer `list_messages`, `send_email`, and `reply_to_message` as the default workflow surface
 - `bind_mailbox` now validates that both the agent and mailbox exist and belong to the declared tenant
 - `send_draft` and `replay_message` support `idempotencyKey`
 - `list_messages` can infer the mailbox from a mailbox-scoped token, or accept `mailboxId` when the token covers multiple mailboxes
 - `send_email` is the MCP equivalent of the high-level HTTP send routes and always creates then sends through the normal queue path
 - `reply_to_message` is the MCP equivalent of `POST /v1/messages/{messageId}/reply`
+- `create_draft` and `send_draft` remain available for workflows that need explicit draft review or lower-level lifecycle control
 - `reply_to_inbound_email` can create a reply draft and optionally send when `send: true`
 - when `reply_to_inbound_email` sends, the `idempotencyKey` is bound to the logical reply request so safe retries return the original workflow result instead of creating a second draft
 - `operator_manual_send` can create an operator-guided draft and optionally send when `send: true`

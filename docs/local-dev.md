@@ -150,7 +150,49 @@ curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/mailboxes \
   }'
 ```
 
-## 9. Create and send a draft
+## 9. Read mailbox messages through the mailbox-scoped routes
+
+List messages:
+
+```bash
+curl -X GET "http://127.0.0.1:8787/v1/mailboxes/self/messages?limit=10" \
+  -H "authorization: Bearer $TOKEN"
+```
+
+Read a single message body:
+
+```bash
+curl -X GET http://127.0.0.1:8787/v1/mailboxes/self/messages/msg_demo_inbound/content \
+  -H "authorization: Bearer $TOKEN"
+```
+
+## 10. Send a message through the high-level route
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/messages/send \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "to": ["user@example.com"],
+    "subject": "Hello from Mailagents",
+    "text": "This is a local high-level send test.",
+    "idempotencyKey": "send-message-001"
+  }'
+```
+
+## 11. Reply to a seeded inbound message
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/messages/msg_demo_inbound/reply \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "text": "Thanks for your message. This is a local reply test.",
+    "idempotencyKey": "reply-message-001"
+  }'
+```
+
+## 12. Advanced: create and send a draft explicitly
 
 Create:
 
@@ -179,7 +221,10 @@ curl -X POST http://127.0.0.1:8787/v1/drafts/REPLACE_WITH_DRAFT_ID/send \
   }'
 ```
 
-## 10. Replay a message normalize job
+Use the explicit draft path only when you need a visible review step or direct
+control over the draft lifecycle.
+
+## 13. Replay a message normalize job
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
@@ -191,7 +236,7 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
   }'
 ```
 
-## 11. Common workflow
+## 14. Common workflow
 
 1. `npm run d1:migrate:local`
 2. `npm run d1:seed:local`
@@ -199,7 +244,10 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 4. mint a token
 5. create agent via API
 6. bind mailbox
-7. create draft or trigger replay/tests
+7. read mailbox messages
+8. send or reply through the high-level routes
+9. use explicit drafts only when the workflow needs review
+10. trigger replay/tests when debugging or recovering state
 
 ## Notes
 
