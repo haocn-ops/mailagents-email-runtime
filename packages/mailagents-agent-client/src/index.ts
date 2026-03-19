@@ -859,10 +859,15 @@ export class MailagentsAgentClient {
   async replyToInboundEmail(args: {
     agentId: string;
     messageId: string;
-    replyText: string;
+    replyText?: string;
+    replyHtml?: string;
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<ReplyWorkflowResult> {
+    if (!args.replyText && !args.replyHtml) {
+      throw new MailagentsClientError("replyText or replyHtml is required");
+    }
+
     const result = await this.callTool<Omit<ReplyWorkflowResult, "sendRequested">>("reply_to_inbound_email", args);
     return {
       ...result,
