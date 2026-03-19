@@ -1753,11 +1753,6 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
     mailboxId: body.mailboxId,
     attachments: body.attachments ?? [],
   });
-  await validateSendAgentBinding(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    mailboxId: body.mailboxId,
-  });
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,

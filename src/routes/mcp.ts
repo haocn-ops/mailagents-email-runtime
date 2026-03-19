@@ -944,7 +944,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (agentError) {
       await throwIfResponseError(agentError);
     }
-    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
+    if (send) {
+      await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    }
 
     const thread = message.threadId ? await getThread(env, message.threadId) : null;
     const references = Array.from(new Set(
@@ -1101,7 +1104,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateBindingResources(env, tenantId, agentId, mailboxId);
     await validateDraftReferences(env, {
       tenantId,
       mailboxId,
@@ -1110,6 +1113,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     });
 
     if (send) {
+      await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
       if (sendAuth instanceof Response) {
         await throwIfResponseError(sendAuth);
@@ -1468,7 +1472,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateBindingResources(env, tenantId, agentId, mailboxId);
     await validateDraftReferences(env, {
       tenantId,
       mailboxId,
