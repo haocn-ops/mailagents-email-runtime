@@ -148,6 +148,7 @@ Then optionally:
 - `get_message_content`
 - `get_thread`
 - `list_agent_tasks`
+- `list_messages`
 
 ## 5. Draft Before Send
 
@@ -178,6 +179,47 @@ curl -sS -X POST https://api.mailagents.net/v1/messages/msg_demo_inbound/reply \
   }' | jq
 ```
 
+The MCP equivalents are now available too:
+
+```bash
+curl -sS https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2.5,
+    "method": "tools/call",
+    "params": {
+      "name": "send_email",
+      "arguments": {
+        "to": ["user@example.com"],
+        "subject": "Hello from MCP",
+        "text": "Sent through the MCP high-level send tool.",
+        "idempotencyKey": "sdk-mcp-send-001"
+      }
+    }
+  }' | jq
+```
+
+```bash
+curl -sS https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2.75,
+    "method": "tools/call",
+    "params": {
+      "name": "reply_to_message",
+      "arguments": {
+        "messageId": "msg_demo_inbound",
+        "text": "Thanks for your message.",
+        "idempotencyKey": "sdk-mcp-reply-001"
+      }
+    }
+  }' | jq
+```
+
 Use explicit draft creation only when your workflow needs a visible review step
 or wants to control the draft lifecycle directly.
 
@@ -204,6 +246,26 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
       }
     }
   }'
+```
+
+List mailbox messages directly through MCP:
+
+```bash
+curl -sS https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3.5,
+    "method": "tools/call",
+    "params": {
+      "name": "list_messages",
+      "arguments": {
+        "limit": 10,
+        "direction": "inbound"
+      }
+    }
+  }' | jq
 ```
 
 Send it idempotently:

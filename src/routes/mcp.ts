@@ -30,6 +30,7 @@ import {
   getMessage,
   getMessageContent,
   getThread,
+  listMessages,
   listTasks,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
@@ -169,6 +170,23 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     },
   },
   {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "list_messages")!,
+    inputSchema: {
+      type: "object",
+      properties: {
+        mailboxId: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+        search: { type: "string" },
+        direction: { type: "string", enum: ["inbound", "outbound"] },
+        status: {
+          type: "string",
+          enum: ["received", "normalized", "tasked", "replied", "ignored", "failed"],
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "get_message")!,
     inputSchema: {
       type: "object",
@@ -243,6 +261,40 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
       required: ["draftId"],
       properties: {
         draftId: { type: "string" },
+        idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "send_email")!,
+    inputSchema: {
+      type: "object",
+      required: ["to", "subject"],
+      properties: {
+        mailboxId: { type: "string" },
+        to: { type: "array", items: { type: "string" }, minItems: 1 },
+        cc: { type: "array", items: { type: "string" } },
+        bcc: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        text: { type: "string" },
+        html: { type: "string" },
+        inReplyTo: { type: "string" },
+        references: { type: "array", items: { type: "string" } },
+        idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "reply_to_message")!,
+    inputSchema: {
+      type: "object",
+      required: ["messageId"],
+      properties: {
+        messageId: { type: "string" },
+        text: { type: "string" },
+        html: { type: "string" },
         idempotencyKey: { type: "string" },
       },
       additionalProperties: false,
@@ -346,6 +398,17 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
+function optionalInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new McpToolError("invalid_arguments", `${field} must be an integer`);
+  }
+
+  return value;
+}
+
 async function requireClaims(request: Request, env: Env, scopes: string[]): Promise<AccessTokenClaims | Response> {
   return await requireAuth(request, env, scopes);
 }
@@ -423,6 +486,141 @@ async function validateBindingResources(
   }
   if (mailbox.tenant_id !== tenantId) {
     throw new McpToolError("invalid_arguments", "Mailbox does not belong to tenant");
+  }
+}
+
+function requireSelfAgentId(claims: AccessTokenClaims): string {
+  if (!claims.agentId) {
+    throw new McpToolError("invalid_arguments", "This token is not bound to a single agent");
+  }
+
+  return claims.agentId;
+}
+
+async function resolveMailboxForClaims(
+  env: Env,
+  claims: AccessTokenClaims,
+  requestedMailboxId?: string
+) {
+  const mailboxId = requestedMailboxId?.trim()
+    || (claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : undefined);
+
+  if (!mailboxId) {
+    throw new McpToolError("invalid_arguments", "mailboxId is required unless the token is bound to a single mailbox");
+  }
+
+  const mailbox = await getMailboxById(env, mailboxId);
+  if (!mailbox) {
+    throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+  }
+
+  const tenantError = enforceTenantAccess(claims, mailbox.tenant_id);
+  if (tenantError) {
+    await throwIfResponseError(tenantError);
+  }
+  const mailboxError = enforceMailboxAccess(claims, mailbox.id);
+  if (mailboxError) {
+    await throwIfResponseError(mailboxError);
+  }
+
+  return mailbox;
+}
+
+async function createAndSendDraftForMcp(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+  payload: {
+    from: string;
+    to: string[];
+    cc: string[];
+    bcc: string[];
+    subject: string;
+    text: string;
+    html: string;
+    inReplyTo?: string;
+    references: string[];
+    attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+  };
+  createdVia: string;
+  idempotencyKey?: string;
+  requestFingerprint: string;
+}) {
+  const idempotencyKey = input.idempotencyKey?.trim();
+
+  if (input.idempotencyKey !== undefined && !idempotencyKey) {
+    throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
+  }
+
+  if (!idempotencyKey) {
+    const draft = await createDraft(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+      payload: input.payload,
+    });
+    const sendResult = await enqueueDraftSend(env, draft.id);
+    return {
+      draft,
+      outboundJobId: sendResult.outboundJobId,
+      status: sendResult.status,
+    };
+  }
+
+  const reservation = await reserveIdempotencyKey(env, {
+    operation: "draft_send",
+    tenantId: input.tenantId,
+    idempotencyKey,
+    requestFingerprint: input.requestFingerprint,
+    resourceId: input.mailboxId,
+  });
+
+  if (reservation.status === "conflict") {
+    throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different send request");
+  }
+  if (reservation.status === "pending") {
+    throw new McpToolError("idempotency_in_progress", "A send request with this idempotency key is already in progress");
+  }
+  if (reservation.status === "completed") {
+    return reservation.record.response ?? {
+      draftId: reservation.record.resourceId,
+      outboundJobId: reservation.record.resourceId,
+      status: "queued",
+    };
+  }
+
+  try {
+    const draft = await createDraft(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+      payload: input.payload,
+    });
+    const sendResult = await enqueueDraftSend(env, draft.id);
+    const response = {
+      draft,
+      outboundJobId: sendResult.outboundJobId,
+      status: sendResult.status,
+    };
+    await completeIdempotencyKey(env, {
+      operation: "draft_send",
+      tenantId: input.tenantId,
+      idempotencyKey,
+      resourceId: draft.id,
+      response,
+    });
+    return response;
+  } catch (error) {
+    await releaseIdempotencyKey(env, "draft_send", input.tenantId, idempotencyKey);
+    throw error;
   }
 }
 
@@ -826,6 +1024,35 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     return { items: await listTasks(env, agentId, status) };
   }
 
+  if (toolName === "list_messages") {
+    const auth = await requireClaimsStrict(request, env, ["mail:read"]);
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId));
+    const limit = optionalInteger(args.limit, "limit");
+    const direction = optionalString(args.direction) as "inbound" | "outbound" | undefined;
+    const status = optionalString(args.status) as
+      | "received"
+      | "normalized"
+      | "tasked"
+      | "replied"
+      | "ignored"
+      | "failed"
+      | undefined;
+
+    return {
+      mailbox: {
+        id: mailbox.id,
+        address: mailbox.address,
+      },
+      items: await listMessages(env, {
+        mailboxId: mailbox.id,
+        limit,
+        search: optionalString(args.search),
+        direction,
+        status,
+      }),
+    };
+  }
+
   if (toolName === "get_message") {
     const auth = await requireClaimsStrict(request, env, ["mail:read"]);
 
@@ -877,6 +1104,130 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
     return thread;
+  }
+
+  if (toolName === "send_email") {
+    const auth = await requireClaimsStrict(request, env, ["draft:create", "draft:send"]);
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId));
+    const agentId = requireSelfAgentId(auth);
+    const to = requireStringArray(args.to, "to");
+    const subject = requireString(args.subject, "subject");
+    const text = optionalString(args.text) ?? "";
+    const html = optionalString(args.html) ?? "";
+
+    if (!text && !html) {
+      throw new McpToolError("invalid_arguments", "text or html is required");
+    }
+
+    return await createAndSendDraftForMcp(env, {
+      tenantId: mailbox.tenant_id,
+      agentId,
+      mailboxId: mailbox.id,
+      payload: {
+        from: mailbox.address,
+        to,
+        cc: optionalStringArray(args.cc) ?? [],
+        bcc: optionalStringArray(args.bcc) ?? [],
+        subject,
+        text,
+        html,
+        inReplyTo: optionalString(args.inReplyTo),
+        references: optionalStringArray(args.references) ?? [],
+        attachments: [],
+      },
+      createdVia: "mcp:send_email",
+      idempotencyKey: optionalString(args.idempotencyKey),
+      requestFingerprint: JSON.stringify({
+        tool: "send_email",
+        mailboxId: mailbox.id,
+        to,
+        cc: optionalStringArray(args.cc) ?? [],
+        bcc: optionalStringArray(args.bcc) ?? [],
+        subject,
+        text,
+        html,
+        inReplyTo: optionalString(args.inReplyTo) ?? null,
+        references: optionalStringArray(args.references) ?? [],
+      }),
+    });
+  }
+
+  if (toolName === "reply_to_message") {
+    const auth = await requireClaimsStrict(request, env, ["mail:read", "draft:create", "draft:send"]);
+    const agentId = requireSelfAgentId(auth);
+    const messageId = requireString(args.messageId, "messageId");
+    const text = optionalString(args.text) ?? "";
+    const html = optionalString(args.html) ?? "";
+
+    if (!text && !html) {
+      throw new McpToolError("invalid_arguments", "text or html is required");
+    }
+
+    const message = await getMessage(env, messageId);
+    if (!message) {
+      throw new McpToolError("resource_message_not_found", "Message not found");
+    }
+    if (message.direction !== "inbound") {
+      throw new McpToolError("invalid_arguments", "reply_to_message only supports inbound messages");
+    }
+
+    const tenantError = enforceTenantAccess(auth, message.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+
+    const thread = message.threadId ? await getThread(env, message.threadId) : null;
+    const references = Array.from(new Set(
+      (thread?.messages ?? [])
+        .map((item) => item.internetMessageId)
+        .filter((item): item is string => Boolean(item))
+    ));
+    if (message.internetMessageId && !references.includes(message.internetMessageId)) {
+      references.push(message.internetMessageId);
+    }
+
+    const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
+      ? message.subject
+      : `Re: ${message.subject ?? ""}`.trim();
+    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+
+    const result = await createAndSendDraftForMcp(env, {
+      tenantId: message.tenantId,
+      agentId,
+      mailboxId: message.mailboxId,
+      threadId: message.threadId,
+      sourceMessageId: message.id,
+      payload: {
+        from: replyFrom,
+        to: [message.fromAddr],
+        cc: [],
+        bcc: [],
+        subject: replySubject || "Re:",
+        text,
+        html,
+        inReplyTo: message.internetMessageId,
+        references,
+        attachments: [],
+      },
+      createdVia: "mcp:reply_to_message",
+      idempotencyKey: optionalString(args.idempotencyKey),
+      requestFingerprint: JSON.stringify({
+        tool: "reply_to_message",
+        messageId,
+        text,
+        html,
+      }),
+    });
+
+    return {
+      ...result,
+      sourceMessageId: message.id,
+      threadId: message.threadId,
+    };
   }
 
   if (toolName === "create_draft") {

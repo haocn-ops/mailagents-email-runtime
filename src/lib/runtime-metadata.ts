@@ -77,6 +77,14 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     humanReviewRequired: false,
   },
   {
+    name: "list_messages",
+    description: "List messages for the mailbox bound to the current token or an explicitly authorized mailbox.",
+    requiredScopes: ["mail:read"],
+    riskLevel: "read",
+    sideEffecting: false,
+    humanReviewRequired: false,
+  },
+  {
     name: "get_message",
     description: "Fetch message metadata.",
     requiredScopes: ["mail:read"],
@@ -125,6 +133,24 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     humanReviewRequired: true,
   },
   {
+    name: "send_email",
+    description: "Create and send a mailbox-scoped outbound email in one MCP call.",
+    requiredScopes: ["draft:create", "draft:send"],
+    composite: true,
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
+  },
+  {
+    name: "reply_to_message",
+    description: "Reply to an inbound message and send the reply in one MCP call.",
+    requiredScopes: ["mail:read", "draft:create", "draft:send"],
+    composite: true,
+    riskLevel: "high_risk",
+    sideEffecting: true,
+    humanReviewRequired: true,
+  },
+  {
     name: "replay_message",
     description: "Replay message normalization or rerun agent execution.",
     requiredScopes: ["mail:replay"],
@@ -143,6 +169,16 @@ export const WORKFLOW_PACKS = [
   {
     name: "operator_manual_send",
     compositeTool: "operator_manual_send",
+    sideEffects: ["create_draft", "send_draft"],
+  },
+  {
+    name: "send_email",
+    compositeTool: "send_email",
+    sideEffects: ["create_draft", "send_draft"],
+  },
+  {
+    name: "reply_to_message",
+    compositeTool: "reply_to_message",
     sideEffects: ["create_draft", "send_draft"],
   },
   {
