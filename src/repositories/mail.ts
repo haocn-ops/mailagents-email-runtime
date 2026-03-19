@@ -100,6 +100,10 @@ interface SuppressionRow {
   created_at: string;
 }
 
+interface MailboxAddressRow {
+  address: string;
+}
+
 interface IdempotencyRow {
   operation: string;
   tenant_id: string;
@@ -633,6 +637,25 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+  const mailbox = await firstRow<MailboxAddressRow>(
+    env.D1_DB.prepare(
+      `SELECT address
+       FROM mailboxes
+       WHERE id = ?`
+    ).bind(draft.mailboxId)
+  );
+  const fromAddress = typeof draftPayload.from === "string" ? draftPayload.from.trim().toLowerCase() : "";
+  const mailboxAddress = mailbox?.address.trim().toLowerCase() ?? "";
+
+  if (!mailboxAddress) {
+    throw new Error("Mailbox not found");
+  }
+  if (!fromAddress) {
+    throw new Error("Draft from address is required");
+  }
+  if (fromAddress !== mailboxAddress) {
+    throw new Error("Draft from address must match the mailbox address");
+  }
 
   await execute(env.D1_DB.prepare(
     `INSERT INTO messages (
@@ -646,7 +669,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     draft.threadId ?? null,
     "outbound",
     "ses",
-    typeof draftPayload.from === "string" ? draftPayload.from : "",
+    fromAddress,
     Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
     typeof draftPayload.subject === "string" ? draftPayload.subject : "",
     "tasked",
