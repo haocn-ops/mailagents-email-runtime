@@ -28,11 +28,14 @@ It is intentionally lightweight:
 - `callTool()`
 - convenience helpers for:
   - `listMessages()`
+  - `getLatestInboundMessage()`
   - `sendEmail()`
   - `replyToMessage()`
   - `createDraft()`
   - `sendDraft()`
   - `replyToInboundEmail()`
+- configurable default headers and request timeouts
+- per-request overrides for `headers`, `timeoutMs`, and `signal`
 
 ## Why This Exists
 

@@ -11,6 +11,8 @@ Current scope:
 - typed models for discovery and high-value draft/send workflows
 - mailbox-first convenience helpers for common read, send, and reply flows
 - stable error-code helpers for branching on MCP failures
+- configurable default headers and request timeouts
+- per-request transport overrides for headers, timeout, and abort signals
 
 ## Status
 
@@ -57,6 +59,7 @@ Typed helpers currently cover:
 - `bindMailbox()`
 - `listAgentTasks()`
 - `listMessages()`
+- `getLatestInboundMessage()`
 - `getMessage()`
 - `getMessageContent()`
 - `getThread()`
@@ -67,6 +70,12 @@ Typed helpers currently cover:
 - `sendDraft()`
 - `replyToInboundEmail()`
 - `operatorManualSend()`
+
+Every public helper also accepts an optional final transport-options argument:
+
+- `headers` for one-off request metadata
+- `timeoutMs` to override the client default for a single call
+- `signal` to cancel a specific request
 
 Runnable repository examples:
 
@@ -94,25 +103,45 @@ import {
 const client = new MailagentsAgentClient({
   baseUrl: "https://mailagents-dev.izhenghaocn.workers.dev",
   token: process.env.MAILAGENTS_TOKEN,
+  timeoutMs: 10_000,
+  headers: {
+    "x-client-name": "mailagents-example",
+  },
 });
 
 try {
+  const abortController = new AbortController();
+  const latestInbound = await client.getLatestInboundMessage({}, {
+    signal: abortController.signal,
+    timeoutMs: 2_500,
+  });
+
   await client.sendEmail({
     to: ["user@example.com"],
     subject: "Hello from the mailbox-first helper",
     text: "Sent through the high-level helper method.",
     idempotencyKey: "send:demo:001",
+  }, {
+    headers: {
+      "x-trace-id": "send-demo-001",
+    },
   });
 
   await client.replyLatestInbound({
     text: "Thanks for the inbound message.",
     idempotencyKey: "reply:latest:001",
+  }, {
+    timeoutMs: 5_000,
   });
+
+  console.log("Latest inbound message:", latestInbound?.id ?? "none");
 } catch (error) {
   if (hasMailagentsErrorCode(error, "idempotency_conflict")) {
     console.log("Do not retry with a different logical request.");
   } else if (isRetryableMailagentsError(error)) {
     console.log("Safe to retry after a short delay.");
+  } else if (hasMailagentsErrorCode(error, "auth_missing_scope")) {
+    console.log("Prompt for broader mailbox authorization.");
   } else {
     throw error;
   }

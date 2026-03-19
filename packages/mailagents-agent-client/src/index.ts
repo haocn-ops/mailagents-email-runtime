@@ -2,6 +2,14 @@ export interface MailagentsClientOptions {
   baseUrl: string;
   token?: string;
   fetchImpl?: typeof fetch;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+export interface MailagentsRequestOptions {
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface RuntimeApiMetadata {
@@ -285,6 +293,14 @@ export interface ListMessagesResult {
   items: MessageRecord[];
 }
 
+export interface ListMessagesRequest {
+  mailboxId?: string;
+  limit?: number;
+  search?: string;
+  direction?: "inbound" | "outbound";
+  status?: "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
+}
+
 export interface DraftRecord {
   id: string;
   tenantId: string;
@@ -425,11 +441,15 @@ export class MailagentsAgentClient {
   private readonly baseUrl: string;
   private readonly token?: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly defaultHeaders: Record<string, string>;
+  private readonly timeoutMs?: number;
 
   constructor(options: MailagentsClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.defaultHeaders = { ...(options.headers ?? {}) };
+    this.timeoutMs = options.timeoutMs;
   }
 
   withToken(token: string): MailagentsAgentClient {
@@ -437,38 +457,55 @@ export class MailagentsAgentClient {
       baseUrl: this.baseUrl,
       token,
       fetchImpl: this.fetchImpl,
+      headers: this.defaultHeaders,
+      timeoutMs: this.timeoutMs,
     });
   }
 
-  async getRuntimeMetadata(): Promise<RuntimeMetadata> {
-    return this.requestJson("/v2/meta/runtime");
+  withoutToken(): MailagentsAgentClient {
+    return new MailagentsAgentClient({
+      baseUrl: this.baseUrl,
+      fetchImpl: this.fetchImpl,
+      headers: this.defaultHeaders,
+      timeoutMs: this.timeoutMs,
+    });
   }
 
-  async getCompatibilityContract(): Promise<CompatibilityContract> {
-    return this.requestJson("/v2/meta/compatibility");
+  async getRuntimeMetadata(options?: MailagentsRequestOptions): Promise<RuntimeMetadata> {
+    return this.requestJson("/v2/meta/runtime", undefined, options);
   }
 
-  async getCompatibilitySchema(): Promise<Record<string, unknown>> {
-    return this.requestJson("/v2/meta/compatibility/schema");
+  async getCompatibilityContract(options?: MailagentsRequestOptions): Promise<CompatibilityContract> {
+    return this.requestJson("/v2/meta/compatibility", undefined, options);
   }
 
-  async publicSignup(input: PublicSignupRequest): Promise<PublicSignupResult> {
+  async getCompatibilitySchema(options?: MailagentsRequestOptions): Promise<Record<string, unknown>> {
+    return this.requestJson("/v2/meta/compatibility/schema", undefined, options);
+  }
+
+  async publicSignup(input: PublicSignupRequest, options?: MailagentsRequestOptions): Promise<PublicSignupResult> {
     return this.requestJson("/public/signup", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
-    });
+    }, options);
   }
 
-  async reissueAccessToken(input: PublicTokenReissueRequest): Promise<PublicTokenReissueAccepted> {
+  async reissueAccessToken(
+    input: PublicTokenReissueRequest,
+    options?: MailagentsRequestOptions
+  ): Promise<PublicTokenReissueAccepted> {
     return this.requestJson("/public/token/reissue", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
-    });
+    }, options);
   }
 
-  async rotateAccessToken(input: RotateAccessTokenRequest = {}): Promise<RotateAccessTokenResult> {
+  async rotateAccessToken(
+    input: RotateAccessTokenRequest = {},
+    options?: MailagentsRequestOptions
+  ): Promise<RotateAccessTokenResult> {
     return this.requestJson("/v1/auth/token/rotate", {
       method: "POST",
       headers: {
@@ -476,11 +513,11 @@ export class MailagentsAgentClient {
         ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
       },
       body: JSON.stringify(input),
-    });
+    }, options);
   }
 
-  async listTools(): Promise<ToolsListResult> {
-    const payload = await this.callMcp("tools/list", {});
+  async listTools(options?: MailagentsRequestOptions): Promise<ToolsListResult> {
+    const payload = await this.callMcp("tools/list", {}, options);
     return payload.result;
   }
 
@@ -489,8 +526,8 @@ export class MailagentsAgentClient {
     name: string;
     mode: string;
     config?: Record<string, unknown>;
-  }): Promise<AgentRecord> {
-    return this.callTool<AgentRecord>("create_agent", args);
+  }, options?: MailagentsRequestOptions): Promise<AgentRecord> {
+    return this.callTool<AgentRecord>("create_agent", args, options);
   }
 
   async bindMailbox(args: {
@@ -498,44 +535,50 @@ export class MailagentsAgentClient {
     tenantId: string;
     mailboxId: string;
     role: string;
-  }): Promise<AgentMailboxBinding> {
-    return this.callTool<AgentMailboxBinding>("bind_mailbox", args);
+  }, options?: MailagentsRequestOptions): Promise<AgentMailboxBinding> {
+    return this.callTool<AgentMailboxBinding>("bind_mailbox", args, options);
   }
 
   async listAgentTasks(args: {
     agentId: string;
     status?: string;
-  }): Promise<{ items: TaskRecord[] }> {
-    return this.callTool<{ items: TaskRecord[] }>("list_agent_tasks", args);
+  }, options?: MailagentsRequestOptions): Promise<{ items: TaskRecord[] }> {
+    return this.callTool<{ items: TaskRecord[] }>("list_agent_tasks", args, options);
   }
 
-  async listMessages(args: {
-    mailboxId?: string;
-    limit?: number;
-    search?: string;
-    direction?: "inbound" | "outbound";
-    status?: "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
-  } = {}): Promise<ListMessagesResult> {
-    return this.callTool<ListMessagesResult>("list_messages", args);
+  async listMessages(args: ListMessagesRequest = {}, options?: MailagentsRequestOptions): Promise<ListMessagesResult> {
+    return this.callTool<ListMessagesResult>("list_messages", args, options);
   }
 
-  async getMessage(messageId: string): Promise<MessageRecord> {
-    return this.callTool<MessageRecord>("get_message", { messageId });
+  async getLatestInboundMessage(
+    args: Omit<ListMessagesRequest, "direction" | "limit"> = {},
+    options?: MailagentsRequestOptions
+  ): Promise<MessageRecord | null> {
+    const messages = await this.listMessages({
+      ...args,
+      limit: 1,
+      direction: "inbound",
+    }, options);
+    return messages.items[0] ?? null;
   }
 
-  async getMessageContent(messageId: string): Promise<MessageContentResult> {
-    return this.callTool<MessageContentResult>("get_message_content", { messageId });
+  async getMessage(messageId: string, options?: MailagentsRequestOptions): Promise<MessageRecord> {
+    return this.callTool<MessageRecord>("get_message", { messageId }, options);
   }
 
-  async getThread(threadId: string): Promise<ThreadResult> {
-    return this.callTool<ThreadResult>("get_thread", { threadId });
+  async getMessageContent(messageId: string, options?: MailagentsRequestOptions): Promise<MessageContentResult> {
+    return this.callTool<MessageContentResult>("get_message_content", { messageId }, options);
   }
 
-  async callTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
+  async getThread(threadId: string, options?: MailagentsRequestOptions): Promise<ThreadResult> {
+    return this.callTool<ThreadResult>("get_thread", { threadId }, options);
+  }
+
+  async callTool<T>(name: string, args: Record<string, unknown>, options?: MailagentsRequestOptions): Promise<T> {
     const payload = await this.callMcp("tools/call", {
       name,
       arguments: args,
-    });
+    }, options);
 
     if (payload.result && typeof payload.result === "object" && "isError" in payload.result && payload.result.isError) {
       const toolError = payload.result as McpToolErrorResult;
@@ -556,12 +599,16 @@ export class MailagentsAgentClient {
     to: string[];
     subject: string;
     text: string;
-  }): Promise<CreateDraftResult> {
-    return this.callTool<CreateDraftResult>("create_draft", args);
+  }, options?: MailagentsRequestOptions): Promise<CreateDraftResult> {
+    return this.callTool<CreateDraftResult>("create_draft", args, options);
   }
 
-  async sendDraft(draftId: string, idempotencyKey: string): Promise<SendDraftResult> {
-    return this.callTool<SendDraftResult>("send_draft", { draftId, idempotencyKey });
+  async sendDraft(
+    draftId: string,
+    idempotencyKey: string,
+    options?: MailagentsRequestOptions
+  ): Promise<SendDraftResult> {
+    return this.callTool<SendDraftResult>("send_draft", { draftId, idempotencyKey }, options);
   }
 
   async sendEmail(args: {
@@ -575,8 +622,8 @@ export class MailagentsAgentClient {
     inReplyTo?: string;
     references?: string[];
     idempotencyKey?: string;
-  }): Promise<HighLevelSendResult> {
-    return this.callTool<HighLevelSendResult>("send_email", args);
+  }, options?: MailagentsRequestOptions): Promise<HighLevelSendResult> {
+    return this.callTool<HighLevelSendResult>("send_email", args, options);
   }
 
   async replyToMessage(args: {
@@ -584,8 +631,8 @@ export class MailagentsAgentClient {
     text?: string;
     html?: string;
     idempotencyKey?: string;
-  }): Promise<HighLevelSendResult> {
-    return this.callTool<HighLevelSendResult>("reply_to_message", args);
+  }, options?: MailagentsRequestOptions): Promise<HighLevelSendResult> {
+    return this.callTool<HighLevelSendResult>("reply_to_message", args, options);
   }
 
   async replyToInboundEmail(args: {
@@ -594,8 +641,8 @@ export class MailagentsAgentClient {
     replyText: string;
     send?: boolean;
     idempotencyKey?: string;
-  }): Promise<ReplyWorkflowResult> {
-    return this.callTool<ReplyWorkflowResult>("reply_to_inbound_email", args);
+  }, options?: MailagentsRequestOptions): Promise<ReplyWorkflowResult> {
+    return this.callTool<ReplyWorkflowResult>("reply_to_inbound_email", args, options);
   }
 
   async operatorManualSend(args: {
@@ -608,17 +655,17 @@ export class MailagentsAgentClient {
     text: string;
     send?: boolean;
     idempotencyKey?: string;
-  }): Promise<OperatorManualSendResult> {
-    return this.callTool<OperatorManualSendResult>("operator_manual_send", args);
+  }, options?: MailagentsRequestOptions): Promise<OperatorManualSendResult> {
+    return this.callTool<OperatorManualSendResult>("operator_manual_send", args, options);
   }
 
-  async listRecommendedMailboxTools(): Promise<McpToolDefinition[]> {
-    const result = await this.listTools();
+  async listRecommendedMailboxTools(options?: MailagentsRequestOptions): Promise<McpToolDefinition[]> {
+    const result = await this.listTools(options);
     return result.tools.filter((tool) => tool.annotations.recommendedForMailboxAgents);
   }
 
-  async getMailboxWorkflowSurface(): Promise<MailboxWorkflowSurface> {
-    const recommended = await this.listRecommendedMailboxTools();
+  async getMailboxWorkflowSurface(options?: MailagentsRequestOptions): Promise<MailboxWorkflowSurface> {
+    const recommended = await this.listRecommendedMailboxTools(options);
     return {
       recommended,
       reads: recommended.filter((tool) => tool.annotations.category === "mail_read"),
@@ -631,9 +678,8 @@ export class MailagentsAgentClient {
     text?: string;
     html?: string;
     idempotencyKey?: string;
-  }): Promise<HighLevelSendResult> {
-    const messages = await this.listMessages({ limit: 1, direction: "inbound" });
-    const latest = messages.items[0];
+  }, options?: MailagentsRequestOptions): Promise<HighLevelSendResult> {
+    const latest = await this.getLatestInboundMessage({}, options);
     if (!latest?.id) {
       throw new MailagentsClientError("No inbound messages available to reply to");
     }
@@ -643,7 +689,7 @@ export class MailagentsAgentClient {
       text: args.text,
       html: args.html,
       idempotencyKey: args.idempotencyKey,
-    });
+    }, options);
   }
 
   static async bootstrapMailboxAgent(
@@ -662,30 +708,36 @@ export class MailagentsAgentClient {
     };
   }
 
-  private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-        ...((init?.headers as Record<string, string> | undefined) ?? {}),
-      },
-    });
-
-    const payload = await response.json().catch(() => null);
+  private async requestJson<T>(path: string, init?: RequestInit, options?: MailagentsRequestOptions): Promise<T> {
+    const response = await this.fetchWithDefaults(path, init, options);
+    const payload = await this.readResponseBody(response);
     if (!response.ok) {
-      throw new MailagentsClientError(`HTTP request failed: ${response.status}`, {
+      const details = this.extractErrorDetails(payload.json);
+      throw new MailagentsClientError(
+        details.message ?? payload.text ?? `HTTP request failed: ${response.status}`,
+        {
+          status: response.status,
+          errorCode: details.errorCode,
+        }
+      );
+    }
+    if (payload.json === undefined) {
+      throw new MailagentsClientError("HTTP request returned a non-JSON response", {
         status: response.status,
       });
     }
-    return payload as T;
+    return payload.json as T;
   }
 
-  private async callMcp(method: string, params: Record<string, unknown>): Promise<JsonRpcSuccess<any> & JsonRpcFailure> {
-    const response = await this.fetchImpl(`${this.baseUrl}/mcp`, {
+  private async callMcp(
+    method: string,
+    params: Record<string, unknown>,
+    options?: MailagentsRequestOptions
+  ): Promise<JsonRpcSuccess<any> & JsonRpcFailure> {
+    const response = await this.fetchWithDefaults("/mcp", {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -693,21 +745,128 @@ export class MailagentsAgentClient {
         method,
         params,
       }),
-    });
+    }, options);
 
-    const payload = (await response.json()) as JsonRpcSuccess<any> & JsonRpcFailure;
+    const body = await this.readResponseBody(response);
+    const payload = body.json as (JsonRpcSuccess<any> & JsonRpcFailure) | undefined;
     if (!response.ok) {
-      throw new MailagentsClientError(`MCP request failed: ${response.status}`, {
+      const details = this.extractErrorDetails(payload);
+      throw new MailagentsClientError(
+        details.message ?? body.text ?? `MCP request failed: ${response.status}`,
+        {
+          status: response.status,
+          errorCode: details.errorCode,
+        }
+      );
+    }
+    if (!payload) {
+      throw new MailagentsClientError("MCP request returned a non-JSON response", {
         status: response.status,
       });
     }
     if (payload.error) {
+      const details = this.extractErrorDetails(payload);
       throw new MailagentsClientError(payload.error.message, {
-        errorCode: typeof payload.error.data === "object" && payload.error.data && "errorCode" in payload.error.data
-          ? String((payload.error.data as { errorCode?: unknown }).errorCode ?? "")
-          : undefined,
+        errorCode: details.errorCode,
       });
     }
     return payload;
+  }
+
+  private async fetchWithDefaults(
+    path: string,
+    init?: RequestInit,
+    options?: MailagentsRequestOptions
+  ): Promise<Response> {
+    const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
+    const signal = options?.signal ?? init?.signal;
+    const controller = timeoutMs && !signal ? new AbortController() : undefined;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+
+    try {
+      return await this.fetchImpl(`${this.baseUrl}${path}`, {
+        ...init,
+        signal: controller?.signal ?? signal,
+        headers: {
+          ...this.defaultHeaders,
+          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+          ...((init?.headers as Record<string, string> | undefined) ?? {}),
+          ...(options?.headers ?? {}),
+        },
+      });
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new MailagentsClientError(`Request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  private async readResponseBody(response: Response): Promise<{ json?: unknown; text?: string }> {
+    const text = await response.text().catch(() => "");
+    if (!text) {
+      return {};
+    }
+
+    try {
+      return {
+        json: JSON.parse(text),
+        text,
+      };
+    } catch {
+      return { text };
+    }
+  }
+
+  private extractErrorDetails(payload: unknown): { message?: string; errorCode?: string } {
+    if (!payload || typeof payload !== "object") {
+      return {};
+    }
+
+    const error = "error" in payload && payload.error && typeof payload.error === "object"
+      ? payload.error as {
+        message?: unknown;
+        code?: unknown;
+        data?: unknown;
+      }
+      : undefined;
+
+    const result = "result" in payload && payload.result && typeof payload.result === "object"
+      ? payload.result as {
+        structuredContent?: {
+          error?: {
+            code?: unknown;
+            message?: unknown;
+          };
+        };
+      }
+      : undefined;
+
+    const structuredError = result?.structuredContent?.error;
+    const dataErrorCode = error?.data && typeof error.data === "object" && "errorCode" in error.data
+      ? (error.data as { errorCode?: unknown }).errorCode
+      : undefined;
+
+    const message = typeof structuredError?.message === "string"
+      ? structuredError.message
+      : typeof error?.message === "string"
+        ? error.message
+        : "message" in payload && typeof (payload as { message?: unknown }).message === "string"
+          ? (payload as { message: string }).message
+          : undefined;
+
+    const errorCode = typeof structuredError?.code === "string"
+      ? structuredError.code
+      : typeof dataErrorCode === "string"
+        ? dataErrorCode
+        : typeof error?.code === "string"
+          ? error.code
+          : undefined;
+
+    return { message, errorCode };
   }
 }
