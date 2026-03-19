@@ -879,11 +879,17 @@ export class MailagentsAgentClient {
     agentId: string;
     tenantId: string;
     mailboxId: string;
+    threadId?: string;
+    sourceMessageId?: string;
     from: string;
     to: string[];
+    cc?: string[];
+    bcc?: string[];
     subject: string;
     text?: string;
     html?: string;
+    inReplyTo?: string;
+    references?: string[];
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<OperatorManualSendResult> {
