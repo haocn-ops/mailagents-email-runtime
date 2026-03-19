@@ -33,6 +33,13 @@ Default scopes:
 - `draft:read`
 - `draft:send`
 
+These default scopes are enough for:
+
+- mailbox self routes such as `GET /v1/mailboxes/self/messages`
+- high-level send and reply routes such as `POST /v1/messages/send`
+- MCP mailbox tools such as `list_messages`, `send_email`, and
+  `reply_to_message`
+
 The default expiration can be controlled with
 `SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the signup API token
 defaults to 30 days.
@@ -125,6 +132,11 @@ Reply-capable mail agent:
 - `draft:read`
 - `draft:send`
 
+These scopes cover both:
+
+- the high-level mailbox send and reply surface
+- the lower-level explicit draft lifecycle when needed
+
 Provisioning agent:
 
 - `agent:create`
@@ -137,7 +149,7 @@ Recovery operator or recovery automation:
 - `mail:replay`
 
 Grant `mail:replay` sparingly. Replay has higher duplication risk than normal
-read or draft flows.
+read, send, or draft flows.
 
 ## Best Practices
 

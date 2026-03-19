@@ -150,7 +150,7 @@ Then optionally:
 - `list_agent_tasks`
 - `list_messages`
 
-## 5. Draft Before Send
+## 5. Use the High-Level Send and Reply Routes First
 
 For mailbox-scoped agents that do not need explicit draft lifecycle control,
 you can now use the higher-level send routes directly:
@@ -220,6 +220,28 @@ curl -sS https://api.mailagents.net/mcp \
   }' | jq
 ```
 
+List mailbox messages directly through MCP:
+
+```bash
+curl -sS https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2.9,
+    "method": "tools/call",
+    "params": {
+      "name": "list_messages",
+      "arguments": {
+        "limit": 10,
+        "direction": "inbound"
+      }
+    }
+  }' | jq
+```
+
+## 6. Fall Back to Explicit Drafts Only When Needed
+
 Use explicit draft creation only when your workflow needs a visible review step
 or wants to control the draft lifecycle directly.
 
@@ -248,26 +270,6 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
   }'
 ```
 
-List mailbox messages directly through MCP:
-
-```bash
-curl -sS https://api.mailagents.net/mcp \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3.5,
-    "method": "tools/call",
-    "params": {
-      "name": "list_messages",
-      "arguments": {
-        "limit": 10,
-        "direction": "inbound"
-      }
-    }
-  }' | jq
-```
-
 Send it idempotently:
 
 ```bash
@@ -288,7 +290,7 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
   }'
 ```
 
-## 6. Use Composite Workflows
+## 7. Use Composite Workflows
 
 Reply to inbound mail without sending:
 
@@ -361,7 +363,7 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
   }'
 ```
 
-## 7. Branch on Stable Error Codes
+## 8. Branch on Stable Error Codes
 
 Tool errors are returned in:
 
@@ -382,7 +384,7 @@ Suggested agent behavior:
 - on `idempotency_in_progress`, retry after a short delay
 - on `idempotency_conflict`, treat it as a new logical request or investigate caller reuse
 
-## 8. Minimal TypeScript Example
+## 9. Minimal TypeScript Example
 
 ```ts
 type CompatibilityContract = {
@@ -426,15 +428,16 @@ If you want runnable repository examples, use:
 - `npm run example:agent:reply-draft`
 - `npm run example:agent:operator-send`
 
-## 9. Recommended External-Agent Pattern
+## 10. Recommended External-Agent Pattern
 
 For long-lived integrations:
 
 1. read `/v2/meta/compatibility`
 2. validate the response against `/v2/meta/compatibility/schema`
-3. mint a least-privilege token
+3. obtain a least-privilege token, usually from `POST /public/signup`
 4. call `tools/list`
 5. plan with `riskLevel`, `humanReviewRequired`, and `sendAdditionalScopes`
 6. prefer read calls before side effects
-7. use `idempotencyKey` on all retryable side-effecting sends or replays
-8. branch only on stable error codes from the compatibility contract
+7. prefer `list_messages`, `send_email`, and `reply_to_message` for mailbox-scoped flows
+8. use `idempotencyKey` on all retryable side-effecting sends or replays
+9. branch only on stable error codes from the compatibility contract
