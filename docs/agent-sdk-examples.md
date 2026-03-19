@@ -52,14 +52,14 @@ If that token expires later, call `POST /public/token/reissue`. The runtime
 will only email the refreshed token to the original `operatorEmail` from signup;
 it will not return the new token inline to the caller.
 
-If the current self-serve token is still valid and the agent wants to rotate it
+If the current signup API token is still valid and the agent wants to rotate it
 without emailing the operator, call `POST /v1/auth/token/rotate`. That
 authenticated route can return the rotated token inline, deliver it back to the
 mailbox itself, or do both.
 
-Use `POST /v1/auth/tokens` when you need a broader operator token, a non-self-serve
-workflow, or an environment where the mailbox was provisioned outside the public
-signup path.
+Use `POST /v1/auth/tokens` when you need a broader operator token, an
+operator-provisioned workflow, or an environment where the mailbox was created
+outside the signup API path.
 
 Admin minting requires `x-admin-secret` and admin routes enabled in the environment.
 

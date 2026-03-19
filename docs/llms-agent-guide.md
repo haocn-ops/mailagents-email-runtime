@@ -89,11 +89,11 @@ Default integration auth is a signed bearer token.
 For mailboxes created through the signup API, the first bearer token may come
 directly from `POST /public/signup` instead of a separate admin mint flow.
 
-If that self-serve token later expires, recovery should use
+If that signup API token later expires, recovery should use
 `POST /public/token/reissue`. That endpoint only emails a refreshed token to
 the original `operatorEmail` from signup and does not return the token inline.
 
-If the self-serve token is still valid and the agent wants to rotate it without
+If the signup API token is still valid and the agent wants to rotate it without
 emailing the operator, use `POST /v1/auth/token/rotate`. That authenticated
 route can return the rotated token inline, deliver it back to the mailbox
 itself, or both.

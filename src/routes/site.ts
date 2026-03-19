@@ -1063,7 +1063,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     \"from\": \"$MAILBOX_ADDRESS\",
     \"to\": [\"recipient@example.com\"],
     \"subject\": \"Hello from Mailagents\",
-    \"text\": \"This message was created with the self-serve signup token.\"
+    \"text\": \"This message was created with the signup API token.\"
   }"</code></pre>
 
 <p>The draft response returns a <code>draftId</code>.</p>
@@ -1147,9 +1147,9 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 
 <ul>
   <li>Mailbox provisioning is backed by the production runtime, not a demo-only path.</li>
-  <li>Self-serve signup returns a mailbox-scoped token when API signing is configured for the environment.</li>
-  <li>Expired self-serve tokens can be reissued without the old token, but refreshed credentials are only sent to the original operator inbox.</li>
-  <li>Still-valid self-serve tokens can be rotated without contacting the operator by using the authenticated rotate route.</li>
+  <li>The signup API returns a mailbox-scoped token when API signing is configured for the environment.</li>
+  <li>Expired signup API tokens can be reissued without the old token, but refreshed credentials are only sent to the original operator inbox.</li>
+  <li>Still-valid signup API tokens can be rotated without contacting the operator by using the authenticated rotate route.</li>
   <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
   <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
   <li>Operator and compliance contacts are published on this site for review.</li>

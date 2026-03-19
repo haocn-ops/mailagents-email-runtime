@@ -102,7 +102,7 @@ For production onboarding through the signup API:
    to send the refreshed token back to the mailbox itself, or `delivery:
    "both"` for both channels
 8. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
-   non-self-serve provisioning
+   operator-managed provisioning
 
 `POST /public/token/reissue` is intentionally recovery-only:
 

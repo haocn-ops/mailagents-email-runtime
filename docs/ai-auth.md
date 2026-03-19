@@ -18,7 +18,7 @@ For AI agents, bearer tokens are the default integration method.
 The signup API at `POST /public/signup` can issue a default bearer token for
 the newly created mailbox when `API_SIGNING_SECRET` is configured.
 
-The default self-serve token is:
+The default signup API token is:
 
 - mailbox-scoped to the new mailbox
 - agent-scoped to the default agent created during signup
@@ -34,10 +34,10 @@ Default scopes:
 - `draft:send`
 
 The default expiration can be controlled with
-`SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the self-serve token
+`SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the signup API token
 defaults to 30 days.
 
-If the self-serve token expires, use `POST /public/token/reissue`.
+If the signup API token expires, use `POST /public/token/reissue`.
 
 Important behavior:
 
@@ -47,7 +47,7 @@ Important behavior:
 - the refreshed token is never returned inline to the caller
 - mailbox cooldowns and source-IP rate limits apply to reduce abuse
 
-If the self-serve token is still valid and the agent wants to rotate
+If the signup API token is still valid and the agent wants to rotate
 proactively without emailing the operator, use `POST /v1/auth/token/rotate`.
 
 Important behavior:

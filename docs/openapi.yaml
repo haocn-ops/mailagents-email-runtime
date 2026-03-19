@@ -21,14 +21,14 @@ paths:
   /public/signup:
     get:
       tags: [Auth]
-      summary: Method not allowed for the self-serve signup API
+      summary: Method not allowed for the signup API
       security: []
       responses:
         '405':
           description: Use POST with application/json
     head:
       tags: [Auth]
-      summary: Method not allowed for the self-serve signup API
+      summary: Method not allowed for the signup API
       security: []
       responses:
         '405':
@@ -60,7 +60,7 @@ paths:
   /public/token/reissue:
     post:
       tags: [Auth]
-      summary: Reissue a self-serve mailbox access token by email
+      summary: Reissue a signup API mailbox access token by email
       operationId: publicTokenReissue
       security: []
       requestBody:
@@ -1024,7 +1024,7 @@ components:
           type: string
         accessToken:
           type: string
-          description: Mailbox-scoped bearer token issued during self-serve signup when API signing is configured.
+          description: Mailbox-scoped bearer token issued during signup API provisioning when API signing is configured.
         accessTokenExpiresAt:
           type: string
           format: date-time
