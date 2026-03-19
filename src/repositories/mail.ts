@@ -1100,9 +1100,13 @@ export async function insertAttachments(env: Env, input: {
     sha256?: string;
   }>;
 }): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM attachments WHERE message_id = ?`
+  ).bind(input.messageId));
+
   for (const attachment of input.attachments) {
     await execute(env.D1_DB.prepare(
-      `INSERT OR IGNORE INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
+      `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       attachment.id,
