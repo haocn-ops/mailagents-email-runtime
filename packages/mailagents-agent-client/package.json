@@ -2,7 +2,7 @@
   "name": "@mailagents/agent-client",
   "version": "0.1.0",
   "type": "module",
-  "description": "Lightweight Mailagents agent client for runtime discovery and MCP tool calls.",
+  "description": "Lightweight Mailagents agent client for runtime discovery, mailbox-first HTTP flows, and MCP tool calls.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

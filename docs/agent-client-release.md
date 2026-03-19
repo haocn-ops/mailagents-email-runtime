@@ -18,7 +18,9 @@ Current package skeleton:
 - workspace-aware root scripts available
 - package-local `build` and `check` scripts available
 - package-local dry-run pack script available
-- typed models added for discovery and high-value draft/send flows
+- typed models added for discovery and high-value read/draft/send flows
+- mailbox self-route helpers added for mailbox-first integrations
+- high-level HTTP send/reply helpers added for mailbox-first workflows
 - stable error-code helpers added for MCP branching
 - package-local changelog added
 - package is configured for publish dry-run validation
@@ -66,6 +68,10 @@ Then verify:
   - `/v2/meta/runtime`
   - `/v2/meta/compatibility`
   - `/v2/meta/compatibility/schema`
+  - `GET /v1/mailboxes/self`
+  - `GET /v1/mailboxes/self/messages`
+  - `POST /v1/messages/send`
+  - `POST /v1/messages/{messageId}/reply`
   - MCP `tools/list`
   - at least one MCP `tools/call` happy path
 
@@ -86,6 +92,8 @@ Keep the first published version small:
 - runtime discovery
 - compatibility contract lookup
 - compatibility schema lookup
+- mailbox self-route reads
+- high-level HTTP send/reply helpers
 - MCP `tools/list`
 - generic MCP `callTool`
 - typed discovery models
@@ -96,7 +104,6 @@ Avoid in v1:
 
 - trying to type every runtime object
 - code generation
-- auth token minting helpers tied to admin secrets
 - opinionated retry loops
 
 ## Versioning Guidance

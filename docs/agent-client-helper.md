@@ -12,6 +12,7 @@ It is intentionally lightweight:
 - no generated types
 - no build step required inside this repository
 - just a small wrapper around `fetch`
+- repository helper now re-exports the package source to keep one implementation path
 
 ## What It Covers
 
@@ -20,18 +21,28 @@ It is intentionally lightweight:
 - `getCompatibilitySchema()`
 - `publicSignup()`
 - `reissueAccessToken()`
+- `createAccessToken()`
 - `rotateAccessToken()`
+- `rotateToken()`
+- `getSelfMailbox()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
 - `getMailboxWorkflowSurface()`
 - `replyLatestInbound()`
 - `callTool()`
 - convenience helpers for:
+  - `listTasks()`
   - `listMessages()`
+  - `getMessage()`
+  - `getMessageContent()`
+  - `getThread()`
+  - `sendMessage()`
   - `sendEmail()`
   - `replyToMessage()`
   - `createDraft()`
+  - `getDraft()`
   - `sendDraft()`
+  - `replayMessage()`
   - `replyToInboundEmail()`
 
 ## Why This Exists
@@ -56,20 +67,22 @@ const client = new MailagentsAgentClient({
   token: process.env.MAILAGENTS_TOKEN,
 });
 
+const mailbox = await client.getSelfMailbox();
 const contract = await client.getCompatibilityContract();
-const tools = await client.listTools();
-const recommended = await client.listRecommendedMailboxTools();
+const tasks = await client.listTasks();
+const messages = await client.listMessages({ limit: 10, direction: "inbound" });
 
-console.log(contract, tools, recommended);
+console.log(mailbox, contract, tasks, messages);
 ```
 
 For mailbox-scoped agents, the default helper path is:
 
 1. `publicSignup()`
-2. `getMailboxWorkflowSurface()`
-3. `listMessages()`
-4. `sendEmail()`
-5. `replyLatestInbound()` or `replyToMessage()`
+2. `getSelfMailbox()`
+3. `listTasks()` or `getMailboxWorkflowSurface()`
+4. `listMessages()`
+5. `sendMessage()` or `sendEmail()`
+6. `replyLatestInbound()` or `replyToMessage()`
 
 Use `createDraft()` and `sendDraft()` only when the workflow needs explicit
 draft lifecycle control.
@@ -101,7 +114,7 @@ Package skeleton:
 If this helper proves useful, the next natural evolution is:
 
 - split types into a dedicated package
-- add typed result models for common MCP tools
+- add typed result models for more runtime objects
 - publish a small npm client for external integrators
 
 For the release-oriented next step, see

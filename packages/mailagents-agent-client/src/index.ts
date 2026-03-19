@@ -221,12 +221,31 @@ export interface MailboxWorkflowSurface {
   replies: McpToolDefinition[];
 }
 
+export interface CreateAccessTokenRequest {
+  sub: string;
+  tenantId: string;
+  agentId?: string;
+  scopes: string[];
+  mailboxIds?: string[];
+  expiresInSeconds?: number;
+}
+
+export interface CreateAccessTokenResult {
+  token: string;
+  expiresAt: string;
+}
+
 export interface AgentRecord {
   id: string;
   tenantId: string;
   name: string;
   status?: string;
   mode: string;
+  slug?: string;
+  description?: string;
+  config?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface AgentMailboxBinding {
@@ -234,54 +253,89 @@ export interface AgentMailboxBinding {
   tenantId: string;
   mailboxId: string;
   role: string;
+  status?: string;
+  createdAt?: string;
+}
+
+export type TaskStatus = "queued" | "running" | "done" | "needs_review" | "failed";
+export type DraftStatus = "draft" | "approved" | "queued" | "sent" | "cancelled" | "failed";
+export type MessageDirection = "inbound" | "outbound";
+export type MessageStatus = "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
+export type OutboundJobStatus = "queued" | "sending" | "sent" | "retry" | "failed";
+
+export interface SelfMailboxRecord {
+  id: string;
+  tenantId: string;
+  address: string;
+  status: string;
+  createdAt: string;
+  agentId?: string;
 }
 
 export interface TaskRecord {
   id: string;
-  agentId: string;
   tenantId: string;
-  status: string;
-  title?: string;
+  mailboxId: string;
+  sourceMessageId: string;
+  taskType: string;
+  priority: number;
+  status: TaskStatus;
+  assignedAgent?: string;
+  resultR2Key?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface MessageRecord {
   id: string;
-  tenantId?: string;
-  mailboxId?: string;
+  tenantId: string;
+  mailboxId: string;
   threadId: string | null;
-  direction?: string;
+  direction: MessageDirection;
+  provider?: "cloudflare" | "ses";
+  internetMessageId?: string;
+  providerMessageId?: string;
+  fromAddr?: string;
+  toAddr?: string;
   subject?: string;
-  status?: string;
+  snippet?: string;
+  status?: MessageStatus;
+  rawR2Key?: string;
+  normalizedR2Key?: string;
+  receivedAt?: string;
+  sentAt?: string;
+  createdAt?: string;
+}
+
+export interface MessageAttachment {
+  id: string;
+  filename?: string;
+  contentType?: string;
+  sizeBytes: number;
+  downloadUrl?: string;
 }
 
 export interface MessageContentResult {
-  message: MessageRecord;
-  normalized?: {
-    text?: string;
-    html?: string;
-    subject?: string;
-    from?: string;
-    to?: string[];
-    cc?: string[];
-    attachments?: Array<{
-      filename?: string;
-      contentType?: string;
-      size?: number;
-    }>;
-  } | null;
+  text: string;
+  html?: string;
+  attachments: MessageAttachment[];
 }
 
+export interface SelfMailboxMessageContent extends MessageContentResult {}
+
 export interface ThreadResult {
-  thread: {
-    id: string;
-    tenantId?: string;
-    mailboxId?: string;
-    subject?: string;
-  };
-  messages?: MessageRecord[];
+  id: string;
+  mailboxId: string;
+  subjectNorm?: string;
+  status?: string;
+  messages: MessageRecord[];
 }
 
 export interface ListMessagesResult {
+  mailbox?: {
+    id: string;
+    address: string;
+  };
   items: MessageRecord[];
 }
 
@@ -290,8 +344,14 @@ export interface DraftRecord {
   tenantId: string;
   agentId: string;
   mailboxId: string;
-  status: string;
+  threadId?: string;
+  sourceMessageId?: string;
+  createdVia?: string;
+  status: DraftStatus;
+  draftR2Key?: string;
   subject?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CreateDraftResult extends DraftRecord {}
@@ -299,15 +359,69 @@ export interface CreateDraftResult extends DraftRecord {}
 export interface SendDraftResult {
   draftId: string;
   outboundJobId: string;
-  status: string;
+  status: OutboundJobStatus;
 }
 
-export interface HighLevelSendResult {
-  accepted: true;
-  draftId: string;
+export interface DraftAttachment {
+  filename: string;
+  contentType: string;
+  r2Key: string;
+}
+
+export interface CreateDraftRequest {
+  agentId: string;
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+  from: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  text?: string;
+  html?: string;
+  inReplyTo?: string;
+  references?: string[];
+  attachments?: DraftAttachment[];
+}
+
+export interface SendMessageRequest {
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  text?: string;
+  html?: string;
+  inReplyTo?: string;
+  references?: string[];
+  attachments?: DraftAttachment[];
+  idempotencyKey?: string;
+}
+
+export interface CreateAndSendAccepted {
+  draft: DraftRecord;
   outboundJobId: string;
-  status: string;
-  createdVia?: string;
+  status: OutboundJobStatus;
+}
+
+export interface HighLevelSendResult extends CreateAndSendAccepted {}
+
+export interface ReplyAccepted extends CreateAndSendAccepted {
+  sourceMessageId?: string;
+  threadId?: string | null;
+}
+
+export interface ReplayMessageRequest {
+  mode: "normalize" | "rerun_agent";
+  agentId?: string;
+  idempotencyKey?: string;
+}
+
+export interface ReplayAccepted {
+  messageId: string;
+  mode: "normalize" | "rerun_agent";
+  status: "accepted";
 }
 
 export interface ReplyWorkflowResult {
@@ -421,6 +535,22 @@ export function isRetryableMailagentsError(error: unknown): boolean {
     hasMailagentsErrorCode(error, "tool_internal_error");
 }
 
+function withQuery(
+  path: string,
+  query: Record<string, string | number | undefined>
+): string {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined) {
+      continue;
+    }
+    searchParams.set(key, String(value));
+  }
+
+  const search = searchParams.toString();
+  return search ? `${path}?${search}` : path;
+}
+
 export class MailagentsAgentClient {
   private readonly baseUrl: string;
   private readonly token?: string;
@@ -468,6 +598,20 @@ export class MailagentsAgentClient {
     });
   }
 
+  async createAccessToken(
+    input: CreateAccessTokenRequest,
+    options: { adminSecret: string }
+  ): Promise<CreateAccessTokenResult> {
+    return this.requestJson("/v1/auth/tokens", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-admin-secret": options.adminSecret,
+      },
+      body: JSON.stringify(input),
+    });
+  }
+
   async rotateAccessToken(input: RotateAccessTokenRequest = {}): Promise<RotateAccessTokenResult> {
     return this.requestJson("/v1/auth/token/rotate", {
       method: "POST",
@@ -479,56 +623,124 @@ export class MailagentsAgentClient {
     });
   }
 
+  async rotateToken(input: RotateAccessTokenRequest = {}): Promise<RotateAccessTokenResult> {
+    return this.rotateAccessToken(input);
+  }
+
   async listTools(): Promise<ToolsListResult> {
     const payload = await this.callMcp("tools/list", {});
     return payload.result;
+  }
+
+  async getSelfMailbox(): Promise<SelfMailboxRecord> {
+    return this.requestJson("/v1/mailboxes/self");
   }
 
   async createAgent(args: {
     tenantId: string;
     name: string;
     mode: string;
+    slug?: string;
+    description?: string;
     config?: Record<string, unknown>;
   }): Promise<AgentRecord> {
-    return this.callTool<AgentRecord>("create_agent", args);
+    return this.requestJson("/v1/agents", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
   }
 
   async bindMailbox(args: {
     agentId: string;
     tenantId: string;
     mailboxId: string;
-    role: string;
+    role: "primary" | "shared" | "send_only" | "receive_only";
   }): Promise<AgentMailboxBinding> {
-    return this.callTool<AgentMailboxBinding>("bind_mailbox", args);
+    return this.requestJson(`/v1/agents/${encodeURIComponent(args.agentId)}/mailboxes`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        tenantId: args.tenantId,
+        mailboxId: args.mailboxId,
+        role: args.role,
+      }),
+    });
   }
 
   async listAgentTasks(args: {
     agentId: string;
-    status?: string;
+    status?: TaskStatus;
   }): Promise<{ items: TaskRecord[] }> {
-    return this.callTool<{ items: TaskRecord[] }>("list_agent_tasks", args);
+    return this.requestJson(withQuery(`/v1/agents/${encodeURIComponent(args.agentId)}/tasks`, {
+      status: args.status,
+    }));
+  }
+
+  async listTasks(args: {
+    status?: TaskStatus;
+  } = {}): Promise<{ items: TaskRecord[] }> {
+    return this.listSelfMailboxTasks(args);
+  }
+
+  async listSelfMailboxTasks(args: {
+    status?: TaskStatus;
+  } = {}): Promise<{ items: TaskRecord[] }> {
+    return this.requestJson(withQuery("/v1/mailboxes/self/tasks", {
+      status: args.status,
+    }));
+  }
+
+  async listSelfMailboxMessages(args: {
+    limit?: number;
+    search?: string;
+    direction?: MessageDirection;
+    status?: MessageStatus;
+  } = {}): Promise<ListMessagesResult> {
+    return this.requestJson(withQuery("/v1/mailboxes/self/messages", {
+      limit: args.limit,
+      search: args.search,
+      direction: args.direction,
+      status: args.status,
+    }));
+  }
+
+  async getSelfMailboxMessage(messageId: string): Promise<MessageRecord> {
+    return this.requestJson(`/v1/mailboxes/self/messages/${encodeURIComponent(messageId)}`);
+  }
+
+  async getSelfMailboxMessageContent(messageId: string): Promise<SelfMailboxMessageContent> {
+    return this.requestJson(`/v1/mailboxes/self/messages/${encodeURIComponent(messageId)}/content`);
   }
 
   async listMessages(args: {
     mailboxId?: string;
     limit?: number;
     search?: string;
-    direction?: "inbound" | "outbound";
-    status?: "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
+    direction?: MessageDirection;
+    status?: MessageStatus;
   } = {}): Promise<ListMessagesResult> {
+    if (!args.mailboxId) {
+      return this.listSelfMailboxMessages(args);
+    }
+
     return this.callTool<ListMessagesResult>("list_messages", args);
   }
 
   async getMessage(messageId: string): Promise<MessageRecord> {
-    return this.callTool<MessageRecord>("get_message", { messageId });
+    return this.requestJson(`/v1/messages/${encodeURIComponent(messageId)}`);
   }
 
   async getMessageContent(messageId: string): Promise<MessageContentResult> {
-    return this.callTool<MessageContentResult>("get_message_content", { messageId });
+    return this.requestJson(`/v1/messages/${encodeURIComponent(messageId)}/content`);
   }
 
   async getThread(threadId: string): Promise<ThreadResult> {
-    return this.callTool<ThreadResult>("get_thread", { threadId });
+    return this.requestJson(`/v1/threads/${encodeURIComponent(threadId)}`);
   }
 
   async callTool<T>(name: string, args: Record<string, unknown>): Promise<T> {
@@ -548,20 +760,63 @@ export class MailagentsAgentClient {
     return payload.result as T;
   }
 
-  async createDraft(args: {
-    agentId: string;
-    tenantId: string;
-    mailboxId: string;
-    from: string;
-    to: string[];
-    subject: string;
-    text: string;
-  }): Promise<CreateDraftResult> {
-    return this.callTool<CreateDraftResult>("create_draft", args);
+  async createDraft(args: CreateDraftRequest): Promise<CreateDraftResult> {
+    return this.requestJson(`/v1/agents/${encodeURIComponent(args.agentId)}/drafts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        tenantId: args.tenantId,
+        mailboxId: args.mailboxId,
+        threadId: args.threadId,
+        sourceMessageId: args.sourceMessageId,
+        from: args.from,
+        to: args.to,
+        cc: args.cc,
+        bcc: args.bcc,
+        subject: args.subject,
+        text: args.text,
+        html: args.html,
+        inReplyTo: args.inReplyTo,
+        references: args.references,
+        attachments: args.attachments,
+      }),
+    });
+  }
+
+  async getDraft(draftId: string): Promise<DraftRecord> {
+    return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}`);
   }
 
   async sendDraft(draftId: string, idempotencyKey: string): Promise<SendDraftResult> {
-    return this.callTool<SendDraftResult>("send_draft", { draftId, idempotencyKey });
+    return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ idempotencyKey }),
+    });
+  }
+
+  async sendMessage(args: SendMessageRequest): Promise<CreateAndSendAccepted> {
+    return this.requestJson("/v1/messages/send", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
+  }
+
+  async sendSelfMailboxMessage(args: SendMessageRequest): Promise<CreateAndSendAccepted> {
+    return this.requestJson("/v1/mailboxes/self/send", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
   }
 
   async sendEmail(args: {
@@ -574,8 +829,19 @@ export class MailagentsAgentClient {
     html?: string;
     inReplyTo?: string;
     references?: string[];
+    attachments?: DraftAttachment[];
     idempotencyKey?: string;
   }): Promise<HighLevelSendResult> {
+    if (!args.mailboxId) {
+      return this.sendMessage(args);
+    }
+
+    if (args.attachments?.length) {
+      throw new MailagentsClientError(
+        "attachments are only supported when using the mailbox-scoped HTTP send routes"
+      );
+    }
+
     return this.callTool<HighLevelSendResult>("send_email", args);
   }
 
@@ -584,8 +850,28 @@ export class MailagentsAgentClient {
     text?: string;
     html?: string;
     idempotencyKey?: string;
-  }): Promise<HighLevelSendResult> {
-    return this.callTool<HighLevelSendResult>("reply_to_message", args);
+  }): Promise<ReplyAccepted> {
+    return this.requestJson(`/v1/messages/${encodeURIComponent(args.messageId)}/reply`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        text: args.text,
+        html: args.html,
+        idempotencyKey: args.idempotencyKey,
+      }),
+    });
+  }
+
+  async replayMessage(messageId: string, args: ReplayMessageRequest): Promise<ReplayAccepted> {
+    return this.requestJson(`/v1/messages/${encodeURIComponent(messageId)}/replay`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(args),
+    });
   }
 
   async replyToInboundEmail(args: {
@@ -631,7 +917,7 @@ export class MailagentsAgentClient {
     text?: string;
     html?: string;
     idempotencyKey?: string;
-  }): Promise<HighLevelSendResult> {
+  }): Promise<ReplyAccepted> {
     const messages = await this.listMessages({ limit: 1, direction: "inbound" });
     const latest = messages.items[0];
     if (!latest?.id) {
