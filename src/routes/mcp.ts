@@ -29,6 +29,7 @@ import {
   getDraft,
   getMessage,
   getMessageContent,
+  getOutboundJobByDraftR2Key,
   getThread,
   listMessages,
   listTasks,
@@ -62,6 +63,28 @@ class McpToolError extends Error {
   ) {
     super(message);
   }
+}
+
+async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
+  if (!draftId) {
+    throw new McpToolError("internal_error", "Stored idempotent draft send result is incomplete");
+  }
+
+  const draft = await getDraft(env, draftId);
+  if (!draft) {
+    throw new McpToolError("conflict", "Stored idempotent draft no longer exists");
+  }
+
+  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  if (!outboundJob) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+  }
+
+  return {
+    draft,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
 }
 
 const router = new Router<Env>();
@@ -602,11 +625,11 @@ async function createAndSendDraftForMcp(env: Env, input: {
     throw new McpToolError("idempotency_in_progress", "A send request with this idempotency key is already in progress");
   }
   if (reservation.status === "completed") {
-    return reservation.record.response ?? {
-      draftId: reservation.record.resourceId,
-      outboundJobId: reservation.record.resourceId,
-      status: "queued",
-    };
+    if (reservation.record.response) {
+      return reservation.record.response;
+    }
+
+    return await restoreDraftSendReplay(env, reservation.record.resourceId);
   }
 
   try {
@@ -838,11 +861,17 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      const replay = await restoreDraftSendReplay(env, reservation.record.resourceId);
+      return {
+        draft: replay.draft,
         sendResult: {
-          draftId: reservation.record.resourceId,
-          outboundJobId: reservation.record.resourceId,
-          status: "queued",
+          draftId: replay.draft.id,
+          outboundJobId: replay.outboundJobId,
+          status: replay.status,
         },
         sourceMessage: message,
         usedThreadContext: Boolean(thread),

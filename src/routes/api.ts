@@ -52,6 +52,7 @@ import {
   getMessageContent,
   listMessages,
   getThread,
+  getOutboundJobByDraftR2Key,
   getOutboundJobByMessageId,
   getOutboundJob,
   getSuppression,
@@ -86,6 +87,28 @@ class RouteRequestError extends Error {
     this.name = "RouteRequestError";
     this.status = status;
   }
+}
+
+async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
+  if (!draftId) {
+    throw new RouteRequestError("Stored idempotent draft send result is incomplete", 500);
+  }
+
+  const draft = await getDraft(env, draftId);
+  if (!draft) {
+    throw new RouteRequestError("Stored idempotent draft no longer exists", 409);
+  }
+
+  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  if (!outboundJob) {
+    throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+
+  return {
+    draft,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
 }
 
 router.on("GET", "/public/signup", async () => {
@@ -1991,11 +2014,11 @@ async function createAndSendDraft(env: Env, input: {
     throw new RouteRequestError("A send request with this idempotency key is already in progress", 409);
   }
   if (reservation.status === "completed") {
-    return reservation.record.response ?? {
-      draftId: reservation.record.resourceId,
-      outboundJobId: reservation.record.resourceId,
-      status: "queued",
-    };
+    if (reservation.record.response) {
+      return reservation.record.response;
+    }
+
+    return await restoreDraftSendReplay(env, reservation.record.resourceId);
   }
 
   try {
