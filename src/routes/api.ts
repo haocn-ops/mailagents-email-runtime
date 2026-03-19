@@ -1692,11 +1692,13 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     try {
       const replayExecution = await resolveReplayExecution();
       if (replayExecution instanceof Response) {
+        await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
         return replayExecution;
       }
 
       if (body.mode === "normalize") {
         if (!replayExecution.replayRawR2Key) {
+          await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
           return badRequest("normalize replay requires the message to have raw email content");
         }
         await env.EMAIL_INGEST_QUEUE.send({
