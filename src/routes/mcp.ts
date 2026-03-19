@@ -38,6 +38,7 @@ import {
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
 type JsonRpcId = string | number | null;
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -1557,7 +1558,7 @@ async function resolveReplayAgentTarget(
     return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
   }
 
-  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
   if (!target?.agentId) {
     throw new McpToolError("invalid_arguments", "agentId is required when the mailbox has no active agent deployment");
   }

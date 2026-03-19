@@ -76,6 +76,7 @@ import {
 import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
 class RouteRequestError extends Error {
   readonly status: number;
@@ -2148,7 +2149,7 @@ async function resolveReplayAgentTarget(
     return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
   }
 
-  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
   if (!target?.agentId) {
     return badRequest("agentId is required when the mailbox has no active agent deployment");
   }

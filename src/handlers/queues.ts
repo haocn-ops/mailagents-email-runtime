@@ -23,6 +23,7 @@ import {
 import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJob } from "../types";
 
 class OutboundPolicyError extends Error {}
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
 function getOutboundSendMaxRetries(env: Env): number {
   const raw = env.OUTBOUND_SEND_MAX_RETRIES;
@@ -109,7 +110,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         attachments: attachmentRows,
       });
 
-      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId);
+      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
       const task = await createTask(env, {
         tenantId: message.body.tenantId,
         mailboxId: message.body.mailboxId,
