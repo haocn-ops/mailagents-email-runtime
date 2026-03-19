@@ -1622,6 +1622,20 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
   if (mailboxError) {
     return mailboxError;
   }
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  if (agent.tenantId !== body.tenantId) {
+    return json({ error: "Agent does not belong to tenant" }, { status: 409 });
+  }
+  const mailbox = await getMailboxById(env, body.mailboxId);
+  if (!mailbox) {
+    return json({ error: "Mailbox not found" }, { status: 404 });
+  }
+  if (mailbox.tenant_id !== body.tenantId) {
+    return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+  }
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,

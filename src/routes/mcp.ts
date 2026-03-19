@@ -1331,6 +1331,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
+    await validateBindingResources(env, tenantId, agentId, mailboxId);
 
     return await createDraft(env, {
       tenantId,
