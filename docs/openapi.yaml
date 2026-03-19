@@ -575,6 +575,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessageContent'
+  /v1/messages/send:
+    post:
+      tags: [Messages]
+      summary: Create and send a message in one request
+      operationId: sendMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '202':
+          description: Message accepted for sending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAndSendAccepted'
+  /v1/messages/{messageId}/reply:
+    post:
+      tags: [Messages]
+      summary: Reply to an inbound message in one request
+      operationId: replyToMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplyMessageRequest'
+      responses:
+        '202':
+          description: Reply accepted for sending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplyAccepted'
   /v1/messages/{messageId}/replay:
     post:
       tags: [Messages]
@@ -609,6 +647,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Thread'
+  /v1/mailboxes/self:
+    get:
+      tags: [Mailboxes]
+      summary: Get the mailbox bound to the current token
+      operationId: getSelfMailbox
+      responses:
+        '200':
+          description: Mailbox resolved from the current bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelfMailbox'
+  /v1/mailboxes/self/tasks:
+    get:
+      tags: [Mailboxes]
+      summary: List tasks for the mailbox bound to the current token
+      operationId: listSelfMailboxTasks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+  /v1/mailboxes/self/messages:
+    get:
+      tags: [Mailboxes]
+      summary: List messages for the mailbox bound to the current token
+      operationId: listSelfMailboxMessages
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [inbound, outbound]
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/MessageStatus'
+      responses:
+        '200':
+          description: Message list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+  /v1/mailboxes/self/messages/{messageId}:
+    get:
+      tags: [Mailboxes]
+      summary: Get message metadata for the mailbox bound to the current token
+      operationId: getSelfMailboxMessage
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+  /v1/mailboxes/self/messages/{messageId}/content:
+    get:
+      tags: [Mailboxes]
+      summary: Get message content for the mailbox bound to the current token
+      operationId: getSelfMailboxMessageContent
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageContent'
+  /v1/mailboxes/self/send:
+    post:
+      tags: [Mailboxes]
+      summary: Send a message from the mailbox bound to the current token
+      operationId: sendSelfMailboxMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelfSendRequest'
+      responses:
+        '202':
+          description: Message accepted for sending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAndSendAccepted'
   /v1/agents/{agentId}/drafts:
     post:
       tags: [Drafts]
@@ -1266,6 +1426,24 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Message'
+    SelfMailbox:
+      type: object
+      required: [id, tenantId, address, status, createdAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        address:
+          type: string
+          format: email
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        agentId:
+          type: string
     DraftAttachment:
       type: object
       required: [filename, contentType, r2Key]
@@ -1291,6 +1469,8 @@ components:
         threadId:
           type: string
         sourceMessageId:
+          type: string
+        createdVia:
           type: string
         status:
           $ref: '#/components/schemas/DraftStatus'
@@ -1344,6 +1524,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DraftAttachment'
+    SelfSendRequest:
+      type: object
+      required: [to, subject]
+      properties:
+        to:
+          type: array
+          items:
+            type: string
+        cc:
+          type: array
+          items:
+            type: string
+        bcc:
+          type: array
+          items:
+            type: string
+        subject:
+          type: string
+        text:
+          type: string
+        html:
+          type: string
+        inReplyTo:
+          type: string
+        references:
+          type: array
+          items:
+            type: string
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DraftAttachment'
+        idempotencyKey:
+          type: string
+    SendMessageRequest:
+      allOf:
+        - $ref: '#/components/schemas/SelfSendRequest'
+    ReplyMessageRequest:
+      type: object
+      properties:
+        text:
+          type: string
+        html:
+          type: string
+        idempotencyKey:
+          type: string
     SendDraftRequest:
       type: object
       description: Optional request body. Reusing the same `idempotencyKey` for the same draft send request returns the original accepted response instead of enqueueing another send.
@@ -1360,6 +1586,25 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/OutboundJobStatus'
+    CreateAndSendAccepted:
+      type: object
+      required: [draft, outboundJobId, status]
+      properties:
+        draft:
+          $ref: '#/components/schemas/Draft'
+        outboundJobId:
+          type: string
+        status:
+          $ref: '#/components/schemas/OutboundJobStatus'
+    ReplyAccepted:
+      allOf:
+        - $ref: '#/components/schemas/CreateAndSendAccepted'
+        - type: object
+          properties:
+            sourceMessageId:
+              type: string
+            threadId:
+              type: string
     ReplayMessageRequest:
       type: object
       required: [mode]

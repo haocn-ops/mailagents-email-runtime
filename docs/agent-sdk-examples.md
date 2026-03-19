@@ -82,6 +82,19 @@ Prefer:
 - short expirations
 - only the scopes needed for the planned workflow
 
+With a mailbox-scoped token, newer self routes remove the need to keep passing
+`tenantId`, `mailboxId`, and `agentId` for common read and send operations.
+
+Example:
+
+```bash
+curl -sS https://api.mailagents.net/v1/mailboxes/self \
+  -H "authorization: Bearer $TOKEN" | jq
+
+curl -sS 'https://api.mailagents.net/v1/mailboxes/self/messages?limit=10' \
+  -H "authorization: Bearer $TOKEN" | jq
+```
+
 ## 3. Discover MCP Tools
 
 ```bash
@@ -137,6 +150,36 @@ Then optionally:
 - `list_agent_tasks`
 
 ## 5. Draft Before Send
+
+For mailbox-scoped agents that do not need explicit draft lifecycle control,
+you can now use the higher-level send routes directly:
+
+```bash
+curl -sS -X POST https://api.mailagents.net/v1/messages/send \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "to": ["user@example.com"],
+    "subject": "Hello from Mailagents",
+    "text": "Sent through the high-level send route.",
+    "idempotencyKey": "sdk-send-001"
+  }' | jq
+```
+
+Reply to an inbound message in one request:
+
+```bash
+curl -sS -X POST https://api.mailagents.net/v1/messages/msg_demo_inbound/reply \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "text": "Thanks for your message.",
+    "idempotencyKey": "sdk-reply-001"
+  }' | jq
+```
+
+Use explicit draft creation only when your workflow needs a visible review step
+or wants to control the draft lifecycle directly.
 
 Create a draft directly:
 
