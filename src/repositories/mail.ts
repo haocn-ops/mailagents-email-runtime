@@ -1062,6 +1062,12 @@ export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string
   return row ? mapTaskRow(row) : null;
 }
 
+export async function deleteTask(env: Env, taskId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tasks WHERE id = ?`
+  ).bind(taskId));
+}
+
 export async function updateTaskStatus(env: Env, input: {
   taskId: string;
   status: TaskRecord["status"];
