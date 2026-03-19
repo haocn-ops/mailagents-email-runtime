@@ -20,7 +20,7 @@ Do not use admin or debug routes as the default integration path.
 Choose the smallest scope set that works.
 
 - use `mail:read` and `task:read` for read-only mail workflows
-- add `draft:create` and `draft:send` only for reply workflows
+- add `draft:create` and `draft:send` for mailbox send and reply workflows
 - add `mail:replay` only for debugging, recovery, or operator-approved reruns
 - add agent management scopes only for setup and provisioning flows
 
@@ -57,25 +57,35 @@ Read first if you do not know:
 
 Write only after confirming the intended next state.
 
-## 5. Draft Decisions
+## 5. High-Level Send Decisions
 
-Create a draft when:
+Prefer the high-level send and reply surfaces when:
+
+- the workflow is a normal mailbox send or reply
+- the agent does not need a visible draft lifecycle
+- the runtime should manage draft creation internally
+
+These high-level paths still create drafts internally for auditability and
+delivery control.
+
+## 6. Draft Decisions
+
+Create a draft explicitly when:
 
 - an agent has enough message and thread context to propose a reply
 - a human or higher-level workflow may want to inspect before send
 - the workflow must preserve explicit approval before delivery
 
-Do not send directly from message read state without first producing a draft.
+Treat explicit drafts as the control point for workflows that need review or
+manual approval before send.
 
-Treat drafts as the control point for outbound side effects.
+## 7. Send Decisions
 
-## 6. Send Decisions
-
-Send a draft only when:
+Send through a high-level route or send a draft only when:
 
 - the mailbox identity is correct
 - recipients are expected
-- the draft payload is complete
+- the composed payload is complete
 - the workflow explicitly intends outbound delivery
 
 Do not send when:
@@ -88,7 +98,7 @@ Do not send when:
 If a draft includes reply headers or attachments, expect the runtime to use SES
 raw MIME send rather than the simpler SES payload.
 
-## 7. Replay Decisions
+## 8. Replay Decisions
 
 Use replay when:
 
@@ -108,7 +118,7 @@ Replay should:
 - preserve linkage to the original message and thread
 - require explicit send if a new replay-generated draft is produced
 
-## 8. Retry Decisions
+## 9. Retry Decisions
 
 Assume queue delivery and external callbacks are at-least-once.
 
@@ -131,7 +141,7 @@ When retrying a side-effecting request from a client or agent:
 - do not reuse an `idempotencyKey` for a different request shape
 - expect the runtime to return the original accepted response for safe repeats
 
-## 9. Debug Decisions
+## 10. Debug Decisions
 
 Use debug routes only when:
 
@@ -147,7 +157,7 @@ Prefer debug routes for:
 
 Do not build normal agent workflows on top of debug routes.
 
-## 10. Safe Default Behaviors
+## 11. Safe Default Behaviors
 
 When uncertain, default to:
 
@@ -163,7 +173,7 @@ Idempotency records are not meant to live forever:
 - abandoned pending records should be cleaned up aggressively
 - operators should run scheduled or manual cleanup for old idempotency records
 
-## 11. Canonical Workflows
+## 12. Canonical Workflows
 
 Provisioning workflow:
 
@@ -176,6 +186,13 @@ Reply workflow:
 
 1. read task or message
 2. read thread context
+3. prefer `reply_to_message` or `POST /v1/messages/{messageId}/reply`
+4. inspect outbound state if delivery is unclear
+
+Explicit review workflow:
+
+1. read task or message
+2. read thread context
 3. create draft
 4. inspect draft
 5. send draft explicitly
@@ -185,5 +202,6 @@ Recovery workflow:
 1. inspect current state
 2. replay normalize or execution
 3. inspect outputs
-4. create a fresh draft if needed
-5. explicitly decide whether send is safe
+4. prefer the high-level send or reply route if the corrected state now makes
+   the intended action clear
+5. create a fresh draft only when explicit review is needed

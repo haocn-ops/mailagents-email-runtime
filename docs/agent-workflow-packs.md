@@ -18,8 +18,8 @@ definitions.
 
 ### Goal
 
-Read inbound mail, gather enough thread context, draft a reply, and send only
-when the workflow explicitly intends delivery.
+Read inbound mail, gather enough thread context, and prefer the high-level
+reply surface for delivery unless the workflow needs explicit draft control.
 
 ### Inputs
 
@@ -34,6 +34,13 @@ when the workflow explicitly intends delivery.
 2. `get_message_content`
 3. `get_thread`
    Use only when the message already belongs to a thread or reply context is needed.
+4. `reply_to_message`
+
+Fallback lower-level sequence:
+
+1. `get_message`
+2. `get_message_content`
+3. `get_thread`
 4. `create_draft`
 5. `get_draft`
 6. `send_draft`
@@ -41,8 +48,8 @@ when the workflow explicitly intends delivery.
 ### Side-effect boundary
 
 - `get_message`, `get_message_content`, and `get_thread` are read-only
-- `create_draft` persists a draft
-- `send_draft` is the first outbound delivery side effect
+- `reply_to_message` is a draft-backed send workflow with outbound side effects
+- `create_draft` and `send_draft` remain the lower-level explicit control path
 
 ### Recommended stop conditions
 
@@ -57,6 +64,7 @@ Stop and require human or higher-level workflow input when:
 ### Retry behavior
 
 - reads can be repeated normally
+- `reply_to_message` retries should reuse the same `idempotencyKey`
 - draft creation should not be repeated blindly if a usable draft already exists
 - repeated send attempts should reuse the same `idempotencyKey`
 
@@ -69,8 +77,9 @@ Stop and require human or higher-level workflow input when:
 
 ### Goal
 
-Allow an operator or operator-guided agent to compose and send a message through
-the normal draft and queue path.
+Allow an operator or operator-guided agent to compose and send a message
+through the normal queue path, preferring the high-level send surface when
+explicit draft review is not required.
 
 ### Inputs
 
@@ -85,6 +94,10 @@ the normal draft and queue path.
 
 ### Tool sequence
 
+1. `send_email`
+
+Fallback lower-level sequence:
+
 1. `create_draft`
 2. `get_draft`
 3. `send_draft`
@@ -96,8 +109,8 @@ This workflow can also be executed through the composite MCP tool
 
 ### Side-effect boundary
 
-- the only outbound delivery side effect is `send_draft`
-- draft creation is persistent but not yet delivery
+- `send_email` is a draft-backed send workflow with outbound delivery side effects
+- explicit draft creation is persistent but not yet delivery
 
 ### Recommended stop conditions
 
@@ -140,9 +153,11 @@ safe path to a corrected draft or follow-up action.
 4. `get_message`
 5. `get_message_content`
 6. optionally `get_thread`
-7. optionally `create_draft`
-8. optionally `get_draft`
-9. optionally `send_draft`
+7. optionally `reply_to_message`
+8. optionally `send_email`
+9. optionally `create_draft`
+10. optionally `get_draft`
+11. optionally `send_draft`
 
 ### Side-effect boundary
 
@@ -167,11 +182,14 @@ Stop when:
 ### Recovery behavior
 
 - if replay succeeds, re-read state before deciding the next step
+- prefer the high-level send or reply route when the corrected state clearly
+  implies a normal mailbox action
 - if replay produces a new draft, treat send as a fresh explicit action with its own idempotency control
 
 ## Workflow Design Rules
 
 - prefer read operations before side effects
+- prefer `send_email` and `reply_to_message` for the default mailbox workflow
 - isolate send as a distinct decision point
 - separate replay from send
 - use idempotency on repeated side-effecting calls
