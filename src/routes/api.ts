@@ -2058,7 +2058,7 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
     return;
   }
 
-  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id);
+  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
     return;
   }
@@ -2314,8 +2314,14 @@ async function deliverRotatedTokenToSelfMailbox(
   }
 
   const executionTarget = claims.agentId
-    ? { agentId: claims.agentId }
-    : await resolveAgentExecutionTarget(env, mailboxId);
+    ? await hasActiveMailboxBinding(env, {
+        agentId: claims.agentId,
+        mailboxId,
+        roles: [...SEND_CAPABLE_MAILBOX_ROLES],
+      })
+      ? { agentId: claims.agentId }
+      : null
+    : await resolveAgentExecutionTarget(env, mailboxId, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
     return false;
   }
