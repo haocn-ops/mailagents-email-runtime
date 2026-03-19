@@ -976,7 +976,7 @@ export async function insertAttachments(env: Env, input: {
 }): Promise<void> {
   for (const attachment of input.attachments) {
     await execute(env.D1_DB.prepare(
-      `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
+      `INSERT OR IGNORE INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       attachment.id,
@@ -1045,6 +1045,21 @@ export async function createTask(env: Env, input: {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+}
+
+export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string, taskType: string): Promise<TaskRecord | null> {
+  const row = await firstRow<TaskRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, mailbox_id, source_message_id, task_type, priority, status,
+              assigned_agent, result_r2_key, created_at, updated_at
+       FROM tasks
+       WHERE source_message_id = ? AND task_type = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(sourceMessageId, taskType)
+  );
+
+  return row ? mapTaskRow(row) : null;
 }
 
 export async function updateTaskStatus(env: Env, input: {

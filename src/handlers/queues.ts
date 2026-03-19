@@ -8,6 +8,7 @@ import {
   createTask,
   getDraftByR2Key,
   getMessage,
+  getTaskBySourceMessageId,
   getOrCreateThread,
   getOutboundJob,
   getSuppression,
@@ -92,13 +93,14 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       await updateThreadTimestamp(env, thread.id);
 
       const attachmentRows = [];
-      for (const attachment of parsed.attachments) {
-        const r2Key = `attachments/${message.body.messageId}/${attachment.id}`;
+      for (const [index, attachment] of parsed.attachments.entries()) {
+        const attachmentId = `att_${message.body.messageId}_${index + 1}`;
+        const r2Key = `attachments/${message.body.messageId}/${attachmentId}`;
         await env.R2_EMAIL.put(r2Key, attachment.content, {
           httpMetadata: { contentType: attachment.contentType ?? "application/octet-stream" },
         });
         attachmentRows.push({
-          id: attachment.id,
+          id: attachmentId,
           filename: attachment.filename,
           contentType: attachment.contentType,
           sizeBytes: attachment.content.byteLength,
@@ -111,7 +113,8 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       });
 
       const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
-      const task = await createTask(env, {
+      const existingTask = await getTaskBySourceMessageId(env, message.body.messageId, "reply");
+      const task = existingTask ?? await createTask(env, {
         tenantId: message.body.tenantId,
         mailboxId: message.body.mailboxId,
         sourceMessageId: message.body.messageId,
@@ -125,7 +128,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         "UPDATE messages SET status = ? WHERE id = ?"
       ).bind("tasked", message.body.messageId).run();
 
-      if (executionTarget) {
+      if (executionTarget && task.status === "queued") {
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: task.id,
           agentId: executionTarget.agentId,
