@@ -799,6 +799,9 @@ export async function ensureMailbox(env: Env, input: {
   const normalizedAddress = input.address.trim().toLowerCase();
   const existing = await getMailboxByAddress(env, normalizedAddress);
   if (existing) {
+    if (existing.tenant_id !== input.tenantId) {
+      throw new Error(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+    }
     return mapMailboxRecord(existing);
   }
 
