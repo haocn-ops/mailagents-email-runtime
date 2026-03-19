@@ -1786,7 +1786,9 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
       normalized.eventType === "bounce" ? "failed" :
       normalized.eventType === "complaint" ? "failed" :
       "failed";
-    await updateMessageStatus(env, message.id, status);
+    if (normalized.eventType !== "delivery" || message.status !== "failed") {
+      await updateMessageStatus(env, message.id, status);
+    }
   } else if (normalized.providerMessageId) {
     const status =
       normalized.eventType === "delivery" ? "replied" :
@@ -1801,12 +1803,14 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;
       if (normalized.eventType === "delivery") {
-        await updateOutboundJobStatus(env, {
-          outboundJobId: outboundJob.id,
-          status: "sent",
-          lastError: null,
-          nextRetryAt: null,
-        });
+        if (outboundJob.status !== "failed") {
+          await updateOutboundJobStatus(env, {
+            outboundJobId: outboundJob.id,
+            status: "sent",
+            lastError: null,
+            nextRetryAt: null,
+          });
+        }
       } else {
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
