@@ -6,15 +6,16 @@ Current scope:
 
 - runtime discovery
 - compatibility contract lookup
+- mailbox self-route helpers
 - MCP `tools/list`
 - MCP `tools/call`
-- typed models for discovery and high-value draft/send workflows
+- typed models for discovery and high-value REST + MCP mail workflows
 - mailbox-first convenience helpers for common read, send, and reply flows
 - stable error-code helpers for branching on MCP failures
 
 ## Status
 
-- package skeleton only
+- lightweight in-repo package
 - not published
 - intended as a starting point for a future npm package
 - package-local changelog available in `CHANGELOG.md`
@@ -35,36 +36,55 @@ const signup = await client.publicSignup({
 });
 
 const authed = client.withToken(signup.accessToken!);
+const mailbox = await authed.getSelfMailbox();
 const contract = await authed.getCompatibilityContract();
-const tools = await authed.listTools();
-const recommended = await authed.listRecommendedMailboxTools();
-const workflow = await authed.getMailboxWorkflowSurface();
+const tasks = await authed.listTasks();
+const messages = await authed.listMessages({ limit: 5, direction: "inbound" });
+const sendResult = await authed.sendMessage({
+  to: ["user@example.com"],
+  subject: "Hello from Mailagents",
+  text: "Sent through the high-level HTTP helper.",
+  idempotencyKey: "sdk-send-001",
+});
 
-console.log(signup.mailbox.address, contract, tools, recommended, workflow);
+console.log(mailbox.address, contract, tasks.items.length, messages.items.length, sendResult.outboundJobId);
 ```
 
 Typed helpers currently cover:
 
 - `getRuntimeMetadata()`
 - `getCompatibilityContract()`
+- `getCompatibilitySchema()`
 - `publicSignup()`
 - `reissueAccessToken()`
+- `createAccessToken()`
 - `rotateAccessToken()`
+- `rotateToken()`
+- `getSelfMailbox()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
 - `getMailboxWorkflowSurface()`
 - `createAgent()`
 - `bindMailbox()`
 - `listAgentTasks()`
+- `listTasks()`
+- `listSelfMailboxTasks()`
+- `listSelfMailboxMessages()`
+- `getSelfMailboxMessage()`
+- `getSelfMailboxMessageContent()`
 - `listMessages()`
 - `getMessage()`
 - `getMessageContent()`
 - `getThread()`
+- `sendMessage()`
+- `sendSelfMailboxMessage()`
 - `sendEmail()`
 - `replyToMessage()`
 - `replyLatestInbound()`
 - `createDraft()`
+- `getDraft()`
 - `sendDraft()`
+- `replayMessage()`
 - `replyToInboundEmail()`
 - `operatorManualSend()`
 
@@ -97,17 +117,19 @@ const client = new MailagentsAgentClient({
 });
 
 try {
-  await client.sendEmail({
+  const sendResult = await client.sendEmail({
     to: ["user@example.com"],
     subject: "Hello from the mailbox-first helper",
     text: "Sent through the high-level helper method.",
     idempotencyKey: "send:demo:001",
   });
 
-  await client.replyLatestInbound({
+  const replyResult = await client.replyLatestInbound({
     text: "Thanks for the inbound message.",
     idempotencyKey: "reply:latest:001",
   });
+
+  console.log(sendResult.draft.id, replyResult.sourceMessageId);
 } catch (error) {
   if (hasMailagentsErrorCode(error, "idempotency_conflict")) {
     console.log("Do not retry with a different logical request.");
@@ -130,4 +152,12 @@ Publish preparation:
 - `npm run check:agent-client`
 - `npm run build:agent-client`
 - `npm run pack:agent-client:dry-run`
-- after removing `private: true`, `npm run publish:agent-client:dry-run`
+- `npm_config_cache=/tmp/mailagents-npm-cache npm run publish:agent-client:dry-run`
+
+Notes:
+
+- `listMessages()` now prefers `GET /v1/mailboxes/self/messages` for mailbox-scoped flows and falls back to MCP only when an explicit `mailboxId` is supplied
+- `getMessageContent()` and `getThread()` now use the documented HTTP read routes
+- `createDraft()`, `getDraft()`, `sendDraft()`, and `listAgentTasks()` use the matching REST routes
+- `sendEmail()` now prefers `POST /v1/messages/send` for mailbox-scoped flows and falls back to MCP only when an explicit `mailboxId` is supplied
+- `replyToMessage()` uses `POST /v1/messages/{messageId}/reply`, while `callTool()` remains available for direct MCP access
