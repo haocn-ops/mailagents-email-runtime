@@ -896,6 +896,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (agentError) {
       await throwIfResponseError(agentError);
     }
+    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
 
     const thread = message.threadId ? await getThread(env, message.threadId) : null;
     const references = Array.from(new Set(
