@@ -62,6 +62,7 @@ import {
   reserveIdempotencyKey,
   addSuppression,
   updateOutboundJobStatus,
+  updateMessageStatus,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
 import {
@@ -1710,16 +1711,24 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  const message = normalized.providerMessageId
+  const providerMessage = normalized.providerMessageId
     ? await getMessageByProviderMessageId(env, normalized.providerMessageId)
     : null;
   const taggedMessageId = normalized.mailTags.message_id;
   const taggedTenantId = normalized.mailTags.tenant_id;
-  if (message && taggedMessageId && message.id !== taggedMessageId) {
+  const taggedMessage = !providerMessage && taggedMessageId
+    ? await getMessage(env, taggedMessageId)
+    : null;
+  const message = providerMessage ?? taggedMessage;
+
+  if (providerMessage && taggedMessageId && providerMessage.id !== taggedMessageId) {
     return json({ error: "Webhook message tag mismatch" }, { status: 409 });
   }
   if (message && taggedTenantId && message.tenantId !== taggedTenantId) {
     return json({ error: "Webhook tenant tag mismatch" }, { status: 409 });
+  }
+  if (taggedMessage && normalized.providerMessageId && taggedMessage.providerMessageId && taggedMessage.providerMessageId !== normalized.providerMessageId) {
+    return json({ error: "Webhook provider message mismatch" }, { status: 409 });
   }
 
   await insertDeliveryEvent(env, {
@@ -1729,7 +1738,14 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     payloadR2Key,
   });
 
-  if (normalized.providerMessageId) {
+  if (message) {
+    const status =
+      normalized.eventType === "delivery" ? "replied" :
+      normalized.eventType === "bounce" ? "failed" :
+      normalized.eventType === "complaint" ? "failed" :
+      "failed";
+    await updateMessageStatus(env, message.id, status);
+  } else if (normalized.providerMessageId) {
     const status =
       normalized.eventType === "delivery" ? "replied" :
       normalized.eventType === "bounce" ? "failed" :
