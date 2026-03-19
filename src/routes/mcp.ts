@@ -33,6 +33,7 @@ import {
   listTasks,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateTaskStatus,
 } from "../repositories/mail";
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
@@ -1099,17 +1100,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           if (!replayAgentTarget) {
             throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
           }
-          const replayTask = await createTask(env, {
+          await enqueueReplayTask(env, {
             tenantId: message.tenantId,
             mailboxId: message.mailboxId,
             sourceMessageId: messageId,
-            taskType: "replay",
-            priority: 50,
-            status: "queued",
-            assignedAgent: replayAgentTarget.agentId,
-          });
-          await env.AGENT_EXECUTE_QUEUE.send({
-            taskId: replayTask.id,
             agentId: replayAgentTarget.agentId,
             agentVersionId: replayAgentTarget.agentVersionId,
             deploymentId: replayAgentTarget.deploymentId,
@@ -1143,17 +1137,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!replayAgentTarget) {
         throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
       }
-      const replayTask = await createTask(env, {
+      await enqueueReplayTask(env, {
         tenantId: message.tenantId,
         mailboxId: message.mailboxId,
         sourceMessageId: messageId,
-        taskType: "replay",
-        priority: 50,
-        status: "queued",
-        assignedAgent: replayAgentTarget.agentId,
-      });
-      await env.AGENT_EXECUTE_QUEUE.send({
-        taskId: replayTask.id,
         agentId: replayAgentTarget.agentId,
         agentVersionId: replayAgentTarget.agentVersionId,
         deploymentId: replayAgentTarget.deploymentId,
@@ -1209,6 +1196,43 @@ async function resolveReplayAgentTarget(
   }
 
   return target;
+}
+
+async function enqueueReplayTask(
+  env: Env,
+  input: {
+    tenantId: string;
+    mailboxId: string;
+    sourceMessageId: string;
+    agentId: string;
+    agentVersionId?: string;
+    deploymentId?: string;
+  }
+): Promise<void> {
+  const replayTask = await createTask(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    sourceMessageId: input.sourceMessageId,
+    taskType: "replay",
+    priority: 50,
+    status: "queued",
+    assignedAgent: input.agentId,
+  });
+
+  try {
+    await env.AGENT_EXECUTE_QUEUE.send({
+      taskId: replayTask.id,
+      agentId: input.agentId,
+      agentVersionId: input.agentVersionId,
+      deploymentId: input.deploymentId,
+    });
+  } catch (error) {
+    await updateTaskStatus(env, {
+      taskId: replayTask.id,
+      status: "failed",
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 router.on("POST", "/mcp", async (request, env) => {
