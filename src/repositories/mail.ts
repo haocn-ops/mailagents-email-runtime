@@ -1177,6 +1177,63 @@ export async function createTask(env: Env, input: {
   };
 }
 
+export async function getOrCreateTaskForSourceMessage(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  sourceMessageId: string;
+  taskType: string;
+  priority: number;
+  status: TaskRecord["status"];
+  assignedAgent?: string | null;
+}): Promise<TaskRecord> {
+  const id = createId("tsk");
+  const timestamp = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `INSERT INTO tasks (
+       id, tenant_id, mailbox_id, source_message_id, task_type, priority, status, assigned_agent, created_at, updated_at
+     )
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM tasks
+       WHERE source_message_id = ? AND task_type = ?
+     )`
+  ).bind(
+    id,
+    input.tenantId,
+    input.mailboxId,
+    input.sourceMessageId,
+    input.taskType,
+    input.priority,
+    input.status,
+    input.assignedAgent ?? null,
+    timestamp,
+    timestamp,
+    input.sourceMessageId,
+    input.taskType
+  ));
+
+  if ((result.meta?.changes ?? 0) > 0) {
+    return {
+      id,
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      sourceMessageId: input.sourceMessageId,
+      taskType: input.taskType,
+      priority: input.priority,
+      status: input.status,
+      assignedAgent: input.assignedAgent ?? undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }
+
+  return requireRow(
+    await getTaskBySourceMessageId(env, input.sourceMessageId, input.taskType),
+    "Task lookup failed after duplicate source-message insert"
+  );
+}
+
 export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string, taskType: string): Promise<TaskRecord | null> {
   const row = await firstRow<TaskRow>(
     env.D1_DB.prepare(

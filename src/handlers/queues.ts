@@ -6,10 +6,9 @@ import { nowIso } from "../lib/time";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
   claimTaskForExecution,
-  createTask,
   getDraftByR2Key,
   getMessage,
-  getTaskBySourceMessageId,
+  getOrCreateTaskForSourceMessage,
   getOrCreateThread,
   getOutboundJob,
   getSuppression,
@@ -115,8 +114,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       });
 
       const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
-      const existingTask = await getTaskBySourceMessageId(env, message.body.messageId, "reply");
-      const task = existingTask ?? await createTask(env, {
+      const task = await getOrCreateTaskForSourceMessage(env, {
         tenantId: message.body.tenantId,
         mailboxId: message.body.mailboxId,
         sourceMessageId: message.body.messageId,
