@@ -276,7 +276,7 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
   }
 
   return json({
-    token: delivery === "self_mailbox" ? undefined : rotated.accessToken,
+    token: delivery === "self_mailbox" && deliveryStatus === "queued" ? undefined : rotated.accessToken,
     expiresAt: rotated.accessTokenExpiresAt,
     scopes: rotated.accessTokenScopes,
     delivery,
