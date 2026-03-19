@@ -126,6 +126,13 @@ function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Error && /unique constraint/i.test(error.message);
 }
 
+export class DeploymentConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeploymentConflictError";
+  }
+}
+
 function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
@@ -472,21 +479,32 @@ export async function createAgentDeployment(env: Env, input: {
   const id = createId("agd");
   const timestamp = nowIso();
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agent_deployments (
-       id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.agentId,
-    input.agentVersionId,
-    input.targetType,
-    input.targetId,
-    input.status ?? "active",
-    timestamp,
-    timestamp
-  ));
+  const status = input.status ?? "active";
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_deployments (
+         id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.agentVersionId,
+      input.targetType,
+      input.targetId,
+      status,
+      timestamp,
+      timestamp
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    throw new DeploymentConflictError(
+      `A ${status} deployment already exists for ${input.targetType} ${input.targetId}`
+    );
+  }
 
   return requireRow(await getAgentDeployment(env, input.agentId, id), "Failed to load created agent deployment");
 }

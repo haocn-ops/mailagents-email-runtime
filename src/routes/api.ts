@@ -26,6 +26,7 @@ import {
   createAgent,
   createAgentDeployment,
   createAgentVersion,
+  DeploymentConflictError,
   getAgent,
   getAgentDeployment,
   getAgentVersion,
@@ -985,14 +986,21 @@ router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, 
     return json({ error: "Agent version not found" }, { status: 404 });
   }
 
-  return json(await createAgentDeployment(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    agentVersionId: body.agentVersionId,
-    targetType: body.targetType,
-    targetId: body.targetId,
-    status: body.status,
-  }), { status: 201 });
+  try {
+    return json(await createAgentDeployment(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      agentVersionId: body.agentVersionId,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      status: body.status,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, route) => {
@@ -1116,13 +1124,20 @@ router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env
     return json({ error: "Agent version not found" }, { status: 404 });
   }
 
-  return json(await rolloutAgentDeployment(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    agentVersionId: body.agentVersionId,
-    targetType: body.targetType,
-    targetId: body.targetId,
-  }), { status: 201 });
+  try {
+    return json(await rolloutAgentDeployment(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      agentVersionId: body.agentVersionId,
+      targetType: body.targetType,
+      targetId: body.targetId,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", async (request, env, _ctx, route) => {
