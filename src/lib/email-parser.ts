@@ -13,6 +13,8 @@ export interface ParsedEmail {
   subject?: string;
   messageId?: string;
   inReplyTo?: string;
+  from?: string;
+  replyTo?: string;
   references: string[];
   text?: string;
   html?: string;
@@ -100,6 +102,20 @@ function createSnippet(text?: string, html?: string): string | undefined {
   return snippet ? snippet.slice(0, 160) : undefined;
 }
 
+function extractPrimaryAddress(headerValue?: string): string | undefined {
+  if (!headerValue) {
+    return undefined;
+  }
+
+  const angleMatch = headerValue.match(/<([^<>@\s]+@[^<>@\s]+)>/);
+  if (angleMatch) {
+    return angleMatch[1].trim().toLowerCase();
+  }
+
+  const mailboxMatch = headerValue.match(/\b([^\s<>"(),;:@]+@[^\s<>"(),;:]+)\b/);
+  return mailboxMatch?.[1]?.trim().toLowerCase();
+}
+
 function parseMultipart(body: string, boundary: string): Array<{ headers: Record<string, string>; body: string }> {
   const delimiter = `--${boundary}`;
   const parts = body
@@ -171,6 +187,8 @@ export function parseRawEmail(raw: string): ParsedEmail {
   const subject = headers["subject"];
   const messageId = headers["message-id"];
   const inReplyTo = headers["in-reply-to"];
+  const replyTo = extractPrimaryAddress(headers["reply-to"]);
+  const from = extractPrimaryAddress(headers["from"]);
   const normalizedSubject = normalizeSubject(subject);
   const threadKey = inReplyTo
     ?? references[references.length - 1]
@@ -181,6 +199,8 @@ export function parseRawEmail(raw: string): ParsedEmail {
     subject,
     messageId,
     inReplyTo,
+    from,
+    replyTo,
     references,
     text: output.text,
     html: output.html,

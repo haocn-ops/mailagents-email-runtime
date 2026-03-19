@@ -804,11 +804,13 @@ export async function updateInboundMessageNormalized(env: Env, input: {
   subject?: string;
   snippet?: string;
   internetMessageId?: string;
+  fromAddr?: string;
   status: MessageRecord["status"];
 }): Promise<void> {
   await execute(env.D1_DB.prepare(
     `UPDATE messages
      SET thread_id = ?, normalized_r2_key = ?, subject = ?, snippet = ?, internet_message_id = COALESCE(?, internet_message_id),
+         from_addr = COALESCE(?, from_addr),
          status = ?
      WHERE id = ?`
   ).bind(
@@ -817,6 +819,7 @@ export async function updateInboundMessageNormalized(env: Env, input: {
     input.subject ?? null,
     input.snippet ?? null,
     input.internetMessageId ?? null,
+    input.fromAddr ?? null,
     input.status,
     input.messageId
   ));

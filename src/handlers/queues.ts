@@ -48,6 +48,8 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         text: parsed.text ?? "",
         html: parsed.html ?? "",
         headers: parsed.headers,
+        from: parsed.from,
+        replyTo: parsed.replyTo,
         messageId: parsed.messageId,
         inReplyTo: parsed.inReplyTo,
         references: parsed.references,
@@ -62,6 +64,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         subject: parsed.subject,
         snippet: parsed.snippet,
         internetMessageId: parsed.messageId,
+        fromAddr: parsed.replyTo ?? parsed.from,
         status: "normalized",
       });
       await updateThreadTimestamp(env, thread.id);
