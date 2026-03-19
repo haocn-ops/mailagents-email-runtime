@@ -1401,28 +1401,46 @@ export async function updateMessageStatus(env: Env, messageId: string, status: M
 export async function addSuppression(env: Env, email: string, reason: string, source = "ses"): Promise<void> {
   const normalizedEmail = email.trim().toLowerCase();
   const timestamp = nowIso();
-  const existing = await firstRow<{ email: string }>(
-    env.D1_DB.prepare(
-      `SELECT email
-       FROM suppressions
-       WHERE lower(email) = ?
-       LIMIT 1`
-    ).bind(normalizedEmail)
-  );
+  const updateExisting = async () => {
+    const existing = await firstRow<{ email: string }>(
+      env.D1_DB.prepare(
+        `SELECT email
+         FROM suppressions
+         WHERE lower(email) = ?
+         LIMIT 1`
+      ).bind(normalizedEmail)
+    );
 
-  if (existing) {
+    if (!existing) {
+      return false;
+    }
+
     await execute(env.D1_DB.prepare(
       `UPDATE suppressions
        SET reason = ?, source = ?, created_at = ?
        WHERE email = ?`
     ).bind(reason, source, timestamp, existing.email));
+    return true;
+  };
+
+  if (await updateExisting()) {
     return;
   }
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO suppressions (email, reason, source, created_at)
-     VALUES (?, ?, ?, ?)`
-  ).bind(normalizedEmail, reason, source, timestamp));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO suppressions (email, reason, source, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(normalizedEmail, reason, source, timestamp));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    if (!(await updateExisting())) {
+      throw error;
+    }
+  }
 }
 
 export async function updateOutboundJobStatus(env: Env, input: {
