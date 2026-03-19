@@ -715,17 +715,19 @@ export async function resolveAgentExecutionTarget(
         }
       }
 
-      const fallbackBinding = await firstRow<{ agent_id: string }>(
-        env.D1_DB.prepare(
-          `SELECT agent_id
-           FROM agent_mailboxes
-           WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
-           ORDER BY created_at ASC
-           LIMIT 1`
-        ).bind(mailboxId, ...bindingRoles)
-      );
-      if (fallbackBinding) {
-        return { agentId: fallbackBinding.agent_id };
+      if (!requestedAgentId) {
+        const fallbackBinding = await firstRow<{ agent_id: string }>(
+          env.D1_DB.prepare(
+            `SELECT agent_id
+             FROM agent_mailboxes
+             WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+             ORDER BY created_at ASC
+             LIMIT 1`
+          ).bind(mailboxId, ...bindingRoles)
+        );
+        if (fallbackBinding) {
+          return { agentId: fallbackBinding.agent_id };
+        }
       }
 
       if (fallbackDeployment) {
