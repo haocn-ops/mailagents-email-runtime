@@ -567,36 +567,50 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
+  const mailboxId = body.mailboxId;
+  const tenantId = body.tenantId;
 
   try {
-    const mailbox = await getMailboxById(env, body.mailboxId);
-    if (!mailbox) {
-      return json({ error: "Mailbox not found" }, { status: 404 });
+    const validateAdminSendInput = async () => {
+      const mailbox = await getMailboxById(env, mailboxId);
+      if (!mailbox) {
+        return json({ error: "Mailbox not found" }, { status: 404 });
+      }
+      if (mailbox.tenant_id !== tenantId) {
+        return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+      }
+      if (mailbox.status !== "active") {
+        return json({ error: "Mailbox is not active" }, { status: 409 });
+      }
+      if (normalizedFrom !== mailbox.address.toLowerCase()) {
+        return json({ error: "from must match the mailbox address" }, { status: 409 });
+      }
+
+      await validateAdminSendReferences(env, {
+        tenantId,
+        mailboxId,
+        threadId: body.threadId,
+        sourceMessageId: body.sourceMessageId,
+      });
+
+      return null;
+    };
+
+    if (!idempotencyKey) {
+      const validationError = await validateAdminSendInput();
+      if (validationError) {
+        return validationError;
+      }
     }
-    if (mailbox.tenant_id !== body.tenantId) {
-      return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
-    }
-    if (mailbox.status !== "active") {
-      return json({ error: "Mailbox is not active" }, { status: 409 });
-    }
-    if (normalizedFrom !== mailbox.address.toLowerCase()) {
-      return json({ error: "from must match the mailbox address" }, { status: 409 });
-    }
-    await validateAdminSendReferences(env, {
-      tenantId: body.tenantId,
-      mailboxId: body.mailboxId,
-      threadId: body.threadId,
-      sourceMessageId: body.sourceMessageId,
-    });
 
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
         operation: "admin_send",
-        tenantId: body.tenantId,
+        tenantId,
         idempotencyKey,
         requestFingerprint: JSON.stringify({
-          mailboxId: body.mailboxId,
-          tenantId: body.tenantId,
+          mailboxId,
+          tenantId,
           from: body.from,
           to: body.to,
           cc: body.cc ?? [],
@@ -624,12 +638,17 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 
         return json(await restoreAdminSendReplay(env, reservation.record.resourceId));
       }
+
+      const validationError = await validateAdminSendInput();
+      if (validationError) {
+        return validationError;
+      }
     }
 
     const draft = await createDraft(env, {
-      tenantId: body.tenantId,
+      tenantId,
       agentId: "admin_console",
-      mailboxId: body.mailboxId,
+      mailboxId,
       threadId: body.threadId,
       sourceMessageId: body.sourceMessageId,
       createdVia: "site:admin_send",
@@ -657,7 +676,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     if (idempotencyKey) {
       await completeIdempotencyKey(env, {
         operation: "admin_send",
-        tenantId: body.tenantId,
+        tenantId,
         idempotencyKey,
         resourceId: result.outboundJobId,
         response,
@@ -667,7 +686,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     return json(response);
   } catch (error) {
     if (idempotencyKey) {
-      await releaseIdempotencyKey(env, "admin_send", body.tenantId, idempotencyKey).catch(() => undefined);
+      await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
     }
     if (error instanceof SiteRequestError) {
       return json({ error: error.message }, { status: error.status });
