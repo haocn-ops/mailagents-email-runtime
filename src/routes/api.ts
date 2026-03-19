@@ -11,6 +11,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, InvalidJsonBodyError, json, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
+import { enqueueReplayTask } from "../lib/replay";
 import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
 import {
@@ -46,7 +47,6 @@ import {
 } from "../repositories/agents";
 import {
   createDraft,
-  createTask,
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
@@ -1095,20 +1095,11 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           rawR2Key: replayRawR2Key!,
         });
       } else {
-        const replayTask = await createTask(env, {
+        await enqueueReplayTask(env, {
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
           sourceMessageId: route.params.messageId,
-          taskType: "replay",
-          priority: 50,
-          status: "queued",
-          assignedAgent: replayAgentTarget!.agentId,
-        });
-        await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: replayTask.id,
-          agentId: replayAgentTarget!.agentId,
-          agentVersionId: replayAgentTarget!.agentVersionId,
-          deploymentId: replayAgentTarget!.deploymentId,
+          target: replayAgentTarget!,
         });
       }
 
@@ -1140,20 +1131,11 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     if (!replayAgentTarget) {
       return badRequest("agentId is required for rerun_agent replay");
     }
-    const replayTask = await createTask(env, {
+    await enqueueReplayTask(env, {
       tenantId: existingMessage.tenantId,
       mailboxId: existingMessage.mailboxId,
       sourceMessageId: route.params.messageId,
-      taskType: "replay",
-      priority: 50,
-      status: "queued",
-      assignedAgent: replayAgentTarget.agentId,
-    });
-    await env.AGENT_EXECUTE_QUEUE.send({
-      taskId: replayTask.id,
-      agentId: replayAgentTarget.agentId,
-      agentVersionId: replayAgentTarget.agentVersionId,
-      deploymentId: replayAgentTarget.deploymentId,
+      target: replayAgentTarget,
     });
   }
 

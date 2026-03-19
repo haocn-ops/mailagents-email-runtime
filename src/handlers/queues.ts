@@ -101,12 +101,20 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       ).bind("tasked", message.body.messageId).run();
 
       if (executionTarget) {
-        await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: task.id,
-          agentId: executionTarget.agentId,
-          agentVersionId: executionTarget.agentVersionId,
-          deploymentId: executionTarget.deploymentId,
-        });
+        try {
+          await env.AGENT_EXECUTE_QUEUE.send({
+            taskId: task.id,
+            agentId: executionTarget.agentId,
+            agentVersionId: executionTarget.agentVersionId,
+            deploymentId: executionTarget.deploymentId,
+          });
+        } catch (error) {
+          await updateTaskStatus(env, {
+            taskId: task.id,
+            status: "failed",
+          }).catch(() => undefined);
+          throw error;
+        }
       }
 
       message.ack();

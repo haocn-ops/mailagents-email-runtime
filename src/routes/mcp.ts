@@ -6,6 +6,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
+import { enqueueReplayTask } from "../lib/replay";
 import {
   buildRuntimeMetadata,
   MCP_PROTOCOL_VERSION,
@@ -24,7 +25,6 @@ import {
 import {
   completeIdempotencyKey,
   createDraft,
-  createTask,
   enqueueDraftSend,
   getDraft,
   getMessage,
@@ -1099,20 +1099,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           if (!replayAgentTarget) {
             throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
           }
-          const replayTask = await createTask(env, {
+          await enqueueReplayTask(env, {
             tenantId: message.tenantId,
             mailboxId: message.mailboxId,
             sourceMessageId: messageId,
-            taskType: "replay",
-            priority: 50,
-            status: "queued",
-            assignedAgent: replayAgentTarget.agentId,
-          });
-          await env.AGENT_EXECUTE_QUEUE.send({
-            taskId: replayTask.id,
-            agentId: replayAgentTarget.agentId,
-            agentVersionId: replayAgentTarget.agentVersionId,
-            deploymentId: replayAgentTarget.deploymentId,
+            target: replayAgentTarget,
           });
         }
         await completeIdempotencyKey(env, {
@@ -1143,20 +1134,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!replayAgentTarget) {
         throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
       }
-      const replayTask = await createTask(env, {
+      await enqueueReplayTask(env, {
         tenantId: message.tenantId,
         mailboxId: message.mailboxId,
         sourceMessageId: messageId,
-        taskType: "replay",
-        priority: 50,
-        status: "queued",
-        assignedAgent: replayAgentTarget.agentId,
-      });
-      await env.AGENT_EXECUTE_QUEUE.send({
-        taskId: replayTask.id,
-        agentId: replayAgentTarget.agentId,
-        agentVersionId: replayAgentTarget.agentVersionId,
-        deploymentId: replayAgentTarget.deploymentId,
+        target: replayAgentTarget,
       });
     }
 
