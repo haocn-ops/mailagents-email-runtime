@@ -58,17 +58,17 @@ class SiteRequestError extends Error {
 
 async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefined) {
   if (!outboundJobId) {
-    throw new Error("Stored idempotent admin send result is incomplete");
+    throw new SiteRequestError("Stored idempotent admin send result is incomplete", 500);
   }
 
   const outboundJob = await getOutboundJob(env, outboundJobId);
   if (!outboundJob) {
-    throw new Error("Stored idempotent outbound job no longer exists");
+    throw new SiteRequestError("Stored idempotent outbound job no longer exists", 409);
   }
 
   const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
   if (!draft) {
-    throw new Error("Stored idempotent draft no longer exists");
+    throw new SiteRequestError("Stored idempotent draft no longer exists", 409);
   }
 
   return {
