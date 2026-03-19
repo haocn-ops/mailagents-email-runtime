@@ -24,7 +24,10 @@ The MCP smoke flow exercises:
 - `/v2/meta/compatibility`
 - `/v2/meta/compatibility/schema`
 - MCP provisioning tools
+- MCP mailbox-scoped `list_messages`
 - MCP draft creation and send
+- MCP high-level `send_email`
+- MCP high-level `reply_to_message`
 - MCP idempotent send replay
 - MCP composite reply workflow success path against seeded inbound mail
 - MCP machine-readable error codes

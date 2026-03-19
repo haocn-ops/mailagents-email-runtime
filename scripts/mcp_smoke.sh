@@ -120,6 +120,9 @@ TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "create_agent")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send")' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "list_messages" and .annotations.riskLevel == "read" and .annotations.sideEffecting == false)' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_email" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_message" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_draft" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "get_message" and .annotations.riskLevel == "read" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == false)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
@@ -199,6 +202,48 @@ curl -sS "$BASE_URL/mcp" \
     }
   }" | jq -e --arg mailbox "$MAILBOX_ID" '.result.structuredContent.mailboxId == $mailbox' >/dev/null
 
+echo "Minting mailbox-scoped agent token for high-level MCP tools..."
+AGENT_TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"sub\": \"mcp-smoke-agent\",
+    \"tenantId\": \"$TENANT_ID\",
+    \"agentId\": \"$AGENT_ID\",
+    \"scopes\": [
+      \"mail:read\",
+      \"task:read\",
+      \"draft:create\",
+      \"draft:read\",
+      \"draft:send\"
+    ],
+    \"mailboxIds\": [\"$MAILBOX_ID\"],
+    \"expiresInSeconds\": 3600
+  }" | jq -r '.token')"
+
+if [[ -z "$AGENT_TOKEN" || "$AGENT_TOKEN" == "null" ]]; then
+  echo "Failed to mint mailbox-scoped agent token" >&2
+  exit 1
+fi
+
+echo "Listing messages through MCP high-level mailbox tool..."
+LIST_MESSAGES_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 4.25,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"list_messages\",
+      \"arguments\": {
+        \"limit\": 5,
+        \"direction\": \"inbound\"
+      }
+    }
+  }")"
+echo "$LIST_MESSAGES_RESPONSE" | jq -e --arg mailbox "$MAILBOX_ID" '.result.structuredContent.mailbox.id == $mailbox and (.result.structuredContent.items | type == "array")' >/dev/null
+
 echo "Creating a draft through MCP..."
 CREATE_DRAFT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
@@ -226,6 +271,58 @@ if [[ -z "$DRAFT_ID" || "$DRAFT_ID" == "null" ]]; then
   echo "$CREATE_DRAFT_RESPONSE" >&2
   exit 1
 fi
+
+echo "Sending email through MCP high-level send tool..."
+SEND_EMAIL_IDEMPOTENCY_KEY="mcp-send-email-$AGENT_ID"
+SEND_EMAIL_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 5.25,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"send_email\",
+      \"arguments\": {
+        \"to\": [\"$TO_EMAIL\"],
+        \"subject\": \"MCP high-level send\",
+        \"text\": \"Sent through the high-level send_email MCP tool.\",
+        \"idempotencyKey\": \"$SEND_EMAIL_IDEMPOTENCY_KEY\"
+      }
+    }
+  }")"
+SEND_EMAIL_DRAFT_ID="$(echo "$SEND_EMAIL_RESPONSE" | jq -r '.result.structuredContent.draft.id')"
+SEND_EMAIL_OUTBOUND_JOB_ID="$(echo "$SEND_EMAIL_RESPONSE" | jq -r '.result.structuredContent.outboundJobId')"
+echo "$SEND_EMAIL_RESPONSE" | jq -e '.result.structuredContent.status == "queued"' >/dev/null
+if [[ -z "$SEND_EMAIL_DRAFT_ID" || "$SEND_EMAIL_DRAFT_ID" == "null" || -z "$SEND_EMAIL_OUTBOUND_JOB_ID" || "$SEND_EMAIL_OUTBOUND_JOB_ID" == "null" ]]; then
+  echo "High-level MCP send_email did not return a draft and outbound job" >&2
+  echo "$SEND_EMAIL_RESPONSE" >&2
+  exit 1
+fi
+
+echo "Checking send_email idempotency through MCP..."
+SEND_EMAIL_REPEAT="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 5.5,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"send_email\",
+      \"arguments\": {
+        \"to\": [\"$TO_EMAIL\"],
+        \"subject\": \"MCP high-level send\",
+        \"text\": \"Sent through the high-level send_email MCP tool.\",
+        \"idempotencyKey\": \"$SEND_EMAIL_IDEMPOTENCY_KEY\"
+      }
+    }
+  }")"
+echo "$SEND_EMAIL_REPEAT" | jq -e --arg draft "$SEND_EMAIL_DRAFT_ID" --arg outbound "$SEND_EMAIL_OUTBOUND_JOB_ID" '
+  .result.structuredContent.draft.id == $draft and
+  .result.structuredContent.outboundJobId == $outbound and
+  .result.structuredContent.status == "queued"
+' >/dev/null
 
 echo "Sending the draft idempotently through MCP..."
 SEND_IDEMPOTENCY_KEY="mcp-smoke-send-$DRAFT_ID"
@@ -403,6 +500,59 @@ REPLY_WORKFLOW_ERROR_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   }")"
 echo "$REPLY_WORKFLOW_ERROR_RESPONSE" | jq -e '.result.isError == true and .result.structuredContent.error.code == "resource_message_not_found"' >/dev/null
 
+echo "Checking reply_to_message high-level MCP tool..."
+REPLY_TO_MESSAGE_KEY="mcp-reply-message-$AGENT_ID"
+REPLY_TO_MESSAGE_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 8.5,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"reply_to_message\",
+      \"arguments\": {
+        \"messageId\": \"$SEEDED_INBOUND_MESSAGE_ID\",
+        \"text\": \"Thanks from reply_to_message.\",
+        \"idempotencyKey\": \"$REPLY_TO_MESSAGE_KEY\"
+      }
+    }
+  }")"
+REPLY_TO_MESSAGE_DRAFT_ID="$(echo "$REPLY_TO_MESSAGE_RESPONSE" | jq -r '.result.structuredContent.draft.id')"
+REPLY_TO_MESSAGE_OUTBOUND_JOB_ID="$(echo "$REPLY_TO_MESSAGE_RESPONSE" | jq -r '.result.structuredContent.outboundJobId')"
+echo "$REPLY_TO_MESSAGE_RESPONSE" | jq -e --arg message "$SEEDED_INBOUND_MESSAGE_ID" '
+  .result.structuredContent.sourceMessageId == $message and
+  .result.structuredContent.status == "queued"
+' >/dev/null
+if [[ -z "$REPLY_TO_MESSAGE_DRAFT_ID" || "$REPLY_TO_MESSAGE_DRAFT_ID" == "null" || -z "$REPLY_TO_MESSAGE_OUTBOUND_JOB_ID" || "$REPLY_TO_MESSAGE_OUTBOUND_JOB_ID" == "null" ]]; then
+  echo "High-level MCP reply_to_message did not return a draft and outbound job" >&2
+  echo "$REPLY_TO_MESSAGE_RESPONSE" >&2
+  exit 1
+fi
+
+echo "Checking reply_to_message idempotency through MCP..."
+REPLY_TO_MESSAGE_REPEAT="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 8.6,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"reply_to_message\",
+      \"arguments\": {
+        \"messageId\": \"$SEEDED_INBOUND_MESSAGE_ID\",
+        \"text\": \"Thanks from reply_to_message.\",
+        \"idempotencyKey\": \"$REPLY_TO_MESSAGE_KEY\"
+      }
+    }
+  }")"
+echo "$REPLY_TO_MESSAGE_REPEAT" | jq -e --arg draft "$REPLY_TO_MESSAGE_DRAFT_ID" --arg outbound "$REPLY_TO_MESSAGE_OUTBOUND_JOB_ID" '
+  .result.structuredContent.draft.id == $draft and
+  .result.structuredContent.outboundJobId == $outbound and
+  .result.structuredContent.status == "queued"
+' >/dev/null
+
 echo "Checking machine-readable MCP errors..."
 ERROR_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
@@ -424,7 +574,11 @@ echo "MCP smoke completed."
 echo "Agent ID: $AGENT_ID"
 echo "Draft ID: $DRAFT_ID"
 echo "Outbound Job ID: $OUTBOUND_JOB_ID"
+echo "send_email Draft ID: $SEND_EMAIL_DRAFT_ID"
+echo "send_email Outbound Job ID: $SEND_EMAIL_OUTBOUND_JOB_ID"
 echo "Reply Draft ID: $REPLY_DRAFT_ID"
 echo "Reply Outbound Job ID: $REPLY_OUTBOUND_JOB_ID"
+echo "reply_to_message Draft ID: $REPLY_TO_MESSAGE_DRAFT_ID"
+echo "reply_to_message Outbound Job ID: $REPLY_TO_MESSAGE_OUTBOUND_JOB_ID"
 echo "Manual Send Draft ID: $MANUAL_SEND_DRAFT_ID"
 echo "Manual Send Outbound Job ID: $MANUAL_SEND_OUTBOUND_JOB_ID"
