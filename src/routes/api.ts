@@ -1888,7 +1888,13 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     payloadR2Key,
   });
 
-  if (message) {
+  const isTerminalSesEvent =
+    normalized.eventType === "delivery"
+    || normalized.eventType === "bounce"
+    || normalized.eventType === "complaint"
+    || normalized.eventType === "reject";
+
+  if (isTerminalSesEvent && message) {
     const status =
       normalized.eventType === "delivery" ? "replied" :
       normalized.eventType === "bounce" ? "failed" :
@@ -1897,7 +1903,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     if (normalized.eventType !== "delivery" || message.status !== "failed") {
       await updateMessageStatus(env, message.id, status);
     }
-  } else if (normalized.providerMessageId) {
+  } else if (isTerminalSesEvent && normalized.providerMessageId) {
     const status =
       normalized.eventType === "delivery" ? "replied" :
       normalized.eventType === "bounce" ? "failed" :
@@ -1906,7 +1912,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     await updateMessageStatusByProviderMessageId(env, normalized.providerMessageId, status);
   }
 
-  if (message) {
+  if (isTerminalSesEvent && message) {
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;

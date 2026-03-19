@@ -6,7 +6,7 @@ export type TaskStatus = "queued" | "running" | "done" | "needs_review" | "faile
 export type DraftStatus = "draft" | "approved" | "queued" | "sent" | "cancelled" | "failed";
 export type MessageStatus = "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
 export type OutboundJobStatus = "queued" | "sending" | "sent" | "retry" | "failed";
-export type DeliveryEventType = "delivery" | "bounce" | "complaint" | "reject";
+export type DeliveryEventType = "delivery" | "bounce" | "complaint" | "reject" | "unknown";
 
 export interface MailboxRecord {
   id: string;

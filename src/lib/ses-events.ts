@@ -73,9 +73,18 @@ export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
     };
   }
 
+  if (eventType === "reject") {
+    return {
+      providerMessageId,
+      eventType: "reject",
+      mailTags: tags,
+      raw: payload,
+    };
+  }
+
   return {
     providerMessageId,
-    eventType: "reject",
+    eventType: "unknown",
     mailTags: tags,
     raw: payload,
   };
