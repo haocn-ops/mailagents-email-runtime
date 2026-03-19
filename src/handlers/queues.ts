@@ -124,9 +124,11 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         assignedAgent: executionTarget?.agentId,
       });
 
-      await env.D1_DB.prepare(
-        "UPDATE messages SET status = ? WHERE id = ?"
-      ).bind("tasked", message.body.messageId).run();
+      if (task.status === "queued" || task.status === "running" || task.status === "needs_review") {
+        await env.D1_DB.prepare(
+          "UPDATE messages SET status = ? WHERE id = ?"
+        ).bind("tasked", message.body.messageId).run();
+      }
 
       if (executionTarget && task.status === "queued") {
         await env.AGENT_EXECUTE_QUEUE.send({
