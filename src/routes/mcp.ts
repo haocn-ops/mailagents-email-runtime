@@ -1709,14 +1709,23 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
     const agentId = optionalString(args.agentId);
     const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
-    if (mode === "normalize" && !message.rawR2Key) {
-      throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
-    }
-    const replayRawR2Key = mode === "normalize" ? message.rawR2Key : undefined;
-    const replayTarget = mode === "rerun_agent"
-      ? await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId)
-      : null;
-    const replayAgentTarget = replayTarget ?? undefined;
+    const resolveReplayExecution = async () => {
+      if (mode === "normalize") {
+        if (!message.rawR2Key) {
+          throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
+        }
+
+        return {
+          replayRawR2Key: message.rawR2Key,
+          replayAgentTarget: undefined,
+        };
+      }
+
+      return {
+        replayRawR2Key: undefined,
+        replayAgentTarget: await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId),
+      };
+    };
     const response = {
       messageId,
       mode,
@@ -1747,6 +1756,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       }
 
       try {
+        const { replayRawR2Key, replayAgentTarget } = await resolveReplayExecution();
         if (mode === "normalize") {
           if (!replayRawR2Key) {
             throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
@@ -1784,6 +1794,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       }
     }
 
+    const { replayRawR2Key, replayAgentTarget } = await resolveReplayExecution();
     if (mode === "normalize") {
       if (!replayRawR2Key) {
         throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
