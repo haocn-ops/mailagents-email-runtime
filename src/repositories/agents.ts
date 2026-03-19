@@ -670,6 +670,22 @@ export async function resolveAgentExecutionTarget(
   }
 
   if (requestedAgentId) {
+    if (bindingRoles?.length) {
+      const binding = await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(mailboxId, requestedAgentId, ...bindingRoles)
+      );
+
+      if (!binding) {
+        return null;
+      }
+    }
+
     const agent = await getAgent(env, requestedAgentId);
     if (!agent) {
       return null;

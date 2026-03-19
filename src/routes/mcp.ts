@@ -1688,7 +1688,12 @@ async function resolveReplayAgentTarget(
       await throwIfResponseError(tenantError);
     }
 
-    return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
+    const target = await resolveAgentExecutionTarget(env, mailboxId, agentId, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+    if (!target?.agentId) {
+      throw new McpToolError("invalid_arguments", "agentId must be active for the mailbox");
+    }
+
+    return target;
   }
 
   const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);

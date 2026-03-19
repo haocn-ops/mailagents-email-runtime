@@ -2313,7 +2313,12 @@ async function resolveReplayAgentTarget(
       return tenantError;
     }
 
-    return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
+    const target = await resolveAgentExecutionTarget(env, mailboxId, agentId, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+    if (!target?.agentId) {
+      return badRequest("agentId must be active for the mailbox");
+    }
+
+    return target;
   }
 
   const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
