@@ -31,6 +31,7 @@ import {
   getAgentDeployment,
   getAgentVersion,
   hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
   getMailboxByAddress,
   getMailboxById,
   listAgentDeployments,
@@ -242,7 +243,11 @@ async function validateSendAgentBinding(env: Env, input: {
     mailboxId: input.mailboxId,
     roles: [...SEND_CAPABLE_MAILBOX_ROLES],
   });
-  if (!hasBinding) {
+  const hasDeployment = await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (!hasBinding && !hasDeployment) {
     throw new RouteRequestError("Agent is not allowed to send for mailbox", 403);
   }
 }
@@ -2309,11 +2314,15 @@ async function deliverRotatedTokenToSelfMailbox(
   }
 
   const executionTarget = claims.agentId
-    ? await hasActiveMailboxBinding(env, {
+    ? (await hasActiveMailboxBinding(env, {
         agentId: claims.agentId,
         mailboxId,
         roles: [...SEND_CAPABLE_MAILBOX_ROLES],
       })
+      || await hasActiveMailboxDeployment(env, {
+        agentId: claims.agentId,
+        mailboxId,
+      }))
       ? { agentId: claims.agentId }
       : null
     : await resolveAgentExecutionTarget(env, mailboxId, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);

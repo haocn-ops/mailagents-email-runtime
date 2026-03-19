@@ -18,6 +18,7 @@ import {
   createAgent,
   getAgent,
   hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
   getMailboxById,
   resolveAgentExecutionTarget,
   upsertAgentPolicy,
@@ -654,7 +655,11 @@ async function validateBindingResources(
       mailboxId,
       roles: bindingRoles,
     });
-    if (!hasBinding) {
+    const hasDeployment = await hasActiveMailboxDeployment(env, {
+      agentId,
+      mailboxId,
+    });
+    if (!hasBinding && !hasDeployment) {
       throw new McpToolError("access_mailbox_denied", "Agent is not allowed to send for mailbox");
     }
   }

@@ -748,6 +748,23 @@ export async function hasActiveMailboxBinding(env: Env, input: {
   return Boolean(row);
 }
 
+export async function hasActiveMailboxDeployment(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<boolean> {
+  const row = await firstRow<{ id: string }>(
+    env.D1_DB.prepare(
+      `SELECT id
+       FROM agent_deployments
+       WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(input.mailboxId, input.agentId)
+  );
+
+  return Boolean(row);
+}
+
 export async function bindMailbox(env: Env, input: {
   tenantId: string;
   agentId: string;
