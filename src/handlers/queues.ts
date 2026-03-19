@@ -5,10 +5,10 @@ import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
+  claimTaskForExecution,
   createTask,
   getDraftByR2Key,
   getMessage,
-  getTask,
   getTaskBySourceMessageId,
   getOrCreateThread,
   getOutboundJob,
@@ -156,20 +156,11 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
 async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
-      const task = await getTask(env, message.body.taskId);
-      if (!task) {
+      const claimed = await claimTaskForExecution(env, message.body.taskId);
+      if (!claimed) {
         message.ack();
         continue;
       }
-      if (task.status !== "queued" && task.status !== "failed") {
-        message.ack();
-        continue;
-      }
-
-      await updateTaskStatus(env, {
-        taskId: message.body.taskId,
-        status: "running",
-      });
 
       const runId = `run_${message.body.taskId}`;
       const timestamp = nowIso();

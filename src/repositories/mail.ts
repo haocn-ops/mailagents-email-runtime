@@ -1212,6 +1212,22 @@ export async function deleteTask(env: Env, taskId: string): Promise<void> {
   ).bind(taskId));
 }
 
+export async function claimTaskForExecution(env: Env, taskId: string): Promise<boolean> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET status = ?, updated_at = ?
+     WHERE id = ? AND status IN (?, ?)`
+  ).bind(
+    "running",
+    nowIso(),
+    taskId,
+    "queued",
+    "failed"
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 export async function updateTaskStatus(env: Env, input: {
   taskId: string;
   status: TaskRecord["status"];
