@@ -2205,9 +2205,6 @@ async function resolveSelfMailbox(env: Env, claims: AccessTokenClaims) {
   if (mailbox.tenant_id !== claims.tenantId) {
     return json({ error: "Tenant access denied" }, { status: 403 });
   }
-  if (mailbox.status !== "active") {
-    return json({ error: "Mailbox is not active" }, { status: 409 });
-  }
 
   return mailbox;
 }
