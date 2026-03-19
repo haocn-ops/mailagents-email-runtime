@@ -1049,6 +1049,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
     await validateBindingResources(env, tenantId, agentId, mailboxId);
+    await validateDraftReferences(env, {
+      tenantId,
+      mailboxId,
+      threadId: optionalString(args.threadId),
+      sourceMessageId: optionalString(args.sourceMessageId),
+    });
 
     if (send) {
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
