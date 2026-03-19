@@ -46,7 +46,66 @@ Current SES limitation as of 2026-03-18:
 - for SES-backed outbound validation, only send to verified identities or verified test recipients
 - successful runtime delivery to `support@mailagents.net` or other verified inboxes does not imply unrestricted outbound sending to arbitrary external customer addresses
 
-## Quick Start
+## Agent Quick Start
+
+For external agents, the default production flow is now:
+
+1. `POST https://api.mailagents.net/public/signup`
+2. store the returned mailbox-scoped bearer token
+3. call `POST /mcp` with method `tools/list`
+4. read inbound mail with `list_messages` or `GET /v1/mailboxes/self/messages`
+5. send new mail with `send_email` or `POST /v1/messages/send`
+6. reply on-thread with `reply_to_message` or `POST /v1/messages/{messageId}/reply`
+
+Minimal MCP-first example:
+
+```bash
+curl -sS -X POST https://api.mailagents.net/public/signup \
+  -H 'content-type: application/json' \
+  -d '{
+    "mailboxAlias": "agent-demo",
+    "agentName": "Agent Demo",
+    "operatorEmail": "operator@example.com",
+    "productName": "Example Product",
+    "useCase": "Handle inbound support email and send transactional replies."
+  }'
+
+curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list",
+    "params": {}
+  }'
+
+curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "send_email",
+      "arguments": {
+        "to": ["recipient@example.com"],
+        "subject": "Hello from Mailagents",
+        "text": "Sent through the mailbox-scoped MCP tool.",
+        "idempotencyKey": "send-demo-001"
+      }
+    }
+  }'
+```
+
+See:
+
+- [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md)
+- [`docs/mcp-local.md`](docs/mcp-local.md)
+- [`docs/openapi.yaml`](docs/openapi.yaml)
+
+## Local Development Quick Start
 
 ```bash
 npm install
