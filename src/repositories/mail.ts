@@ -1079,6 +1079,12 @@ export async function updateMessageStatusByProviderMessageId(env: Env, providerM
   ).bind(status, providerMessageId));
 }
 
+export async function updateMessageStatus(env: Env, messageId: string, status: MessageRecord["status"]): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE messages SET status = ? WHERE id = ?`
+  ).bind(status, messageId));
+}
+
 export async function addSuppression(env: Env, email: string, reason: string, source = "ses"): Promise<void> {
   await execute(env.D1_DB.prepare(
     `INSERT INTO suppressions (email, reason, source, created_at)

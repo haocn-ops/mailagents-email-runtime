@@ -13,6 +13,7 @@ import {
   insertAttachments,
   markDraftStatus,
   markMessageSent,
+  updateMessageStatus,
   updateTaskStatus,
   updateInboundMessageNormalized,
   updateOutboundJobStatus,
@@ -296,6 +297,9 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         retryCount: nextRetryCount,
         lastError: error instanceof Error ? error.message : "unknown_error",
       }).catch(() => undefined);
+      if (outboundJob && exhausted) {
+        await updateMessageStatus(env, outboundJob.messageId, "failed").catch(() => undefined);
+      }
       if (draft && exhausted) {
         await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
       }

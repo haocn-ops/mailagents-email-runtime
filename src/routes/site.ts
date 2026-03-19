@@ -39,6 +39,7 @@ import {
   markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateMessageStatus,
   updateOutboundJobStatus,
 } from "../repositories/mail";
 import type { Env } from "../types";
@@ -388,6 +389,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       lastError: null,
       nextRetryAt: null,
     });
+    await updateMessageStatus(env, job.messageId, "tasked");
     const draft = await getDraftByR2Key(env, job.draftR2Key);
     if (draft) {
       await markDraftStatus(env, draft.id, "queued");
@@ -402,6 +404,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
         lastError: job.lastError ?? null,
         nextRetryAt: job.nextRetryAt ?? null,
       }).catch(() => undefined);
+      await updateMessageStatus(env, job.messageId, "failed").catch(() => undefined);
       if (draft) {
         await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
       }
