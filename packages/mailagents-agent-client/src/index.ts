@@ -347,7 +347,6 @@ export interface DraftRecord {
   createdVia?: string;
   status: DraftStatus;
   draftR2Key: string;
-  subject?: string;
   createdAt: string;
   updatedAt: string;
 }
