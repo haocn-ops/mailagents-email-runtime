@@ -558,6 +558,9 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
     return badRequest("mailboxId, tenantId, from, to, and subject are required");
   }
+  if (!body.text && !body.html) {
+    return badRequest("text or html is required");
+  }
   const normalizedFrom = body.from.trim().toLowerCase();
   if (!normalizedFrom) {
     return badRequest("from must be a non-empty string");

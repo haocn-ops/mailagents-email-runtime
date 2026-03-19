@@ -2267,6 +2267,9 @@ async function createAndSendDraft(env: Env, input: {
     throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
   const validateCreateAndSendInput = async () => {
+    if (!input.payload.text && !input.payload.html) {
+      throw new RouteRequestError("text or html is required", 400);
+    }
     await validateActiveDraftMailbox(env, {
       tenantId: input.tenantId,
       mailboxId: input.mailboxId,
