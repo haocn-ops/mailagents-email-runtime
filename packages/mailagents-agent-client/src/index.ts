@@ -318,6 +318,7 @@ export interface SelfMailboxMessageContent extends MessageContentResult {}
 
 export interface ThreadResult {
   id: string;
+  tenantId: string;
   mailboxId: string;
   subjectNorm?: string;
   status?: string;
