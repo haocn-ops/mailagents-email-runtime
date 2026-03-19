@@ -123,6 +123,12 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     throw new Error(`The mailbox ${address} is already taken. Please choose a different alias.`);
   }
 
+  const rules = await listEmailRoutingRules(env);
+  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
+  if (!catchAllRule) {
+    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
+  }
+
   const tenantId = createId("tnt");
   const mailbox = await ensureMailbox(env, {
     tenantId,
@@ -198,12 +204,6 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     blockedSenderDomains: [],
     allowedTools: ["reply_email", "mark_task_done"],
   });
-
-  const rules = await listEmailRoutingRules(env);
-  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
-  if (!catchAllRule) {
-    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
-  }
 
   const access = await issueSelfServeAccessToken({
     env,
