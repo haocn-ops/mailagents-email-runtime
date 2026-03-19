@@ -1448,11 +1448,15 @@ router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, ro
   if (message.internetMessageId && !references.includes(message.internetMessageId)) {
     references.push(message.internetMessageId);
   }
+  const replyMailbox = await getMailboxById(env, message.mailboxId);
+  if (!replyMailbox) {
+    return json({ error: "Mailbox not found" }, { status: 404 });
+  }
 
   const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
     ? message.subject
     : `Re: ${message.subject ?? ""}`.trim();
-  const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+  const replyFrom = replyMailbox.address;
 
   const result = await createAndSendDraft(env, {
     tenantId: message.tenantId,

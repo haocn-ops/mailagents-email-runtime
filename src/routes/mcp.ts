@@ -920,11 +920,15 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (message.internetMessageId && !references.includes(message.internetMessageId)) {
       references.push(message.internetMessageId);
     }
+    const replyMailbox = await getMailboxById(env, message.mailboxId);
+    if (!replyMailbox) {
+      throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+    }
 
     const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
       ? message.subject
       : `Re: ${message.subject ?? ""}`.trim();
-    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+    const replyFrom = replyMailbox.address;
 
     const draftPayload = {
       from: replyFrom,
@@ -1363,11 +1367,15 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (message.internetMessageId && !references.includes(message.internetMessageId)) {
       references.push(message.internetMessageId);
     }
+    const replyMailbox = await getMailboxById(env, message.mailboxId);
+    if (!replyMailbox) {
+      throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+    }
 
     const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
       ? message.subject
       : `Re: ${message.subject ?? ""}`.trim();
-    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+    const replyFrom = replyMailbox.address;
 
     const result = await createAndSendDraftForMcp(env, {
       tenantId: message.tenantId,
