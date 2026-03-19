@@ -20,7 +20,8 @@ It provides:
 
 - inbound email ingestion and normalization
 - tenant-scoped agent and mailbox access
-- drafts as the control point for outbound side effects
+- mailbox-scoped high-level send and reply surfaces for common agent workflows
+- drafts as the lower-level control point for outbound side effects
 - asynchronous outbound delivery through SES
 - MCP tools and composite workflows for agent orchestration
 
@@ -31,7 +32,7 @@ Think in this order:
 1. discover capabilities
 2. obtain a least-privilege bearer token
 3. read state before side effects
-4. create a draft before send
+4. prefer mailbox-scoped high-level send and reply surfaces
 5. use explicit `idempotencyKey` values for retryable side effects
 6. branch only on stable error codes
 
@@ -125,8 +126,9 @@ Use:
 ## Core Safe Rules
 
 - prefer reads before writes
-- create drafts before any delivery step
-- treat `send_draft` as the first real outbound side effect
+- prefer `list_messages`, `send_email`, and `reply_to_message` for mailbox-scoped agents
+- treat high-level send and reply calls as draft-backed side effects
+- treat `send_draft` as the lower-level delivery primitive when the workflow needs explicit draft control
 - treat replay as recovery, not as implicit permission to send
 - keep admin and debug routes out of normal agent workflows
 - reuse the same `idempotencyKey` when retrying the same logical send or replay
@@ -135,6 +137,7 @@ Use:
 
 Primitive tools:
 
+- `list_messages`
 - `get_message`
 - `get_message_content`
 - `get_thread`
@@ -145,6 +148,8 @@ Primitive tools:
 
 Composite tools:
 
+- `send_email`
+- `reply_to_message`
 - `reply_to_inbound_email`
 - `operator_manual_send`
 
@@ -208,10 +213,12 @@ If you are trying to:
 
 1. read `/v2/meta/compatibility`
 2. validate against `/v2/meta/compatibility/schema`
-3. mint a mailbox-scoped token
+3. obtain a mailbox-scoped token, usually from `POST /public/signup`
 4. call `tools/list`
 5. filter out tools that require human review when automation is not allowed
 6. prefer read tools first
-7. create drafts before sends
-8. use `idempotencyKey` on side-effecting retries
-9. record the compatibility version you integrated against
+7. use `list_messages` to inspect mailbox state
+8. use `send_email` and `reply_to_message` for the common mailbox workflow
+9. drop down to `create_draft` and `send_draft` only when explicit draft control is required
+10. use `idempotencyKey` on side-effecting retries
+11. record the compatibility version you integrated against

@@ -15,8 +15,8 @@ Core runtime flow:
 2. the raw email is stored in R2 and a message row is written to D1
 3. a queue job normalizes the email, finds or creates a thread, stores
    attachments, and creates a task
-4. an assigned agent can read the task and create a draft
-5. a draft send request enqueues outbound delivery through SES
+4. an assigned agent can read mailbox messages and tasks through mailbox-scoped APIs or MCP tools
+5. high-level send and reply calls create drafts internally and enqueue outbound delivery through SES
 6. delivery or bounce events are mapped back to the message
 
 ## Core Objects
@@ -58,8 +58,8 @@ Admin and debug routes are separate from bearer-auth API routes:
 For mailbox creation through the signup API, `POST /public/signup` can return a
 default mailbox-scoped bearer token for the created mailbox and include the
 same token in the welcome email. This allows newly registered mailboxes to read
-mail, create drafts, and send drafts without a separate operator token-mint
-step.
+mail, list inbox state, send outbound email, and reply on-thread without a
+separate operator token-mint step.
 
 ## Minimum Safe Scopes
 
@@ -70,6 +70,13 @@ For a read-and-reply agent, the minimum useful scopes are:
 - `draft:create`
 - `draft:read`
 - `draft:send`
+
+These scopes are sufficient for both:
+
+- the high-level mailbox self routes such as `GET /v1/mailboxes/self/messages`
+  and `POST /v1/messages/send`
+- the MCP mailbox tools such as `list_messages`, `send_email`, and
+  `reply_to_message`
 
 Additional scopes such as `agent:create`, `agent:update`, `agent:bind`, or
 `mail:replay` should only be granted when the agent truly needs them.
@@ -85,23 +92,25 @@ For local development:
 5. call `POST /v1/auth/tokens` with the admin secret to mint a bearer token
 6. create an agent with `POST /v1/agents`
 7. bind a mailbox with `POST /v1/agents/{agentId}/mailboxes`
-8. list tasks or messages for the mailbox
-9. create a draft with `POST /v1/agents/{agentId}/drafts`
-10. explicitly send with `POST /v1/drafts/{draftId}/send`
+8. call `POST /mcp` with `tools/list` or use `GET /v1/mailboxes/self`
+9. list messages with `list_messages` or `GET /v1/mailboxes/self/messages`
+10. send with `send_email` or `POST /v1/messages/send`
+11. reply with `reply_to_message` or `POST /v1/messages/{messageId}/reply`
 
 For production onboarding through the signup API:
 
 1. call `POST /public/signup`
 2. store the returned mailbox-scoped bearer token
-3. use that token for message reads, draft creation, and send
-4. if the token expires, call `POST /public/token/reissue`
-5. retrieve the refreshed token from the original `operatorEmail`
-6. if the token is still valid and the agent wants to rotate it proactively,
+3. call `POST /mcp` with `tools/list` to discover the runtime surface
+4. use that token for `list_messages`, `send_email`, `reply_to_message`, or the mailbox self routes
+5. if the token expires, call `POST /public/token/reissue`
+6. retrieve the refreshed token from the original `operatorEmail`
+7. if the token is still valid and the agent wants to rotate it proactively,
    call `POST /v1/auth/token/rotate`
-7. use `delivery: "inline"` for immediate return, `delivery: "self_mailbox"`
+8. use `delivery: "inline"` for immediate return, `delivery: "self_mailbox"`
    to send the refreshed token back to the mailbox itself, or `delivery:
    "both"` for both channels
-8. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
+9. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
    operator-managed provisioning
 
 `POST /public/token/reissue` is intentionally recovery-only:
@@ -126,9 +135,9 @@ For incoming mail handling:
 2. persist the raw message
 3. normalize asynchronously
 4. create a task
-5. let the agent inspect the task and related message content
-6. create a draft
-7. require explicit send
+5. let the agent inspect mailbox messages, tasks, and related message content
+6. use high-level reply or send routes for most workflows
+7. drop down to explicit draft creation only when the workflow needs a visible review step
 
 ## Rules That Matter Most
 
@@ -137,6 +146,10 @@ For incoming mail handling:
 - Never assume replayed work should auto-send outbound email.
 - Expect cross-system callbacks and queue delivery to be at-least-once.
 - Use mailbox-scoped tokens where possible.
+- Prefer `list_messages`, `send_email`, and `reply_to_message` as the default
+  mailbox workflow surface.
+- Use explicit draft creation only when the workflow needs human review or
+  draft lifecycle control.
 - Prefer the smallest scope set that still completes the task.
 - Keep admin and debug access out of normal agent workflows.
 
@@ -147,6 +160,7 @@ Read-only operations:
 - fetch agent metadata
 - list tasks
 - read messages
+- list mailbox messages through self routes or MCP
 - read threads
 - inspect drafts
 
@@ -154,6 +168,8 @@ Write operations with persistent side effects:
 
 - create or update agent
 - bind mailbox
+- send email through high-level routes or MCP tools
+- reply to a message through high-level routes or MCP tools
 - create draft
 - send draft
 - replay message processing
