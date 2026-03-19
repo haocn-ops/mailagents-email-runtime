@@ -18,6 +18,7 @@ import {
   buildTokenReissueText,
   parseSelfServeSignup,
   performSelfServeSignup,
+  SignupError,
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
 import {
@@ -177,7 +178,8 @@ router.on("POST", "/public/signup", async (request, env) => {
     return json(result, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to complete self-serve signup";
-    return json({ error: message, values: parsed.values }, { status: 502 });
+    const status = error instanceof SignupError ? error.status : 502;
+    return json({ error: message, values: parsed.values }, { status });
   }
 });
 
