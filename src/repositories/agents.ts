@@ -842,6 +842,22 @@ export async function hasActiveMailboxDeployment(env: Env, input: {
   return Boolean(row);
 }
 
+async function getAgentMailboxBinding(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<AgentMailboxBindingRecord | null> {
+  const row = await firstRow<AgentMailboxRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_id, mailbox_id, role, status, created_at
+       FROM agent_mailboxes
+       WHERE agent_id = ? AND mailbox_id = ?
+       LIMIT 1`
+    ).bind(input.agentId, input.mailboxId)
+  );
+
+  return row ? mapMailboxRow(row) : null;
+}
+
 export async function bindMailbox(env: Env, input: {
   tenantId: string;
   agentId: string;
@@ -851,18 +867,40 @@ export async function bindMailbox(env: Env, input: {
   const id = createId("amb");
   const createdAt = nowIso();
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.agentId,
-    input.mailboxId,
-    input.role,
-    "active",
-    createdAt
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.mailboxId,
+      input.role,
+      "active",
+      createdAt
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const existing = await getAgentMailboxBinding(env, {
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    if (existing) {
+      if (existing.role !== input.role) {
+        throw new MailboxConflictError(`Mailbox ${input.mailboxId} is already bound to agent ${input.agentId} with role ${existing.role}`);
+      }
+      if (existing.status !== "active") {
+        throw new MailboxConflictError(`Mailbox ${input.mailboxId} is already bound to agent ${input.agentId} with status ${existing.status}`);
+      }
+      return existing;
+    }
+
+    throw error;
+  }
 
   return {
     id,

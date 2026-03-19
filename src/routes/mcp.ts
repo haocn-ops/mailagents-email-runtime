@@ -20,6 +20,7 @@ import {
   hasActiveMailboxBinding,
   hasActiveMailboxDeployment,
   getMailboxById,
+  MailboxConflictError,
   resolveAgentExecutionTarget,
   upsertAgentPolicy,
 } from "../repositories/agents";
@@ -904,12 +905,19 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
     await validateBindingResources(env, tenantId, agentId, mailboxId);
 
-    return await bindMailbox(env, {
-      tenantId,
-      agentId,
-      mailboxId,
-      role,
-    });
+    try {
+      return await bindMailbox(env, {
+        tenantId,
+        agentId,
+        mailboxId,
+        role,
+      });
+    } catch (error) {
+      if (error instanceof MailboxConflictError) {
+        throw new McpToolError("conflict", error.message);
+      }
+      throw error;
+    }
   }
 
   if (toolName === "upsert_agent_policy") {

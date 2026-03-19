@@ -32,6 +32,7 @@ import {
   getAgentVersion,
   hasActiveMailboxBinding,
   hasActiveMailboxDeployment,
+  MailboxConflictError,
   getMailboxByAddress,
   getMailboxById,
   listAgentDeployments,
@@ -1387,12 +1388,19 @@ router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, ro
     return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
   }
 
-  return json(await bindMailbox(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    mailboxId: body.mailboxId,
-    role: body.role,
-  }), { status: 201 });
+  try {
+    return json(await bindMailbox(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      mailboxId: body.mailboxId,
+      role: body.role,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof MailboxConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("GET", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, route) => {
