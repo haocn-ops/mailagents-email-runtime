@@ -634,34 +634,108 @@ export async function resolveAgentExecutionTarget(
   requestedAgentId?: string,
   bindingRoles?: AgentMailboxBindingRecord["role"][],
 ): Promise<AgentExecutionTarget | null> {
-  try {
-    const deploymentQuery = requestedAgentId
-      ? env.D1_DB.prepare(
-          `SELECT id, agent_id, agent_version_id
-           FROM agent_deployments
-           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
-           ORDER BY created_at DESC
-           LIMIT 1`
-        ).bind(mailboxId, requestedAgentId)
-      : env.D1_DB.prepare(
-          `SELECT id, agent_id, agent_version_id
-           FROM agent_deployments
-           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
-           ORDER BY created_at DESC
-           LIMIT 1`
-        ).bind(mailboxId);
-    const deployment = await firstRow<{
-      id: string;
-      agent_id: string;
-      agent_version_id: string;
-    }>(deploymentQuery);
+  let requestedAgentHasRoleBinding = false;
 
-    if (deployment) {
-      return {
-        agentId: deployment.agent_id,
-        agentVersionId: deployment.agent_version_id,
-        deploymentId: deployment.id,
-      };
+  if (bindingRoles?.length && requestedAgentId) {
+    requestedAgentHasRoleBinding = await hasActiveMailboxBinding(env, {
+      agentId: requestedAgentId,
+      mailboxId,
+      roles: bindingRoles,
+    });
+    if (!requestedAgentHasRoleBinding) {
+      const hasAnyBinding = await hasActiveMailboxBinding(env, {
+        agentId: requestedAgentId,
+        mailboxId,
+      });
+      if (hasAnyBinding) {
+        return null;
+      }
+    }
+  }
+
+  try {
+    if (bindingRoles?.length) {
+      const deploymentRows = requestedAgentId
+        ? await allRows<{
+            id: string;
+            agent_id: string;
+            agent_version_id: string;
+          }>(
+            env.D1_DB.prepare(
+              `SELECT id, agent_id, agent_version_id
+               FROM agent_deployments
+               WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+               ORDER BY created_at DESC`
+            ).bind(mailboxId, requestedAgentId)
+          )
+        : await allRows<{
+            id: string;
+            agent_id: string;
+            agent_version_id: string;
+          }>(
+            env.D1_DB.prepare(
+              `SELECT id, agent_id, agent_version_id
+               FROM agent_deployments
+               WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+               ORDER BY created_at DESC`
+            ).bind(mailboxId)
+          );
+
+      for (const deployment of deploymentRows) {
+        const hasMatchingBinding = await hasActiveMailboxBinding(env, {
+          agentId: deployment.agent_id,
+          mailboxId,
+          roles: bindingRoles,
+        });
+        if (hasMatchingBinding) {
+          return {
+            agentId: deployment.agent_id,
+            agentVersionId: deployment.agent_version_id,
+            deploymentId: deployment.id,
+          };
+        }
+
+        const hasAnyBinding = await hasActiveMailboxBinding(env, {
+          agentId: deployment.agent_id,
+          mailboxId,
+        });
+        if (!hasAnyBinding) {
+          return {
+            agentId: deployment.agent_id,
+            agentVersionId: deployment.agent_version_id,
+            deploymentId: deployment.id,
+          };
+        }
+      }
+    } else {
+      const deploymentQuery = requestedAgentId
+        ? env.D1_DB.prepare(
+            `SELECT id, agent_id, agent_version_id
+             FROM agent_deployments
+             WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1`
+          ).bind(mailboxId, requestedAgentId)
+        : env.D1_DB.prepare(
+            `SELECT id, agent_id, agent_version_id
+             FROM agent_deployments
+             WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+             ORDER BY created_at DESC
+             LIMIT 1`
+          ).bind(mailboxId);
+      const deployment = await firstRow<{
+        id: string;
+        agent_id: string;
+        agent_version_id: string;
+      }>(deploymentQuery);
+
+      if (deployment) {
+        return {
+          agentId: deployment.agent_id,
+          agentVersionId: deployment.agent_version_id,
+          deploymentId: deployment.id,
+        };
+      }
     }
   } catch (error) {
     if (!isMissingTableError(error)) {
@@ -670,20 +744,8 @@ export async function resolveAgentExecutionTarget(
   }
 
   if (requestedAgentId) {
-    if (bindingRoles?.length) {
-      const binding = await firstRow<{ agent_id: string }>(
-        env.D1_DB.prepare(
-          `SELECT agent_id
-           FROM agent_mailboxes
-           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
-           ORDER BY created_at ASC
-           LIMIT 1`
-        ).bind(mailboxId, requestedAgentId, ...bindingRoles)
-      );
-
-      if (!binding) {
-        return null;
-      }
+    if (bindingRoles?.length && !requestedAgentHasRoleBinding) {
+      return null;
     }
 
     const agent = await getAgent(env, requestedAgentId);
