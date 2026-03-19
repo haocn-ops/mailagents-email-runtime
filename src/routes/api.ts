@@ -1950,17 +1950,17 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
       return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
     }
-    await validateActiveDraftMailbox(env, {
-      tenantId: draft.tenantId,
-      mailboxId: draft.mailboxId,
-    });
-    await validateSendAgentBinding(env, {
-      tenantId: draft.tenantId,
-      agentId: draft.agentId,
-      mailboxId: draft.mailboxId,
-    });
 
     try {
+      await validateActiveDraftMailbox(env, {
+        tenantId: draft.tenantId,
+        mailboxId: draft.mailboxId,
+      });
+      await validateSendAgentBinding(env, {
+        tenantId: draft.tenantId,
+        agentId: draft.agentId,
+        mailboxId: draft.mailboxId,
+      });
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
         draftId: route.params.draftId,
