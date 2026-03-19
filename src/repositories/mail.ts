@@ -1228,10 +1228,34 @@ export async function getOrCreateTaskForSourceMessage(env: Env, input: {
     };
   }
 
-  return requireRow(
+  const existing = requireRow(
     await getTaskBySourceMessageId(env, input.sourceMessageId, input.taskType),
     "Task lookup failed after duplicate source-message insert"
   );
+
+  if (existing.status !== "failed") {
+    return existing;
+  }
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET priority = ?, status = ?, assigned_agent = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.priority,
+    input.status,
+    input.assignedAgent ?? null,
+    timestamp,
+    existing.id
+  ));
+
+  return {
+    ...existing,
+    priority: input.priority,
+    status: input.status,
+    assignedAgent: input.assignedAgent ?? undefined,
+    updatedAt: timestamp,
+  };
 }
 
 export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string, taskType: string): Promise<TaskRecord | null> {
