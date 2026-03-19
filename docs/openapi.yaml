@@ -1373,6 +1373,36 @@ components:
             type: string
         annotations:
           type: object
+          properties:
+            riskLevel:
+              type: string
+              enum: [read, write, high_risk, privileged]
+            sideEffecting:
+              type: boolean
+            humanReviewRequired:
+              type: boolean
+            composite:
+              type: boolean
+            supportsPartialAuthorization:
+              type: boolean
+            sendAdditionalScopes:
+              type: array
+              items:
+                type: string
+            category:
+              type: string
+              enum:
+                - provisioning
+                - policy
+                - task_read
+                - mail_read
+                - thread_read
+                - draft_control
+                - mail_send
+                - mail_reply
+                - recovery
+            recommendedForMailboxAgents:
+              type: boolean
           additionalProperties: true
     McpInitializeResponse:
       type: object

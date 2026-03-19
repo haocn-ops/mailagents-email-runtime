@@ -17,12 +17,16 @@
     "humanReviewRequired",
     "composite",
     "supportsPartialAuthorization",
-    "sendAdditionalScopes"
+    "sendAdditionalScopes",
+    "category",
+    "recommendedForMailboxAgents"
   ],
   "tools": [
     {
       "name": "get_message",
       "requiredScopes": ["mail:read"],
+      "category": "mail_read",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "read",
       "sideEffecting": false,
       "humanReviewRequired": false,
@@ -33,6 +37,8 @@
     {
       "name": "create_draft",
       "requiredScopes": ["draft:create"],
+      "category": "draft_control",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "write",
       "sideEffecting": true,
       "humanReviewRequired": false,
@@ -43,6 +49,8 @@
     {
       "name": "send_draft",
       "requiredScopes": ["draft:send"],
+      "category": "draft_control",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "high_risk",
       "sideEffecting": true,
       "humanReviewRequired": true,
@@ -53,6 +61,8 @@
     {
       "name": "reply_to_inbound_email",
       "requiredScopes": ["mail:read", "draft:create"],
+      "category": "mail_reply",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "high_risk",
       "sideEffecting": true,
       "humanReviewRequired": true,
@@ -63,6 +73,8 @@
     {
       "name": "operator_manual_send",
       "requiredScopes": ["draft:create"],
+      "category": "mail_send",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "high_risk",
       "sideEffecting": true,
       "humanReviewRequired": true,
@@ -73,10 +85,48 @@
     {
       "name": "replay_message",
       "requiredScopes": ["mail:replay"],
+      "category": "recovery",
+      "recommendedForMailboxAgents": false,
       "riskLevel": "high_risk",
       "sideEffecting": true,
       "humanReviewRequired": true,
       "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "list_messages",
+      "requiredScopes": ["mail:read"],
+      "category": "mail_read",
+      "recommendedForMailboxAgents": true,
+      "riskLevel": "read",
+      "sideEffecting": false,
+      "humanReviewRequired": false,
+      "composite": false,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "send_email",
+      "requiredScopes": ["draft:create", "draft:send"],
+      "category": "mail_send",
+      "recommendedForMailboxAgents": true,
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": true,
+      "supportsPartialAuthorization": false,
+      "sendAdditionalScopes": []
+    },
+    {
+      "name": "reply_to_message",
+      "requiredScopes": ["mail:read", "draft:create", "draft:send"],
+      "category": "mail_reply",
+      "recommendedForMailboxAgents": true,
+      "riskLevel": "high_risk",
+      "sideEffecting": true,
+      "humanReviewRequired": true,
+      "composite": true,
       "supportsPartialAuthorization": false,
       "sendAdditionalScopes": []
     }
@@ -126,7 +176,7 @@
     "obtain a least-privilege bearer token",
     "call MCP tools/list",
     "prefer read tools before side effects",
-    "create drafts before sends",
+    "prefer list_messages, send_email, and reply_to_message for mailbox-scoped flows",
     "use idempotencyKey on side-effecting retries",
     "branch only on stable error codes"
   ]

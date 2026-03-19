@@ -1617,6 +1617,10 @@ router.on("POST", "/mcp", async (request, env) => {
           composite: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.composite),
           supportsPartialAuthorization: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.supportsPartialAuthorization),
           sendAdditionalScopes: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sendAdditionalScopes ?? [],
+          category: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.category ?? "mail_read",
+          recommendedForMailboxAgents: Boolean(
+            RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.recommendedForMailboxAgents
+          ),
         },
       })),
     });

@@ -49,6 +49,27 @@ For each MCP tool, the metadata includes:
 - `composite`
 - `supportsPartialAuthorization`
 - `sendAdditionalScopes`
+- `category`
+- `recommendedForMailboxAgents`
+
+`category` groups tools by the job they perform. Current categories are:
+
+- `provisioning`
+- `policy`
+- `task_read`
+- `mail_read`
+- `thread_read`
+- `draft_control`
+- `mail_send`
+- `mail_reply`
+- `recovery`
+
+`recommendedForMailboxAgents` marks the default mailbox-scoped workflow surface.
+Today this is primarily:
+
+- `list_messages`
+- `send_email`
+- `reply_to_message`
 
 For composite tools that can either draft-only or draft-and-send:
 
