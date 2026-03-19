@@ -980,6 +980,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
     await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
     if (send) {
+      await validateActiveDraftMailbox(env, {
+        tenantId: message.tenantId,
+        mailboxId: message.mailboxId,
+      });
       await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
     }
 
@@ -1147,6 +1151,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     });
 
     if (send) {
+      await validateActiveDraftMailbox(env, {
+        tenantId,
+        mailboxId,
+      });
       await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
       if (sendAuth instanceof Response) {
