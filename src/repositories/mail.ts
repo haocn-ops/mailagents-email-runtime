@@ -176,6 +176,10 @@ function isMissingCreatedViaColumn(error: unknown): boolean {
   return error instanceof Error && /created_via/i.test(error.message);
 }
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
 function mapOutboundJobRow(row: OutboundJobRow): OutboundJobRecord {
   return {
     id: row.id,
@@ -440,18 +444,44 @@ export async function getOrCreateThread(env: Env, input: {
   }
 
   const id = createId("thr");
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO threads (id, tenant_id, mailbox_id, thread_key, subject_norm, last_message_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.mailboxId,
-    input.threadKey,
-    input.subjectNorm ?? null,
-    nowIso(),
-    "open"
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO threads (id, tenant_id, mailbox_id, thread_key, subject_norm, last_message_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.mailboxId,
+      input.threadKey,
+      input.subjectNorm ?? null,
+      nowIso(),
+      "open"
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const concurrent = await firstRow<ThreadRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, mailbox_id, thread_key, subject_norm, status
+         FROM threads
+         WHERE mailbox_id = ? AND thread_key = ?`
+      ).bind(input.mailboxId, input.threadKey)
+    );
+
+    if (concurrent) {
+      return {
+        id: concurrent.id,
+        mailboxId: concurrent.mailbox_id,
+        subjectNorm: concurrent.subject_norm ?? undefined,
+        status: concurrent.status ?? undefined,
+        messages: [],
+      };
+    }
+
+    throw error;
+  }
 
   return {
     id,
