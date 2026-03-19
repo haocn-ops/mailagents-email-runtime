@@ -765,24 +765,27 @@ async function createAndSendDraftForMcp(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
   }
-  await validateActiveDraftMailbox(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-  });
-  await validateBindingResources(env, input.tenantId, input.agentId, input.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
-  await validateDraftReferences(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-    threadId: input.threadId,
-    sourceMessageId: input.sourceMessageId,
-  });
-  await validateDraftAttachments(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-    attachments: input.payload.attachments,
-  });
+  const validateCreateAndSendInput = async () => {
+    await validateActiveDraftMailbox(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+    });
+    await validateBindingResources(env, input.tenantId, input.agentId, input.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateDraftReferences(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+    });
+    await validateDraftAttachments(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      attachments: input.payload.attachments,
+    });
+  };
 
   if (!idempotencyKey) {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -823,6 +826,7 @@ async function createAndSendDraftForMcp(env: Env, input: {
   }
 
   try {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
