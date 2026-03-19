@@ -30,6 +30,7 @@ import {
   getAgent,
   getAgentDeployment,
   getAgentVersion,
+  hasActiveMailboxBinding,
   getMailboxByAddress,
   getMailboxById,
   listAgentDeployments,
@@ -82,6 +83,7 @@ import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
+const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
 
 class RouteRequestError extends Error {
   readonly status: number;
@@ -219,6 +221,29 @@ async function validateActiveDraftMailbox(env: Env, input: {
   }
   if (mailbox.status !== "active") {
     throw new RouteRequestError("Mailbox is not active", 409);
+  }
+}
+
+async function validateSendAgentBinding(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  mailboxId: string;
+}) {
+  const agent = await getAgent(env, input.agentId);
+  if (!agent) {
+    throw new RouteRequestError("Agent not found", 404);
+  }
+  if (agent.tenantId !== input.tenantId) {
+    throw new RouteRequestError("Agent does not belong to tenant", 409);
+  }
+
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+    roles: [...SEND_CAPABLE_MAILBOX_ROLES],
+  });
+  if (!hasBinding) {
+    throw new RouteRequestError("Agent is not allowed to send for mailbox", 403);
   }
 }
 
@@ -1728,6 +1753,11 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
     mailboxId: body.mailboxId,
     attachments: body.attachments ?? [],
   });
+  await validateSendAgentBinding(env, {
+    tenantId: body.tenantId,
+    agentId: route.params.agentId,
+    mailboxId: body.mailboxId,
+  });
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,
@@ -2138,6 +2168,11 @@ async function createAndSendDraft(env: Env, input: {
   }
   await validateActiveDraftMailbox(env, {
     tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+  });
+  await validateSendAgentBinding(env, {
+    tenantId: input.tenantId,
+    agentId: input.agentId,
     mailboxId: input.mailboxId,
   });
   await validateDraftReferences(env, {

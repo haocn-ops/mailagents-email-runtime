@@ -720,6 +720,34 @@ export async function resolveAgentExecutionTarget(
   return fallback ? { agentId: fallback.agent_id } : null;
 }
 
+export async function hasActiveMailboxBinding(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+  roles?: AgentMailboxBindingRecord["role"][];
+}): Promise<boolean> {
+  const row = input.roles?.length
+    ? await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active' AND role IN (${input.roles.map(() => "?").join(", ")})
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(input.mailboxId, input.agentId, ...input.roles)
+      )
+    : await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active'
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(input.mailboxId, input.agentId)
+      );
+
+  return Boolean(row);
+}
+
 export async function bindMailbox(env: Env, input: {
   tenantId: string;
   agentId: string;

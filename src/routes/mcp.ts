@@ -17,6 +17,7 @@ import {
   bindMailbox,
   createAgent,
   getAgent,
+  hasActiveMailboxBinding,
   getMailboxById,
   resolveAgentExecutionTarget,
   upsertAgentPolicy,
@@ -42,6 +43,7 @@ import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
 type JsonRpcId = string | number | null;
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
+const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -627,7 +629,8 @@ async function validateBindingResources(
   env: Env,
   tenantId: string,
   agentId: string,
-  mailboxId: string
+  mailboxId: string,
+  bindingRoles?: Array<"primary" | "shared" | "send_only" | "receive_only">
 ): Promise<void> {
   const agent = await getAgent(env, agentId);
   if (!agent) {
@@ -643,6 +646,17 @@ async function validateBindingResources(
   }
   if (mailbox.tenant_id !== tenantId) {
     throw new McpToolError("invalid_arguments", "Mailbox does not belong to tenant");
+  }
+
+  if (bindingRoles?.length) {
+    const hasBinding = await hasActiveMailboxBinding(env, {
+      agentId,
+      mailboxId,
+      roles: bindingRoles,
+    });
+    if (!hasBinding) {
+      throw new McpToolError("access_mailbox_denied", "Agent is not allowed to send for mailbox");
+    }
   }
 }
 
@@ -717,6 +731,7 @@ async function createAndSendDraftForMcp(env: Env, input: {
     tenantId: input.tenantId,
     mailboxId: input.mailboxId,
   });
+  await validateBindingResources(env, input.tenantId, input.agentId, input.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
   await validateDraftReferences(env, {
     tenantId: input.tenantId,
     mailboxId: input.mailboxId,
@@ -929,7 +944,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (agentError) {
       await throwIfResponseError(agentError);
     }
-    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
+    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
 
     const thread = message.threadId ? await getThread(env, message.threadId) : null;
     const references = Array.from(new Set(
@@ -1086,7 +1101,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId);
+    await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
     await validateDraftReferences(env, {
       tenantId,
       mailboxId,
@@ -1453,7 +1468,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId);
+    await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
     await validateDraftReferences(env, {
       tenantId,
       mailboxId,
