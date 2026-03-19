@@ -684,11 +684,15 @@ async function validateBindingResources(
       mailboxId,
       roles: bindingRoles,
     });
+    const hasAnyBinding = await hasActiveMailboxBinding(env, {
+      agentId,
+      mailboxId,
+    });
     const hasDeployment = await hasActiveMailboxDeployment(env, {
       agentId,
       mailboxId,
     });
-    if (!hasBinding && !hasDeployment) {
+    if (!hasBinding && (!hasDeployment || hasAnyBinding)) {
       throw new McpToolError("access_mailbox_denied", "Agent is not allowed to send for mailbox");
     }
   }

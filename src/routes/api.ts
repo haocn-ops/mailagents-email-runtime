@@ -271,13 +271,44 @@ async function validateSendAgentBinding(env: Env, input: {
     mailboxId: input.mailboxId,
     roles: [...SEND_CAPABLE_MAILBOX_ROLES],
   });
+  const hasAnyBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
   const hasDeployment = await hasActiveMailboxDeployment(env, {
     agentId: input.agentId,
     mailboxId: input.mailboxId,
   });
-  if (!hasBinding && !hasDeployment) {
+  if (!hasBinding && (!hasDeployment || hasAnyBinding)) {
     throw new RouteRequestError("Agent is not allowed to send for mailbox", 403);
   }
+}
+
+async function canAgentSendForMailbox(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<boolean> {
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+    roles: [...SEND_CAPABLE_MAILBOX_ROLES],
+  });
+  if (hasBinding) {
+    return true;
+  }
+
+  const hasAnyBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (hasAnyBinding) {
+    return false;
+  }
+
+  return await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
 }
 
 router.on("GET", "/public/signup", async () => {
@@ -2341,15 +2372,10 @@ async function deliverRotatedTokenToSelfMailbox(
   }
 
   const executionTarget = claims.agentId
-    ? (await hasActiveMailboxBinding(env, {
+    ? await canAgentSendForMailbox(env, {
         agentId: claims.agentId,
         mailboxId,
-        roles: [...SEND_CAPABLE_MAILBOX_ROLES],
       })
-      || await hasActiveMailboxDeployment(env, {
-        agentId: claims.agentId,
-        mailboxId,
-      }))
       ? { agentId: claims.agentId }
       : null
     : await resolveAgentExecutionTarget(env, mailboxId, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
