@@ -1619,6 +1619,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
         throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
       }
+      await validateActiveDraftMailbox(env, {
+        tenantId: draft.tenantId,
+        mailboxId: draft.mailboxId,
+      });
       await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
 
       try {
@@ -1645,6 +1649,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (draft.status !== "draft" && draft.status !== "approved") {
       throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
     }
+    await validateActiveDraftMailbox(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+    });
     await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
 
     const result = await enqueueDraftSend(env, draftId);
