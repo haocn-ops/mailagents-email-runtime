@@ -206,6 +206,22 @@ async function validateDraftAttachments(env: Env, input: {
   }
 }
 
+async function validateActiveDraftMailbox(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+}) {
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new RouteRequestError("Mailbox not found", 404);
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new RouteRequestError("Mailbox does not belong to tenant", 409);
+  }
+  if (mailbox.status !== "active") {
+    throw new RouteRequestError("Mailbox is not active", 409);
+  }
+}
+
 router.on("GET", "/public/signup", async () => {
   return methodNotAllowed(["POST"]);
 });
@@ -2120,6 +2136,10 @@ async function createAndSendDraft(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
+  await validateActiveDraftMailbox(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+  });
   await validateDraftReferences(env, {
     tenantId: input.tenantId,
     mailboxId: input.mailboxId,

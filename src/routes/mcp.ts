@@ -193,6 +193,22 @@ async function validateDraftAttachments(env: Env, input: {
   }
 }
 
+async function validateActiveDraftMailbox(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+}) {
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new McpToolError("invalid_arguments", "Mailbox does not belong to tenant");
+  }
+  if (mailbox.status !== "active") {
+    throw new McpToolError("access_mailbox_denied", "Mailbox is not active");
+  }
+}
+
 const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
@@ -697,6 +713,10 @@ async function createAndSendDraftForMcp(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
   }
+  await validateActiveDraftMailbox(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+  });
   await validateDraftReferences(env, {
     tenantId: input.tenantId,
     mailboxId: input.mailboxId,
