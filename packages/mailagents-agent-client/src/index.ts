@@ -818,14 +818,8 @@ export class MailagentsAgentClient {
     attachments?: DraftAttachment[];
     idempotencyKey?: string;
   }): Promise<HighLevelSendResult> {
-    if (!args.mailboxId) {
+    if (!args.mailboxId || args.attachments?.length) {
       return this.sendMessage(args);
-    }
-
-    if (args.attachments?.length) {
-      throw new MailagentsClientError(
-        "attachments are only supported when using the mailbox-scoped HTTP send routes"
-      );
     }
 
     return this.callTool<HighLevelSendResult>("send_email", args);
