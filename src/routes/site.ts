@@ -18,6 +18,7 @@ import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import {
   ensureMailbox,
   getMailboxById,
+  MailboxConflictError,
   listMailboxes,
 } from "../repositories/agents";
 import {
@@ -219,14 +220,15 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
     const existing = rules.find((entry) =>
       entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
     );
-    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
     const mailbox = await ensureMailbox(env, {
       tenantId: CONTACT_ALIAS_TENANT_ID,
       address,
     });
+    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
     return json({ ok: true, rule, mailbox });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unable to save alias" }, { status: 502 });
+    const status = error instanceof MailboxConflictError ? 409 : 502;
+    return json({ error: error instanceof Error ? error.message : "Unable to save alias" }, { status });
   }
 });
 site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
@@ -262,17 +264,18 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
         continue;
       }
 
-      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
       const mailbox = await ensureMailbox(env, {
         tenantId: CONTACT_ALIAS_TENANT_ID,
         address,
       });
+      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
       results.push({ alias, skipped: false, ruleId: rule.id, mailboxId: mailbox.id });
     }
 
     return json({ ok: true, results });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unable to bootstrap aliases" }, { status: 502 });
+    const status = error instanceof MailboxConflictError ? 409 : 502;
+    return json({ error: error instanceof Error ? error.message : "Unable to bootstrap aliases" }, { status });
   }
 });
 site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {

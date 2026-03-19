@@ -133,6 +133,13 @@ export class DeploymentConflictError extends Error {
   }
 }
 
+export class MailboxConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MailboxConflictError";
+  }
+}
+
 function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
@@ -956,7 +963,7 @@ export async function ensureMailbox(env: Env, input: {
   const existing = await getMailboxByAddress(env, normalizedAddress);
   if (existing) {
     if (existing.tenant_id !== input.tenantId) {
-      throw new Error(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+      throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
     }
     return mapMailboxRecord(existing);
   }
@@ -982,7 +989,7 @@ export async function ensureMailbox(env: Env, input: {
     const concurrent = await getMailboxByAddress(env, normalizedAddress);
     if (concurrent) {
       if (concurrent.tenant_id !== input.tenantId) {
-        throw new Error(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+        throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
       }
       return mapMailboxRecord(concurrent);
     }

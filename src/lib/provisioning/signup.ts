@@ -14,6 +14,7 @@ import {
   createAgentVersion,
   ensureMailbox,
   getMailboxByAddress,
+  MailboxConflictError,
   updateAgent,
   upsertAgentPolicy,
 } from "../../repositories/agents";
@@ -148,7 +149,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       status: "active",
     });
   } catch (error) {
-    if (error instanceof Error && /already belongs to a different tenant/i.test(error.message)) {
+    if (error instanceof MailboxConflictError) {
       throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
     }
     throw error;
