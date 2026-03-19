@@ -1573,6 +1573,10 @@ router.on("GET", "/v1/threads/:threadId", async (request, env, _ctx, route) => {
   if (!thread) {
     return json({ error: "Thread not found" }, { status: 404 });
   }
+  const tenantError = enforceTenantAccess(auth, thread.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
   const mailboxError = enforceMailboxAccess(auth, thread.mailboxId);
   if (mailboxError) {
     return mailboxError;

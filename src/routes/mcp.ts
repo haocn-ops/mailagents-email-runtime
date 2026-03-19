@@ -1175,6 +1175,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (!thread) {
       throw new McpToolError("resource_thread_not_found", "Thread not found");
     }
+    const tenantError = enforceTenantAccess(auth, thread.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
     const mailboxError = enforceMailboxAccess(auth, thread.mailboxId);
     if (mailboxError) {
       await throwIfResponseError(mailboxError);

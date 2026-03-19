@@ -426,6 +426,7 @@ export async function getThread(env: Env, threadId: string): Promise<ThreadRecor
 
   return {
     id: thread.id,
+    tenantId: thread.tenant_id ?? messageRows[0]?.tenant_id ?? "",
     mailboxId: thread.mailbox_id,
     subjectNorm: thread.subject_norm ?? undefined,
     status: thread.status ?? undefined,
@@ -476,6 +477,7 @@ export async function getOrCreateThread(env: Env, input: {
   if (existing) {
     return {
       id: existing.id,
+      tenantId: existing.tenant_id ?? input.tenantId,
       mailboxId: existing.mailbox_id,
       subjectNorm: existing.subject_norm ?? undefined,
       status: existing.status ?? undefined,
@@ -513,6 +515,7 @@ export async function getOrCreateThread(env: Env, input: {
     if (concurrent) {
       return {
         id: concurrent.id,
+        tenantId: concurrent.tenant_id ?? input.tenantId,
         mailboxId: concurrent.mailbox_id,
         subjectNorm: concurrent.subject_norm ?? undefined,
         status: concurrent.status ?? undefined,
@@ -525,6 +528,7 @@ export async function getOrCreateThread(env: Env, input: {
 
   return {
     id,
+    tenantId: input.tenantId,
     mailboxId: input.mailboxId,
     subjectNorm: input.subjectNorm,
     status: "open",

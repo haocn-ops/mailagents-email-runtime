@@ -179,6 +179,7 @@ export interface MessageContentRecord {
 
 export interface ThreadRecord {
   id: string;
+  tenantId: string;
   mailboxId: string;
   subjectNorm?: string;
   status?: string;
