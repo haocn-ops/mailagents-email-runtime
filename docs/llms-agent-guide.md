@@ -86,8 +86,8 @@ Current shared `dev` URLs:
 
 Default integration auth is a signed bearer token.
 
-For self-serve mailboxes, the first bearer token may come directly from
-`POST /public/signup` instead of a separate admin mint flow.
+For mailboxes created through the signup API, the first bearer token may come
+directly from `POST /public/signup` instead of a separate admin mint flow.
 
 If that self-serve token later expires, recovery should use
 `POST /public/token/reissue`. That endpoint only emails a refreshed token to

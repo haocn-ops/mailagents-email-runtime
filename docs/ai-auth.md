@@ -13,10 +13,10 @@ The runtime has three authentication surfaces:
 
 For AI agents, bearer tokens are the default integration method.
 
-## Self-Serve Signup Tokens
+## Signup API Tokens
 
-`POST /public/signup` can also issue a default bearer token for the newly
-created mailbox when `API_SIGNING_SECRET` is configured.
+The signup API at `POST /public/signup` can issue a default bearer token for
+the newly created mailbox when `API_SIGNING_SECRET` is configured.
 
 The default self-serve token is:
 

@@ -45,7 +45,7 @@ Recommended usage:
 
 ## 2. Obtain a Scoped Bearer Token
 
-For self-serve onboarding, call `POST /public/signup` first and store the
+For signup API onboarding, call `POST /public/signup` first and store the
 returned mailbox-scoped bearer token from the signup response.
 
 If that token expires later, call `POST /public/token/reissue`. The runtime

@@ -35,8 +35,8 @@ paths:
           description: Use POST with application/json
     post:
       tags: [Auth]
-      summary: Create a self-serve mailbox and default mailbox-scoped access token
-      operationId: publicSignup
+      summary: Create a mailbox through the signup API and issue a default mailbox-scoped access token
+      operationId: createSignupMailbox
       security: []
       requestBody:
         required: true
