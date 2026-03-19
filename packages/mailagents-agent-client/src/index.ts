@@ -228,17 +228,21 @@ export interface CreateAccessTokenResult {
   expiresAt: string;
 }
 
+export type AgentMode = "assistant" | "autonomous" | "review_only";
+export type AgentStatus = "draft" | "active" | "disabled" | "archived";
+
 export interface AgentRecord {
   id: string;
   tenantId: string;
-  name: string;
-  status?: string;
-  mode: string;
   slug?: string;
+  name: string;
   description?: string;
-  config?: Record<string, unknown>;
-  createdAt?: string;
-  updatedAt?: string;
+  status: AgentStatus;
+  mode: AgentMode;
+  configR2Key?: string;
+  defaultVersionId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentMailboxBinding {
@@ -622,7 +626,7 @@ export class MailagentsAgentClient {
   async createAgent(args: {
     tenantId: string;
     name: string;
-    mode: string;
+    mode: AgentMode;
     slug?: string;
     description?: string;
     config?: Record<string, unknown>;
