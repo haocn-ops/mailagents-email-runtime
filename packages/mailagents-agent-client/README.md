@@ -25,21 +25,30 @@ Current scope:
 import { MailagentsAgentClient } from "@mailagents/agent-client";
 
 const client = new MailagentsAgentClient({
-  baseUrl: "https://mailagents-dev.izhenghaocn.workers.dev",
-  token: process.env.MAILAGENTS_TOKEN,
+  baseUrl: "https://api.mailagents.net",
 });
 
-const contract = await client.getCompatibilityContract();
-const tools = await client.listTools();
-const recommended = await client.listRecommendedMailboxTools();
+const signup = await client.publicSignup({
+  productName: "Example Agent",
+  operatorEmail: "operator@example.com",
+  useCase: "Mailbox-first agent integration",
+});
 
-console.log(contract, tools, recommended);
+const authed = client.withToken(signup.accessToken!);
+const contract = await authed.getCompatibilityContract();
+const tools = await authed.listTools();
+const recommended = await authed.listRecommendedMailboxTools();
+
+console.log(signup.mailbox.address, contract, tools, recommended);
 ```
 
 Typed helpers currently cover:
 
 - `getRuntimeMetadata()`
 - `getCompatibilityContract()`
+- `publicSignup()`
+- `reissueAccessToken()`
+- `rotateAccessToken()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
 - `createAgent()`

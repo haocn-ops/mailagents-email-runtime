@@ -152,6 +152,63 @@ export interface ToolsListResult {
   tools: McpToolDefinition[];
 }
 
+export interface PublicSignupRequest {
+  productName: string;
+  operatorEmail: string;
+  mailboxAlias?: string;
+  useCase?: string;
+  requestedLocalPart?: string;
+}
+
+export interface PublicSignupResult {
+  accepted?: boolean;
+  mailbox: {
+    id: string;
+    address: string;
+    localPart?: string;
+  };
+  agent: {
+    id: string;
+    name?: string;
+  };
+  version?: {
+    id: string;
+    version?: string;
+  };
+  deployment?: {
+    id: string;
+    targetId?: string;
+  };
+  accessToken?: string;
+  expiresAt?: string;
+  scopes?: string[];
+}
+
+export interface PublicTokenReissueRequest {
+  mailboxAlias?: string;
+  mailboxAddress?: string;
+}
+
+export interface PublicTokenReissueAccepted {
+  accepted: true;
+  message: string;
+}
+
+export interface RotateAccessTokenRequest {
+  delivery?: "inline" | "self_mailbox" | "both";
+  mailboxId?: string;
+}
+
+export interface RotateAccessTokenResult {
+  token?: string;
+  expiresAt: string;
+  scopes: string[];
+  delivery: "inline" | "self_mailbox" | "both";
+  deliveryStatus: "skipped" | "queued" | "unavailable";
+  deliveryMailboxId?: string;
+  oldTokenRemainsValid: true;
+}
+
 export interface AgentRecord {
   id: string;
   tenantId: string;
@@ -383,6 +440,33 @@ export class MailagentsAgentClient {
     return this.requestJson("/v2/meta/compatibility/schema");
   }
 
+  async publicSignup(input: PublicSignupRequest): Promise<PublicSignupResult> {
+    return this.requestJson("/public/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async reissueAccessToken(input: PublicTokenReissueRequest): Promise<PublicTokenReissueAccepted> {
+    return this.requestJson("/public/token/reissue", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async rotateAccessToken(input: RotateAccessTokenRequest = {}): Promise<RotateAccessTokenResult> {
+    return this.requestJson("/v1/auth/token/rotate", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: JSON.stringify(input),
+    });
+  }
+
   async listTools(): Promise<ToolsListResult> {
     const payload = await this.callMcp("tools/list", {});
     return payload.result;
@@ -521,9 +605,13 @@ export class MailagentsAgentClient {
     return result.tools.filter((tool) => tool.annotations.recommendedForMailboxAgents);
   }
 
-  private async requestJson<T>(path: string): Promise<T> {
+  private async requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      headers: this.token ? { authorization: `Bearer ${this.token}` } : undefined,
+      ...init,
+      headers: {
+        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+        ...((init?.headers as Record<string, string> | undefined) ?? {}),
+      },
     });
 
     const payload = await response.json().catch(() => null);
