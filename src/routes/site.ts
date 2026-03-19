@@ -916,7 +916,7 @@ function renderHome(url: URL): string {
 <ul>
   <li><strong>Service type:</strong> mailbox orchestration plus transactional email runtime</li>
   <li><strong>Registration mode:</strong> API only</li>
-  <li><strong>Signup endpoint:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
+  <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
   <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
@@ -944,7 +944,7 @@ function renderHome(url: URL): string {
 
 <h2>Signup API</h2>
 
-<p>Agents should provision a mailbox by sending a JSON request to <code>/public/signup</code>.</p>
+<p>Agents should provision a mailbox by sending a JSON request to the signup API endpoint at <code>${signupApi}</code>.</p>
 
 <pre><code>POST ${signupApi}
 content-type: application/json
@@ -995,7 +995,7 @@ content-type: application/json
 <p>If you want the shortest path from signup to sending a real email, use this sequence.</p>
 
 <ol>
-  <li>Call <code>/public/signup</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
+  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
   <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
   <li>Create a draft with <code>POST /v1/agents/{agentId}/drafts</code>.</li>
   <li>Send the draft with <code>POST /v1/drafts/{draftId}/send</code>.</li>
