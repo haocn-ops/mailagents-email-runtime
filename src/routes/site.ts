@@ -718,7 +718,7 @@ function layout(active: string, title: string, content: string): string {
     }
     .nav {
       display: block;
-      padding: 16px 0 12px;
+      padding: 16px 0;
     }
     .wordmark {
       text-decoration: none;
@@ -735,24 +735,24 @@ function layout(active: string, title: string, content: string): string {
       color: #fff8f0;
       font-size: 12px;
     }
-    .nav-links {
+    .footer-nav {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       margin-top: 10px;
     }
-    .nav-links a {
+    .footer-nav a {
       text-decoration: none;
       padding: 0;
       border-radius: 0;
       font-size: 13px;
       color: var(--muted);
     }
-    .nav-links a.active,
-    .nav-links a:hover {
+    .footer-nav a.active,
+    .footer-nav a:hover {
       color: var(--ink);
     }
-    .nav-links a:not(:last-child)::after {
+    .footer-nav a:not(:last-child)::after {
       content: "·";
       margin-left: 8px;
       color: rgba(28, 25, 22, 0.32);
@@ -787,6 +787,9 @@ function layout(active: string, title: string, content: string): string {
       padding: 24px 0 56px;
       color: var(--muted);
       font-size: 13px;
+    }
+    .footer-nav-wrap {
+      margin-top: 10px;
     }
     .markdown-doc {
       max-width: 900px;
@@ -871,12 +874,6 @@ function layout(active: string, title: string, content: string): string {
   <header class="site-header">
     <div class="shell nav">
       <a class="wordmark" href="/"><span>MA</span>Mailagents</a>
-      <nav class="nav-links" aria-label="Primary">
-        <a class="${active === "overview" ? "active" : ""}" href="/">Overview</a>
-        <a class="${active === "privacy" ? "active" : ""}" href="/privacy">Privacy</a>
-        <a class="${active === "terms" ? "active" : ""}" href="/terms">Terms</a>
-        <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
-      </nav>
     </div>
   </header>
   <main class="shell">
@@ -884,6 +881,12 @@ function layout(active: string, title: string, content: string): string {
   </main>
   <footer class="shell footer">
     Mailagents provides transactional email infrastructure, mailbox orchestration, and operator controls for agent-native products.
+    <nav class="footer-nav footer-nav-wrap" aria-label="Primary">
+      <a class="${active === "overview" ? "active" : ""}" href="/">Overview</a>
+      <a class="${active === "privacy" ? "active" : ""}" href="/privacy">Privacy</a>
+      <a class="${active === "terms" ? "active" : ""}" href="/terms">Terms</a>
+      <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
+    </nav>
   </footer>
 </body>
 </html>`;
@@ -891,6 +894,7 @@ function layout(active: string, title: string, content: string): string {
 
 function renderHome(url: URL): string {
   const isMarketingSite = url.host === "mailagents.net" || url.host === "www.mailagents.net";
+  const githubRepo = "https://github.com/haocn-ops/mailagents-email-runtime";
   const agentDocs = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md";
   const sdkExamples = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/agent-sdk-examples.md";
   const compatibilityDoc = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/runtime-compatibility.md";
@@ -916,6 +920,7 @@ function renderHome(url: URL): string {
   <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
+  <li><strong>GitHub repo:</strong> <a href="${githubRepo}"><code>${githubRepo}</code></a></li>
   <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
 </ul>
 
@@ -1130,6 +1135,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 <h2>Agent Discovery</h2>
 
 <ul>
+  <li><a href="${githubRepo}">GitHub repository</a></li>
   <li><a href="${agentDocs}">AI agent guide</a></li>
   ${isMarketingSite ? `<li><a href="${sdkExamples}">Agent SDK examples</a></li>` : ""}
   <li><a href="${compatibilityDoc}">Runtime compatibility docs</a></li>
