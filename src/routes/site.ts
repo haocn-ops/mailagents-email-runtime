@@ -45,6 +45,30 @@ import {
 import type { Env } from "../types";
 
 const site = new Router<Env>();
+
+async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefined) {
+  if (!outboundJobId) {
+    throw new Error("Stored idempotent admin send result is incomplete");
+  }
+
+  const outboundJob = await getOutboundJob(env, outboundJobId);
+  if (!outboundJob) {
+    throw new Error("Stored idempotent outbound job no longer exists");
+  }
+
+  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+  if (!draft) {
+    throw new Error("Stored idempotent draft no longer exists");
+  }
+
+  return {
+    ok: true,
+    draftId: draft.id,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("HEAD", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("GET", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
@@ -539,7 +563,11 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         return json({ error: "An admin send request with this idempotency key is already in progress" }, { status: 409 });
       }
       if (reservation.status === "completed") {
-        return json(reservation.record.response ?? { ok: true });
+        if (reservation.record.response) {
+          return json(reservation.record.response);
+        }
+
+        return json(await restoreAdminSendReplay(env, reservation.record.resourceId));
       }
     }
 
