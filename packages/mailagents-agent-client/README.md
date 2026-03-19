@@ -68,6 +68,13 @@ Typed helpers currently cover:
 - `replyToInboundEmail()`
 - `operatorManualSend()`
 
+Runnable repository examples:
+
+- `npm run example:agent:discover`
+- `npm run example:agent:mailbox-first`
+- `npm run example:agent:reply-draft`
+- `npm run example:agent:operator-send`
+
 Error helpers currently cover:
 
 - `STABLE_MAILAGENTS_ERROR_CODES`

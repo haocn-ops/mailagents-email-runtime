@@ -77,6 +77,7 @@ draft lifecycle control.
 Runnable repository examples:
 
 - `npm run example:agent:discover`
+- `npm run example:agent:mailbox-first`
 - `npm run example:agent:reply-draft`
 - `npm run example:agent:operator-send`
 
