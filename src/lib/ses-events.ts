@@ -28,7 +28,7 @@ function toTagMap(tags: unknown): Record<string, string> {
 export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
   const event = payload as Record<string, unknown>;
   const detail = (event.detail ?? payload) as Record<string, unknown>;
-  const eventType = String(detail.eventType ?? detail["event-type"] ?? "reject").toLowerCase();
+  const eventType = String(detail.eventType ?? detail["event-type"] ?? "unknown").toLowerCase();
   const mail = (detail.mail ?? {}) as Record<string, unknown>;
   const tags = toTagMap(mail.tags);
   const providerMessageId = typeof mail.messageId === "string" ? mail.messageId : undefined;
