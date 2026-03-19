@@ -249,12 +249,12 @@ export interface AgentRecord {
 }
 
 export interface AgentMailboxBinding {
+  id: string;
   agentId: string;
-  tenantId: string;
   mailboxId: string;
-  role: string;
-  status?: string;
-  createdAt?: string;
+  role: "primary" | "shared" | "send_only" | "receive_only";
+  status: "active" | "disabled";
+  createdAt: string;
 }
 
 export type TaskStatus = "queued" | "running" | "done" | "needs_review" | "failed";
@@ -316,7 +316,7 @@ export interface MessageAttachment {
 }
 
 export interface MessageContentResult {
-  text: string;
+  text?: string;
   html?: string;
   attachments: MessageAttachment[];
 }
@@ -425,28 +425,17 @@ export interface ReplayAccepted {
 }
 
 export interface ReplyWorkflowResult {
-  sourceMessage: {
-    id: string;
-    threadId: string | null;
-  };
+  sourceMessage: MessageRecord;
   draft: DraftRecord;
   sendRequested: boolean;
-  sendResult?: {
-    draftId: string;
-    outboundJobId: string;
-    status: string;
-  };
+  sendResult?: SendDraftResult;
   usedThreadContext: boolean;
 }
 
 export interface OperatorManualSendResult {
   draft: DraftRecord;
   sendRequested: boolean;
-  sendResult?: {
-    draftId: string;
-    outboundJobId: string;
-    status: string;
-  };
+  sendResult?: SendDraftResult;
 }
 
 export interface JsonRpcSuccess<T> {
