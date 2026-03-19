@@ -46,6 +46,16 @@ import type { Env } from "../types";
 
 const site = new Router<Env>();
 
+class SiteRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SiteRequestError";
+    this.status = status;
+  }
+}
+
 async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefined) {
   if (!outboundJobId) {
     throw new Error("Stored idempotent admin send result is incomplete");
@@ -67,6 +77,42 @@ async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefine
     outboundJobId: outboundJob.id,
     status: "queued" as const,
   };
+}
+
+async function validateAdminSendReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}): Promise<void> {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new SiteRequestError("Thread not found", 404);
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new SiteRequestError("Thread does not belong to tenant", 409);
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new SiteRequestError("Thread does not belong to mailbox", 409);
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new SiteRequestError("Source message not found", 404);
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new SiteRequestError("Source message does not belong to tenant", 409);
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new SiteRequestError("Source message does not belong to mailbox", 409);
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new SiteRequestError("Source message does not belong to thread", 409);
+    }
+  }
 }
 
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
@@ -533,6 +579,12 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     if (normalizedFrom !== mailbox.address.toLowerCase()) {
       return json({ error: "from must match the mailbox address" }, { status: 409 });
     }
+    await validateAdminSendReferences(env, {
+      tenantId: body.tenantId,
+      mailboxId: body.mailboxId,
+      threadId: body.threadId,
+      sourceMessageId: body.sourceMessageId,
+    });
 
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
@@ -614,6 +666,9 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     if (idempotencyKey) {
       await releaseIdempotencyKey(env, "admin_send", body.tenantId, idempotencyKey).catch(() => undefined);
     }
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
+    }
     return json({ error: error instanceof Error ? error.message : "Unable to send message" }, { status: 502 });
   }
 });
@@ -668,6 +723,9 @@ export async function handleSiteRequest(request: Request, env: Env, ctx: Executi
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
       return badRequest(error.message);
+    }
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
     }
 
     throw error;
