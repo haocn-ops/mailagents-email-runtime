@@ -2068,37 +2068,41 @@ async function deliverRotatedTokenToSelfMailbox(
     : "Mailagents";
   const agentName = agent?.name ?? "Mailagents Agent";
 
-  const draft = await createDraft(env, {
-    tenantId: mailbox.tenant_id,
-    agentId: executionTarget.agentId,
-    mailboxId: mailbox.id,
-    createdVia: "system:token_reissue_self_mailbox",
-    payload: {
-      from: mailbox.address,
-      to: [mailbox.address],
-      subject: `Your rotated Mailagents access token for ${mailbox.address}`,
-      text: buildTokenReissueText({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName,
-        accessToken,
-        accessTokenExpiresAt,
-        accessTokenScopes,
-      }),
-      html: buildTokenReissueHtml({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName,
-        accessToken,
-        accessTokenExpiresAt,
-        accessTokenScopes,
-      }),
-      attachments: [],
-    },
-  });
+  try {
+    const draft = await createDraft(env, {
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
+      mailboxId: mailbox.id,
+      createdVia: "system:token_reissue_self_mailbox",
+      payload: {
+        from: mailbox.address,
+        to: [mailbox.address],
+        subject: `Your rotated Mailagents access token for ${mailbox.address}`,
+        text: buildTokenReissueText({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
+        }),
+        html: buildTokenReissueHtml({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
+        }),
+        attachments: [],
+      },
+    });
 
-  await enqueueDraftSend(env, draft.id);
-  return true;
+    await enqueueDraftSend(env, draft.id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveReplayAgentTarget(
