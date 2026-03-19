@@ -10,6 +10,7 @@ TENANT_ID="${TENANT_ID:-t_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 FROM_EMAIL="${FROM_EMAIL:-agent@mail.example.com}"
 TO_EMAIL="${TO_EMAIL:-user@example.com}"
+SEEDED_INBOUND_MESSAGE_ID="${SEEDED_INBOUND_MESSAGE_ID:-msg_demo_inbound}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -199,26 +200,24 @@ OUTBOUND_MESSAGE_ID="$(echo "$OUTBOUND_JOB_RESPONSE" | jq -r '.messageId')"
 
 echo "Checking replay idempotency..."
 REPLAY_IDEMPOTENCY_KEY="smoke-replay-$DRAFT_ID"
-if [[ -n "$OUTBOUND_MESSAGE_ID" && "$OUTBOUND_MESSAGE_ID" != "null" ]]; then
-  REPLAY_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
-    -H 'content-type: application/json' \
-    -H "authorization: Bearer $TOKEN" \
-    -d "{
-      \"mode\": \"normalize\",
-      \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
-    }")"
-  echo "$REPLAY_RESPONSE" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
-  REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
-    -H 'content-type: application/json' \
-    -H "authorization: Bearer $TOKEN" \
-    -d "{
-      \"mode\": \"normalize\",
-      \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
-    }")"
-  echo "$REPLAY_RESPONSE_REPEAT" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
-else
-  echo "Skipping replay idempotency assertion because no message ID was available from the current flow."
-fi
+REPLAY_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/messages/$SEEDED_INBOUND_MESSAGE_ID/replay" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"mode\": \"rerun_agent\",
+    \"agentId\": \"$AGENT_ID\",
+    \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
+  }")"
+echo "$REPLAY_RESPONSE" | jq -e --arg message "$SEEDED_INBOUND_MESSAGE_ID" '.messageId == $message and .mode == "rerun_agent" and .status == "accepted"' >/dev/null
+REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$SEEDED_INBOUND_MESSAGE_ID/replay" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d "{
+    \"mode\": \"rerun_agent\",
+    \"agentId\": \"$AGENT_ID\",
+    \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
+  }")"
+echo "$REPLAY_RESPONSE_REPEAT" | jq -e --arg message "$SEEDED_INBOUND_MESSAGE_ID" '.messageId == $message and .mode == "rerun_agent" and .status == "accepted"' >/dev/null
 
 echo "Posting sample SES delivery event..."
 WEBHOOK_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/webhooks/ses" \
