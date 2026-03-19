@@ -1381,6 +1381,9 @@ components:
         status:
           type: string
           enum: [accepted]
+        taskId:
+          type: string
+          description: Present for `rerun_agent` replays after the replay task is created.
     SesWebhookEvent:
       type: object
       description: Raw event payload forwarded from EventBridge API Destination

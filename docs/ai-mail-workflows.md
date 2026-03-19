@@ -138,6 +138,7 @@ Replay safety rules:
 - replay is not a shortcut to resend email
 - replay should not silently create duplicate outbound side effects
 - if replay results in a new draft, sending must still be explicit
+- `rerun_agent` returns a `taskId` so you can inspect the queued replay task
 
 ## Recommended Reply Workflow
 

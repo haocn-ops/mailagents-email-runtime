@@ -1055,11 +1055,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       ? await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId)
       : null;
     const replayAgentTarget = replayTarget ?? undefined;
-    const response = {
+    const response = (taskId?: string) => ({
       messageId,
       mode,
       status: "accepted" as const,
-    };
+      ...(taskId ? { taskId } : {}),
+    });
 
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
@@ -1081,7 +1082,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         throw new McpToolError("idempotency_in_progress", "A replay request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
-        return reservation.record.response ?? response;
+        return reservation.record.response ?? response();
       }
 
       try {
@@ -1095,6 +1096,15 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
             mailboxId: message.mailboxId,
             rawR2Key: replayRawR2Key,
           });
+          const acceptedResponse = response();
+          await completeIdempotencyKey(env, {
+            operation: "message_replay",
+            tenantId: message.tenantId,
+            idempotencyKey,
+            resourceId: messageId,
+            response: acceptedResponse,
+          });
+          return acceptedResponse;
         } else {
           if (!replayAgentTarget) {
             throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
@@ -1114,15 +1124,16 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
             agentVersionId: replayAgentTarget.agentVersionId,
             deploymentId: replayAgentTarget.deploymentId,
           });
+          const acceptedResponse = response(replayTask.id);
+          await completeIdempotencyKey(env, {
+            operation: "message_replay",
+            tenantId: message.tenantId,
+            idempotencyKey,
+            resourceId: messageId,
+            response: acceptedResponse,
+          });
+          return acceptedResponse;
         }
-        await completeIdempotencyKey(env, {
-          operation: "message_replay",
-          tenantId: message.tenantId,
-          idempotencyKey,
-          resourceId: messageId,
-          response,
-        });
-        return response;
       } catch (error) {
         await releaseIdempotencyKey(env, "message_replay", message.tenantId, idempotencyKey);
         throw error;
@@ -1158,9 +1169,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         agentVersionId: replayAgentTarget.agentVersionId,
         deploymentId: replayAgentTarget.deploymentId,
       });
+      return response(replayTask.id);
     }
 
-    return response;
+    return response();
   }
 
   throw new Error(`Unsupported tool: ${toolName}`);

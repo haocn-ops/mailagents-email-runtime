@@ -157,6 +157,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `tools/call` reuses the same access checks as the HTTP API
 - `bind_mailbox` now validates that both the agent and mailbox exist and belong to the declared tenant
 - `send_draft` and `replay_message` support `idempotencyKey`
+- `replay_message` returns `taskId` when `mode` is `rerun_agent`
 - `reply_to_inbound_email` can create a reply draft and optionally send when `send: true`
 - when `reply_to_inbound_email` sends, the `idempotencyKey` is bound to the logical reply request so safe retries return the original workflow result instead of creating a second draft
 - `operator_manual_send` can create an operator-guided draft and optionally send when `send: true`

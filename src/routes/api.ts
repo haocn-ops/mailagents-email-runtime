@@ -1057,11 +1057,12 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   }
   const replayAgentTarget = replayTarget ?? undefined;
 
-  const replayResponse = {
+  const replayResponse = (taskId?: string) => ({
     messageId: route.params.messageId,
     mode: body.mode,
     status: "accepted" as const,
-  };
+    ...(taskId ? { taskId } : {}),
+  });
 
   if (idempotencyKey) {
     const reservation = await reserveIdempotencyKey(env, {
@@ -1083,7 +1084,7 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       return json({ error: "A replay request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
-      return accepted(reservation.record.response ?? replayResponse);
+      return accepted(reservation.record.response ?? replayResponse());
     }
 
     try {
@@ -1094,6 +1095,15 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           mailboxId: existingMessage.mailboxId,
           rawR2Key: replayRawR2Key!,
         });
+        const response = replayResponse();
+        await completeIdempotencyKey(env, {
+          operation: "message_replay",
+          tenantId: existingMessage.tenantId,
+          idempotencyKey,
+          resourceId: route.params.messageId,
+          response,
+        });
+        return accepted(response);
       } else {
         const replayTask = await createTask(env, {
           tenantId: existingMessage.tenantId,
@@ -1110,16 +1120,16 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           agentVersionId: replayAgentTarget!.agentVersionId,
           deploymentId: replayAgentTarget!.deploymentId,
         });
+        const response = replayResponse(replayTask.id);
+        await completeIdempotencyKey(env, {
+          operation: "message_replay",
+          tenantId: existingMessage.tenantId,
+          idempotencyKey,
+          resourceId: route.params.messageId,
+          response,
+        });
+        return accepted(response);
       }
-
-      await completeIdempotencyKey(env, {
-        operation: "message_replay",
-        tenantId: existingMessage.tenantId,
-        idempotencyKey,
-        resourceId: route.params.messageId,
-        response: replayResponse,
-      });
-      return accepted(replayResponse);
     } catch (error) {
       await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
       throw error;
@@ -1155,13 +1165,10 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       agentVersionId: replayAgentTarget.agentVersionId,
       deploymentId: replayAgentTarget.deploymentId,
     });
+    return accepted(replayResponse(replayTask.id));
   }
 
-  return accepted({
-    messageId: route.params.messageId,
-    mode: body.mode,
-    status: "accepted",
-  });
+  return accepted(replayResponse());
 });
 
 router.on("GET", "/v1/threads/:threadId", async (request, env, _ctx, route) => {
