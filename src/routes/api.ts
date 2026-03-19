@@ -145,6 +145,42 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
   };
 }
 
+async function validateDraftReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}) {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new RouteRequestError("Thread not found", 404);
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Thread does not belong to tenant", 409);
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Thread does not belong to mailbox", 409);
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new RouteRequestError("Source message not found", 404);
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Source message does not belong to tenant", 409);
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Source message does not belong to mailbox", 409);
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new RouteRequestError("Source message does not belong to thread", 409);
+    }
+  }
+}
+
 router.on("GET", "/public/signup", async () => {
   return methodNotAllowed(["POST"]);
 });
@@ -1636,6 +1672,12 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
   if (mailbox.tenant_id !== body.tenantId) {
     return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
   }
+  await validateDraftReferences(env, {
+    tenantId: body.tenantId,
+    mailboxId: body.mailboxId,
+    threadId: body.threadId,
+    sourceMessageId: body.sourceMessageId,
+  });
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,
@@ -2038,6 +2080,12 @@ async function createAndSendDraft(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
+  await validateDraftReferences(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    threadId: input.threadId,
+    sourceMessageId: input.sourceMessageId,
+  });
 
   if (!idempotencyKey) {
     const draft = await createDraft(env, {

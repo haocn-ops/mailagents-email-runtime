@@ -119,6 +119,42 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
   };
 }
 
+async function validateDraftReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}) {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new McpToolError("resource_thread_not_found", "Thread not found");
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Thread does not belong to tenant");
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Thread does not belong to mailbox");
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new McpToolError("resource_message_not_found", "Source message not found");
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to tenant");
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to mailbox");
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to thread");
+    }
+  }
+}
+
 const router = new Router<Env>();
 
 const TOOL_DEFINITIONS: ToolDescriptor[] = [
@@ -623,6 +659,12 @@ async function createAndSendDraftForMcp(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
   }
+  await validateDraftReferences(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    threadId: input.threadId,
+    sourceMessageId: input.sourceMessageId,
+  });
 
   if (!idempotencyKey) {
     const draft = await createDraft(env, {
@@ -1332,6 +1374,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
     await validateBindingResources(env, tenantId, agentId, mailboxId);
+    await validateDraftReferences(env, {
+      tenantId,
+      mailboxId,
+      threadId: optionalString(args.threadId),
+      sourceMessageId: optionalString(args.sourceMessageId),
+    });
 
     return await createDraft(env, {
       tenantId,
