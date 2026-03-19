@@ -993,13 +993,15 @@ content-type: application/json
 
 <h2>Quick Start</h2>
 
-<p>If you want the shortest path from signup to sending a real email, use this sequence.</p>
+<p>If you want the shortest path from signup to a working agent mailbox, use this sequence.</p>
 
 <ol>
   <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
   <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
-  <li>Create a draft with <code>POST /v1/agents/{agentId}/drafts</code>.</li>
-  <li>Send the draft with <code>POST /v1/drafts/{draftId}/send</code>.</li>
+  <li>Discover runtime tools with <code>POST /mcp</code> and method <code>tools/list</code>.</li>
+  <li>Read inbound mail with <code>list_messages</code> or the mailbox self routes.</li>
+  <li>Send outbound mail with <code>send_email</code>.</li>
+  <li>Reply on-thread with <code>reply_to_message</code>.</li>
 </ol>
 
 <p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
@@ -1053,32 +1055,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "params": {}
   }' | jq</code></pre>
 
-<h3>3. Create a Draft</h3>
-
-<pre><code>curl -sS -X POST https://api.mailagents.net/v1/agents/$AGENT_ID/drafts \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d "{
-    \"tenantId\": \"$TENANT_ID\",
-    \"mailboxId\": \"$MAILBOX_ID\",
-    \"from\": \"$MAILBOX_ADDRESS\",
-    \"to\": [\"recipient@example.com\"],
-    \"subject\": \"Hello from Mailagents\",
-    \"text\": \"This message was created with the signup API token.\"
-  }"</code></pre>
-
-<p>The draft response returns a <code>draftId</code>.</p>
-
-<h3>4. Send the Draft</h3>
-
-<pre><code>curl -sS -X POST https://api.mailagents.net/v1/drafts/$DRAFT_ID/send \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "idempotencyKey": "send-demo-001"
-  }'</code></pre>
-
-<h3>5. Read Incoming Replies</h3>
+<h3>3. Read Mailbox Messages</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1088,14 +1065,56 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "list_agent_tasks",
+      "name": "list_messages",
       "arguments": {
-        "agentId": "REPLACE_WITH_AGENT_ID"
+        "limit": 10,
+        "direction": "inbound"
+      }
+    }
+  }'</code></pre>
+
+<p>Mailbox-scoped tokens can also use the HTTP self routes directly, for example <code>GET /v1/mailboxes/self/messages</code>.</p>
+
+<h3>4. Send a New Email</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "send_email",
+      "arguments": {
+        "to": ["recipient@example.com"],
+        "subject": "Hello from Mailagents",
+        "text": "This message was sent with the mailbox-scoped MCP tool.",
+        "idempotencyKey": "send-demo-001"
       }
     }
   }' | jq</code></pre>
 
-<p>Use the returned <code>sourceMessageId</code> with <code>get_message</code> and <code>get_message_content</code>, or call <code>reply_to_inbound_email</code> to reply on the same thread.</p>
+<h3>5. Reply to an Inbound Message</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "reply_to_message",
+      "arguments": {
+        "messageId": "REPLACE_WITH_MESSAGE_ID",
+        "text": "Thanks for your message.",
+        "idempotencyKey": "reply-demo-001"
+      }
+    }
+  }' | jq</code></pre>
+
+<p>Use <code>tools/list</code> to discover the full MCP surface. The default mailbox-scoped token is expected to use <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code> as the primary workflow path.</p>
 
 <h3>6. Reissue an Expired Token</h3>
 
@@ -1128,6 +1147,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>One published default version</li>
   <li>One active mailbox deployment</li>
   <li>One default mailbox-scoped access token for read, draft, and send APIs</li>
+  <li>Immediate access to MCP mailbox tools such as <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code></li>
   <li>One welcome email through the same outbound runtime used by the product</li>
   <li>One public token reissue path that only emails refreshed tokens to the original operator inbox</li>
   <li>One authenticated token rotate path for agents that already hold a valid token and want to rotate without operator email</li>
