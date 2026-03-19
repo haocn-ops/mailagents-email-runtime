@@ -2405,13 +2405,11 @@ async function deliverRotatedTokenToSelfMailbox(
     return false;
   }
 
-  const executionTarget = claims.agentId
-    ? await canAgentSendForMailbox(env, {
-        agentId: claims.agentId,
-        mailboxId,
-      })
-      ? { agentId: claims.agentId }
-      : null
+  const executionTarget = claims.agentId && await canAgentSendForMailbox(env, {
+    agentId: claims.agentId,
+    mailboxId,
+  })
+    ? { agentId: claims.agentId }
     : await resolveAgentExecutionTarget(env, mailboxId, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
     return false;
