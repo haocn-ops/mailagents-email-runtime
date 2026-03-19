@@ -29,6 +29,51 @@ function decodeQuotedPrintable(input: string): string {
     .replace(/=([A-Fa-f0-9]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }
 
+function decodeQuotedPrintableBytes(input: string): Uint8Array {
+  const bytes: number[] = [];
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (char === "=" && /^[A-Fa-f0-9]{2}$/.test(input.slice(index + 1, index + 3))) {
+      bytes.push(parseInt(input.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+
+    bytes.push(char.charCodeAt(0));
+  }
+
+  return Uint8Array.from(bytes);
+}
+
+function decodeHeaderEncodedWord(input: string): string {
+  const collapsed = input.replace(
+    /(=\?[^?]+\?[BbQq]\?[^?]*\?=)\s+(?==\?[^?]+\?[BbQq]\?[^?]*\?=)/g,
+    "$1"
+  );
+
+  return collapsed.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (match, charset: string, encoding: string, value: string) => {
+    try {
+      const normalizedCharset = charset.trim().toLowerCase();
+      const decoder = new TextDecoder(
+        normalizedCharset === "utf8" ? "utf-8" : normalizedCharset,
+        { fatal: false, ignoreBOM: false }
+      );
+
+      if (encoding.toLowerCase() === "b") {
+        const binary = atob(value.replace(/\s+/g, ""));
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        return decoder.decode(bytes);
+      }
+
+      const qValue = value.replace(/_/g, " ");
+      return decoder.decode(decodeQuotedPrintableBytes(qValue));
+    } catch {
+      return match;
+    }
+  });
+}
+
 function decodeBody(content: string, encoding?: string): Uint8Array {
   const normalized = encoding?.toLowerCase();
   if (normalized === "base64") {
@@ -174,6 +219,9 @@ function collectContent(
 
 export function parseRawEmail(raw: string): ParsedEmail {
   const { headers, body } = splitHeaderAndBody(raw);
+  if (headers["subject"]) {
+    headers["subject"] = decodeHeaderEncodedWord(headers["subject"]);
+  }
   const output: { text?: string; html?: string; attachments: ParsedAttachment[] } = {
     attachments: [],
   };
