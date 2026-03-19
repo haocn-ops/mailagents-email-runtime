@@ -709,7 +709,8 @@ function requireSelfAgentId(claims: AccessTokenClaims): string {
 async function resolveMailboxForClaims(
   env: Env,
   claims: AccessTokenClaims,
-  requestedMailboxId?: string
+  requestedMailboxId?: string,
+  options?: { requireActive?: boolean },
 ) {
   const mailboxId = requestedMailboxId?.trim()
     || (claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : undefined);
@@ -731,7 +732,7 @@ async function resolveMailboxForClaims(
   if (mailboxError) {
     await throwIfResponseError(mailboxError);
   }
-  if (mailbox.status !== "active") {
+  if (options?.requireActive && mailbox.status !== "active") {
     throw new McpToolError("access_mailbox_denied", "Mailbox is not active");
   }
 
@@ -1394,7 +1395,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
   if (toolName === "send_email") {
     const auth = await requireClaimsStrict(request, env, ["draft:create", "draft:send"]);
-    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId));
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId), { requireActive: true });
     const agentId = requireSelfAgentId(auth);
     const to = requireStringArray(args.to, "to");
     const subject = requireString(args.subject, "subject");
