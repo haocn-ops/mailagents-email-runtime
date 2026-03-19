@@ -882,10 +882,15 @@ export class MailagentsAgentClient {
     from: string;
     to: string[];
     subject: string;
-    text: string;
+    text?: string;
+    html?: string;
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<OperatorManualSendResult> {
+    if (!args.text && !args.html) {
+      throw new MailagentsClientError("text or html is required");
+    }
+
     return this.callTool<OperatorManualSendResult>("operator_manual_send", args);
   }
 
