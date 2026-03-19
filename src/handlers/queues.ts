@@ -10,6 +10,7 @@ import {
   getMessage,
   getOrCreateThread,
   getOutboundJob,
+  getSuppression,
   insertAttachments,
   markDraftStatus,
   markMessageSent,
@@ -21,10 +22,29 @@ import {
 } from "../repositories/mail";
 import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJob } from "../types";
 
+class OutboundPolicyError extends Error {}
+
 function getOutboundSendMaxRetries(env: Env): number {
   const raw = env.OUTBOUND_SEND_MAX_RETRIES;
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
+}
+
+function normalizeRecipientAddress(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<string[]> {
+  const uniqueRecipients = [...new Set(recipients.map(normalizeRecipientAddress).filter(Boolean))];
+  const suppressed: string[] = [];
+
+  for (const recipient of uniqueRecipients) {
+    if (await getSuppression(env, recipient)) {
+      suppressed.push(recipient);
+    }
+  }
+
+  return suppressed;
 }
 
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
@@ -229,6 +249,11 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       const attachmentRefs = Array.isArray(draftPayload.attachments)
         ? draftPayload.attachments.filter((item): item is { filename?: unknown; contentType?: unknown; r2Key?: unknown } => typeof item === "object" && item !== null)
         : [];
+      const suppressedRecipients = await getSuppressedRecipients(env, [...to, ...cc, ...bcc]);
+      if (suppressedRecipients.length > 0) {
+        const label = suppressedRecipients.length === 1 ? "recipient is" : "recipients are";
+        throw new OutboundPolicyError(`Suppressed ${label} blocked: ${suppressedRecipients.join(", ")}`);
+      }
 
       const emailTags = [
         { Name: "message_id", Value: outboundJob.messageId },
@@ -289,7 +314,8 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
     } catch (error) {
       const nextRetryCount = outboundJob ? outboundJob.retryCount + 1 : undefined;
       const maxRetries = getOutboundSendMaxRetries(env);
-      const exhausted = nextRetryCount !== undefined && nextRetryCount > maxRetries;
+      const exhausted = error instanceof OutboundPolicyError
+        || (nextRetryCount !== undefined && nextRetryCount > maxRetries);
 
       await updateOutboundJobStatus(env, {
         outboundJobId: message.body.outboundJobId,

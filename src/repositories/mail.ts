@@ -1062,12 +1062,13 @@ export async function listDeliveryEventsByMessageId(env: Env, messageId: string)
 }
 
 export async function getSuppression(env: Env, email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
   const row = await firstRow<SuppressionRow>(
     env.D1_DB.prepare(
       `SELECT email, reason, source, created_at
        FROM suppressions
-       WHERE email = ?`
-    ).bind(email)
+       WHERE lower(email) = ?`
+    ).bind(normalizedEmail)
   );
 
   return row ? mapSuppressionRow(row) : null;
@@ -1086,11 +1087,30 @@ export async function updateMessageStatus(env: Env, messageId: string, status: M
 }
 
 export async function addSuppression(env: Env, email: string, reason: string, source = "ses"): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const timestamp = nowIso();
+  const existing = await firstRow<{ email: string }>(
+    env.D1_DB.prepare(
+      `SELECT email
+       FROM suppressions
+       WHERE lower(email) = ?
+       LIMIT 1`
+    ).bind(normalizedEmail)
+  );
+
+  if (existing) {
+    await execute(env.D1_DB.prepare(
+      `UPDATE suppressions
+       SET reason = ?, source = ?, created_at = ?
+       WHERE email = ?`
+    ).bind(reason, source, timestamp, existing.email));
+    return;
+  }
+
   await execute(env.D1_DB.prepare(
     `INSERT INTO suppressions (email, reason, source, created_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source = excluded.source, created_at = excluded.created_at`
-  ).bind(email, reason, source, nowIso()));
+     VALUES (?, ?, ?, ?)`
+  ).bind(normalizedEmail, reason, source, timestamp));
 }
 
 export async function updateOutboundJobStatus(env: Env, input: {
