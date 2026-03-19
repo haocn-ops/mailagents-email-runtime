@@ -192,6 +192,7 @@ export interface DraftRecord {
   mailboxId: string;
   threadId?: string;
   sourceMessageId?: string;
+  createdVia?: string;
   status: DraftStatus;
   draftR2Key: string;
   createdAt: string;

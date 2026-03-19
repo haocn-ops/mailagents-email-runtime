@@ -1205,6 +1205,7 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
     mailboxId: body.mailboxId,
     threadId: body.threadId,
     sourceMessageId: body.sourceMessageId,
+    createdVia: "api:v1/agents/:agentId/drafts",
     payload: {
       from: body.from,
       to: body.to,
@@ -1489,6 +1490,7 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
     tenantId: mailbox.tenant_id,
     agentId: executionTarget.agentId,
     mailboxId: mailbox.id,
+    createdVia: "system:token_reissue_operator_email",
     payload: {
       from: mailbox.address,
       to: [operatorEmail],
@@ -1586,6 +1588,7 @@ async function deliverRotatedTokenToSelfMailbox(
     tenantId: mailbox.tenant_id,
     agentId: executionTarget.agentId,
     mailboxId: mailbox.id,
+    createdVia: "system:token_reissue_self_mailbox",
     payload: {
       from: mailbox.address,
       to: [mailbox.address],

@@ -592,6 +592,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         mailboxId: message.mailboxId,
         threadId: message.threadId,
         sourceMessageId: message.id,
+        createdVia: "mcp:reply_to_inbound_email",
         payload: draftPayload,
       });
       return {
@@ -642,6 +643,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         mailboxId: message.mailboxId,
         threadId: message.threadId,
         sourceMessageId: message.id,
+        createdVia: "mcp:reply_to_inbound_email",
         payload: draftPayload,
       });
       const result = await enqueueDraftSend(env, draft.id);
@@ -732,6 +734,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         mailboxId,
         threadId: optionalString(args.threadId),
         sourceMessageId: optionalString(args.sourceMessageId),
+        createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
       return {
@@ -784,6 +787,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         mailboxId,
         threadId: optionalString(args.threadId),
         sourceMessageId: optionalString(args.sourceMessageId),
+        createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
       const result = await enqueueDraftSend(env, draft.id);
@@ -903,6 +907,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       mailboxId,
       threadId: optionalString(args.threadId),
       sourceMessageId: optionalString(args.sourceMessageId),
+      createdVia: "mcp:create_draft",
       payload: {
         from,
         to,

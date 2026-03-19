@@ -54,6 +54,7 @@ interface DraftRow {
   mailbox_id: string;
   thread_id: string | null;
   source_message_id: string | null;
+  created_via?: string | null;
   status: DraftRecord["status"];
   draft_r2_key: string;
   created_at: string;
@@ -158,11 +159,16 @@ function mapDraftRow(row: DraftRow): DraftRecord {
     mailboxId: row.mailbox_id,
     threadId: row.thread_id ?? undefined,
     sourceMessageId: row.source_message_id ?? undefined,
+    createdVia: row.created_via ?? undefined,
     status: row.status,
     draftR2Key: row.draft_r2_key,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function isMissingCreatedViaColumn(error: unknown): boolean {
+  return error instanceof Error && /created_via/i.test(error.message);
 }
 
 function mapOutboundJobRow(row: OutboundJobRow): OutboundJobRecord {
@@ -449,6 +455,7 @@ export async function createDraft(env: Env, input: {
   mailboxId: string;
   threadId?: string;
   sourceMessageId?: string;
+  createdVia?: string;
   payload: Record<string, unknown>;
 }): Promise<DraftRecord> {
   const id = createId("drf");
@@ -459,36 +466,77 @@ export async function createDraft(env: Env, input: {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO drafts (
-       id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
-       status, draft_r2_key, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.agentId,
-    input.mailboxId,
-    input.threadId ?? null,
-    input.sourceMessageId ?? null,
-    "draft",
-    draftR2Key,
-    timestamp,
-    timestamp
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO drafts (
+         id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
+         status, draft_r2_key, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.mailboxId,
+      input.threadId ?? null,
+      input.sourceMessageId ?? null,
+      input.createdVia ?? null,
+      "draft",
+      draftR2Key,
+      timestamp,
+      timestamp
+    ));
+  } catch (error) {
+    if (!isMissingCreatedViaColumn(error)) {
+      throw error;
+    }
+
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO drafts (
+         id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+         status, draft_r2_key, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.mailboxId,
+      input.threadId ?? null,
+      input.sourceMessageId ?? null,
+      "draft",
+      draftR2Key,
+      timestamp,
+      timestamp
+    ));
+  }
 
   return requireRow(await getDraft(env, id), "Failed to load created draft");
 }
 
 export async function getDraft(env: Env, draftId: string): Promise<DraftRecord | null> {
-  const row = await firstRow<DraftRow>(
-    env.D1_DB.prepare(
-      `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
-              status, draft_r2_key, created_at, updated_at
-       FROM drafts
-       WHERE id = ?`
-    ).bind(draftId)
-  );
+  let row: DraftRow | null = null;
+  try {
+    row = await firstRow<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         WHERE id = ?`
+      ).bind(draftId)
+    );
+  } catch (error) {
+    if (!isMissingCreatedViaColumn(error)) {
+      throw error;
+    }
+
+    row = await firstRow<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         WHERE id = ?`
+      ).bind(draftId)
+    );
+  }
 
   return row ? mapDraftRow(row) : null;
 }
@@ -513,29 +561,63 @@ export async function listDrafts(env: Env, input?: {
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const rows = await allRows<DraftRow>(
-    env.D1_DB.prepare(
-      `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
-              status, draft_r2_key, created_at, updated_at
-       FROM drafts
-       ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT ?`
-    ).bind(...values, limit)
-  );
+  let rows: DraftRow[];
+  try {
+    rows = await allRows<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         ${whereClause}
+         ORDER BY created_at DESC
+         LIMIT ?`
+      ).bind(...values, limit)
+    );
+  } catch (error) {
+    if (!isMissingCreatedViaColumn(error)) {
+      throw error;
+    }
+
+    rows = await allRows<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         ${whereClause}
+         ORDER BY created_at DESC
+         LIMIT ?`
+      ).bind(...values, limit)
+    );
+  }
 
   return rows.map(mapDraftRow);
 }
 
 export async function getDraftByR2Key(env: Env, draftR2Key: string): Promise<DraftRecord | null> {
-  const row = await firstRow<DraftRow>(
-    env.D1_DB.prepare(
-      `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
-              status, draft_r2_key, created_at, updated_at
-       FROM drafts
-       WHERE draft_r2_key = ?`
-    ).bind(draftR2Key)
-  );
+  let row: DraftRow | null = null;
+  try {
+    row = await firstRow<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         WHERE draft_r2_key = ?`
+      ).bind(draftR2Key)
+    );
+  } catch (error) {
+    if (!isMissingCreatedViaColumn(error)) {
+      throw error;
+    }
+
+    row = await firstRow<DraftRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+                status, draft_r2_key, created_at, updated_at
+         FROM drafts
+         WHERE draft_r2_key = ?`
+      ).bind(draftR2Key)
+    );
+  }
 
   return row ? mapDraftRow(row) : null;
 }

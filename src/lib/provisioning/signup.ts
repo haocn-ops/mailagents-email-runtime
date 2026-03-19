@@ -221,6 +221,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       tenantId,
       agentId: agent.id,
       mailboxId: mailbox.id,
+      createdVia: "system:signup_welcome",
       payload: {
         from: address,
         to: [values.operatorEmail],

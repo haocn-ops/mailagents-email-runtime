@@ -542,6 +542,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
       mailboxId: body.mailboxId,
       threadId: body.threadId,
       sourceMessageId: body.sourceMessageId,
+      createdVia: "site:admin_send",
       payload: {
         from: normalizedFrom,
         to: body.to,
