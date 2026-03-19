@@ -122,6 +122,10 @@ function isMissingTableError(error: unknown): boolean {
   return error instanceof Error && /no such table/i.test(error.message);
 }
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
 function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
@@ -818,16 +822,32 @@ export async function ensureMailbox(env: Env, input: {
 
   const id = createId("mbx");
   const createdAt = nowIso();
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO mailboxes (id, tenant_id, address, status, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    normalizedAddress,
-    input.status ?? "active",
-    createdAt
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO mailboxes (id, tenant_id, address, status, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      normalizedAddress,
+      input.status ?? "active",
+      createdAt
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const concurrent = await getMailboxByAddress(env, normalizedAddress);
+    if (concurrent) {
+      if (concurrent.tenant_id !== input.tenantId) {
+        throw new Error(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+      }
+      return mapMailboxRecord(concurrent);
+    }
+
+    throw error;
+  }
 
   return {
     id,
