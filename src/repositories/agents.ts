@@ -688,6 +688,10 @@ export async function resolveAgentExecutionTarget(
             ).bind(mailboxId)
           );
 
+      let fallbackDeployment:
+        | { id: string; agent_id: string; agent_version_id: string }
+        | undefined;
+
       for (const deployment of deploymentRows) {
         const hasMatchingBinding = await hasActiveMailboxBinding(env, {
           agentId: deployment.agent_id,
@@ -706,13 +710,17 @@ export async function resolveAgentExecutionTarget(
           agentId: deployment.agent_id,
           mailboxId,
         });
-        if (!hasAnyBinding) {
-          return {
-            agentId: deployment.agent_id,
-            agentVersionId: deployment.agent_version_id,
-            deploymentId: deployment.id,
-          };
+        if (!hasAnyBinding && !fallbackDeployment) {
+          fallbackDeployment = deployment;
         }
+      }
+
+      if (fallbackDeployment) {
+        return {
+          agentId: fallbackDeployment.agent_id,
+          agentVersionId: fallbackDeployment.agent_version_id,
+          deploymentId: fallbackDeployment.id,
+        };
       }
     } else {
       const deploymentQuery = requestedAgentId
