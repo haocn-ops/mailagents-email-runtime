@@ -38,8 +38,9 @@ const authed = client.withToken(signup.accessToken!);
 const contract = await authed.getCompatibilityContract();
 const tools = await authed.listTools();
 const recommended = await authed.listRecommendedMailboxTools();
+const workflow = await authed.getMailboxWorkflowSurface();
 
-console.log(signup.mailbox.address, contract, tools, recommended);
+console.log(signup.mailbox.address, contract, tools, recommended, workflow);
 ```
 
 Typed helpers currently cover:
@@ -51,6 +52,7 @@ Typed helpers currently cover:
 - `rotateAccessToken()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
+- `getMailboxWorkflowSurface()`
 - `createAgent()`
 - `bindMailbox()`
 - `listAgentTasks()`
@@ -60,6 +62,7 @@ Typed helpers currently cover:
 - `getThread()`
 - `sendEmail()`
 - `replyToMessage()`
+- `replyLatestInbound()`
 - `createDraft()`
 - `sendDraft()`
 - `replyToInboundEmail()`
@@ -92,6 +95,11 @@ try {
     subject: "Hello from the mailbox-first helper",
     text: "Sent through the high-level helper method.",
     idempotencyKey: "send:demo:001",
+  });
+
+  await client.replyLatestInbound({
+    text: "Thanks for the inbound message.",
+    idempotencyKey: "reply:latest:001",
   });
 } catch (error) {
   if (hasMailagentsErrorCode(error, "idempotency_conflict")) {

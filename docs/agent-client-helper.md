@@ -23,6 +23,8 @@ It is intentionally lightweight:
 - `rotateAccessToken()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
+- `getMailboxWorkflowSurface()`
+- `replyLatestInbound()`
 - `callTool()`
 - convenience helpers for:
   - `listMessages()`
@@ -64,10 +66,10 @@ console.log(contract, tools, recommended);
 For mailbox-scoped agents, the default helper path is:
 
 1. `publicSignup()`
-2. `listRecommendedMailboxTools()`
+2. `getMailboxWorkflowSurface()`
 3. `listMessages()`
 4. `sendEmail()`
-5. `replyToMessage()`
+5. `replyLatestInbound()` or `replyToMessage()`
 
 Use `createDraft()` and `sendDraft()` only when the workflow needs explicit
 draft lifecycle control.

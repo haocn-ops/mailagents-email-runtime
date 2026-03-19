@@ -47,6 +47,11 @@ export interface RotateAccessTokenRequest {
   mailboxId?: string;
 }
 
+export interface BootstrapMailboxAgentResult {
+  signup: unknown;
+  client: MailagentsAgentClient;
+}
+
 export interface JsonRpcSuccess<T> {
   jsonrpc: "2.0";
   id: string | number | null;
@@ -230,6 +235,57 @@ export class MailagentsAgentClient {
   async listRecommendedMailboxTools(): Promise<McpToolDefinition[]> {
     const result = await this.listTools();
     return result.tools.filter((tool) => tool.annotations.recommendedForMailboxAgents);
+  }
+
+  async getMailboxWorkflowSurface(): Promise<{
+    recommended: McpToolDefinition[];
+    reads: McpToolDefinition[];
+    sends: McpToolDefinition[];
+    replies: McpToolDefinition[];
+  }> {
+    const recommended = await this.listRecommendedMailboxTools();
+    return {
+      recommended,
+      reads: recommended.filter((tool) => tool.annotations.category === "mail_read"),
+      sends: recommended.filter((tool) => tool.annotations.category === "mail_send"),
+      replies: recommended.filter((tool) => tool.annotations.category === "mail_reply"),
+    };
+  }
+
+  async replyLatestInbound(args: {
+    text?: string;
+    html?: string;
+    idempotencyKey?: string;
+  }): Promise<unknown> {
+    const messages = await this.listMessages({ limit: 1, direction: "inbound" }) as { items?: Array<{ id?: string }> };
+    const latest = messages.items?.[0];
+    if (!latest?.id) {
+      throw new MailagentsClientError("No inbound messages available to reply to");
+    }
+
+    return this.replyToMessage({
+      messageId: latest.id,
+      text: args.text,
+      html: args.html,
+      idempotencyKey: args.idempotencyKey,
+    });
+  }
+
+  static async bootstrapMailboxAgent(
+    options: MailagentsClientOptions,
+    input: PublicSignupRequest
+  ): Promise<BootstrapMailboxAgentResult> {
+    const unauthenticated = new MailagentsAgentClient(options);
+    const signup = await unauthenticated.publicSignup(input);
+    const accessToken = (signup as { accessToken?: string }).accessToken;
+    if (!accessToken) {
+      throw new MailagentsClientError("Signup completed without returning an access token");
+    }
+
+    return {
+      signup,
+      client: unauthenticated.withToken(accessToken),
+    };
   }
 
   private async requestJson(path: string, init?: RequestInit): Promise<unknown> {
