@@ -986,48 +986,53 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (agentError) {
       await throwIfResponseError(agentError);
     }
-    await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
-    if (send) {
-      await validateActiveDraftMailbox(env, {
-        tenantId: message.tenantId,
-        mailboxId: message.mailboxId,
-      });
-      await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
-    }
+    const buildReplyDraftInput = async () => {
+      await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
+      if (send) {
+        await validateActiveDraftMailbox(env, {
+          tenantId: message.tenantId,
+          mailboxId: message.mailboxId,
+        });
+        await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+      }
 
-    const thread = message.threadId ? await getThread(env, message.threadId) : null;
-    const references = Array.from(new Set(
-      (thread?.messages ?? [])
-        .map((item) => item.internetMessageId)
-        .filter((item): item is string => Boolean(item))
-    ));
-    if (message.internetMessageId && !references.includes(message.internetMessageId)) {
-      references.push(message.internetMessageId);
-    }
-    const replyMailbox = await getMailboxById(env, message.mailboxId);
-    if (!replyMailbox) {
-      throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
-    }
+      const thread = message.threadId ? await getThread(env, message.threadId) : null;
+      const references = Array.from(new Set(
+        (thread?.messages ?? [])
+          .map((item) => item.internetMessageId)
+          .filter((item): item is string => Boolean(item))
+      ));
+      if (message.internetMessageId && !references.includes(message.internetMessageId)) {
+        references.push(message.internetMessageId);
+      }
+      const replyMailbox = await getMailboxById(env, message.mailboxId);
+      if (!replyMailbox) {
+        throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+      }
 
-    const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
-      ? message.subject
-      : `Re: ${message.subject ?? ""}`.trim();
-    const replyFrom = replyMailbox.address;
+      const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
+        ? message.subject
+        : `Re: ${message.subject ?? ""}`.trim();
 
-    const draftPayload = {
-      from: replyFrom,
-      to: [message.fromAddr],
-      cc: [],
-      bcc: [],
-      subject: replySubject || "Re:",
-      text: replyText ?? "",
-      html: replyHtml ?? "",
-      inReplyTo: message.internetMessageId,
-      references,
-      attachments: [],
+      return {
+        thread,
+        draftPayload: {
+          from: replyMailbox.address,
+          to: [message.fromAddr],
+          cc: [],
+          bcc: [],
+          subject: replySubject || "Re:",
+          text: replyText ?? "",
+          html: replyHtml ?? "",
+          inReplyTo: message.internetMessageId,
+          references,
+          attachments: [],
+        },
+      };
     };
 
     if (!send) {
+      const { thread, draftPayload } = await buildReplyDraftInput();
       const draft = await createDraft(env, {
         tenantId: message.tenantId,
         agentId,
@@ -1071,6 +1076,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         return reservation.record.response;
       }
 
+      const thread = message.threadId ? await getThread(env, message.threadId) : null;
       const replay = await restoreDraftSendReplay(env, reservation.record.resourceId);
       return {
         draft: replay.draft,
@@ -1085,6 +1091,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     try {
+      const { thread, draftPayload } = await buildReplyDraftInput();
       const draft = await createDraft(env, {
         tenantId: message.tenantId,
         agentId,
