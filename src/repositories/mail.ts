@@ -102,6 +102,7 @@ interface SuppressionRow {
 
 interface MailboxAddressRow {
   address: string;
+  status: string;
 }
 
 interface IdempotencyRow {
@@ -647,7 +648,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
   const mailbox = await firstRow<MailboxAddressRow>(
     env.D1_DB.prepare(
-      `SELECT address
+      `SELECT address, status
        FROM mailboxes
        WHERE id = ?`
     ).bind(draft.mailboxId)
@@ -657,6 +658,9 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
 
   if (!mailboxAddress) {
     throw new Error("Mailbox not found");
+  }
+  if (mailbox?.status !== "active") {
+    throw new Error("Mailbox is not active");
   }
   if (!fromAddress) {
     throw new Error("Draft from address is required");

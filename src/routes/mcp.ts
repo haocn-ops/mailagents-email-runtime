@@ -534,6 +534,9 @@ async function resolveMailboxForClaims(
   if (mailboxError) {
     await throwIfResponseError(mailboxError);
   }
+  if (mailbox.status !== "active") {
+    throw new McpToolError("access_mailbox_denied", "Mailbox is not active");
+  }
 
   return mailbox;
 }
