@@ -375,6 +375,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
     const message = await getMessage(env, job.messageId);
+    const previousMessageStatus = message?.status;
     if (message?.providerMessageId) {
       return json({ error: "Outbound jobs with provider delivery events cannot be retried from the queue state" }, { status: 409 });
     }
@@ -391,6 +392,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     });
     await updateMessageStatus(env, job.messageId, "tasked");
     const draft = await getDraftByR2Key(env, job.draftR2Key);
+    const previousDraftStatus = draft?.status;
     if (draft) {
       await markDraftStatus(env, draft.id, "queued");
     }
@@ -404,9 +406,11 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
         lastError: job.lastError ?? null,
         nextRetryAt: job.nextRetryAt ?? null,
       }).catch(() => undefined);
-      await updateMessageStatus(env, job.messageId, "failed").catch(() => undefined);
-      if (draft) {
-        await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+      if (previousMessageStatus) {
+        await updateMessageStatus(env, job.messageId, previousMessageStatus).catch(() => undefined);
+      }
+      if (draft && previousDraftStatus) {
+        await markDraftStatus(env, draft.id, previousDraftStatus).catch(() => undefined);
       }
       throw error;
     }
