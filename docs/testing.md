@@ -177,3 +177,31 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either
   `resource_mailbox_not_found` or `access_mailbox_denied`, depending on token mailbox scope.
+
+## Historical Subject Backfill
+
+When older inbound messages were normalized before RFC 2047 subject decoding landed,
+their stored `messages.subject` values may still look like `=?UTF-8?...?=`.
+
+Use the backfill tool to preview and optionally repair those rows from raw EML in R2:
+
+```bash
+npm run backfill:subjects:dev -- --dry-run
+npm run backfill:subjects:production -- --dry-run
+```
+
+To scope the scan:
+
+```bash
+node ./scripts/backfill_message_subjects.mjs --env production --mailbox mbx_4ee06ae7768c4b3f95f22cb2e7b57ce4 --limit 20
+node ./scripts/backfill_message_subjects.mjs --env production --message-id msg_f025694cda9043bab2521bfabd338bff
+```
+
+To apply updates after reviewing the dry run:
+
+```bash
+node ./scripts/backfill_message_subjects.mjs --env production --apply --limit 20
+```
+
+The tool only updates inbound messages whose stored subject currently begins with
+an encoded-word prefix and whose raw `.eml` object still exists in R2.
