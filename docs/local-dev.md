@@ -133,9 +133,13 @@ Store the returned token and use it as:
 export TOKEN="REPLACE_WITH_TOKEN"
 ```
 
-## 8. Create a real agent config object in R2
+## 8. Optional: create a real agent config object in R2
 
-The demo seed creates the D1 row only. To align R2 with the seeded `config_r2_key`, create a real agent through the API:
+The seeded `agt_demo` row is enough for the mailbox read, send, and reply
+examples below.
+
+If you want a real R2-backed config object for direct agent or deployment
+experiments, create another agent through the API:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/agents \
@@ -153,18 +157,12 @@ curl -X POST http://127.0.0.1:8787/v1/agents \
   }'
 ```
 
-Store the returned agent id, then bind that agent to `mbx_demo`:
+Store the returned agent id if you want to use direct agent routes such as
+`POST /v1/agents/{agentId}/drafts`.
 
-```bash
-curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/mailboxes \
-  -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
-  -d '{
-    "tenantId": "t_demo",
-    "mailboxId": "mbx_demo",
-    "role": "primary"
-  }'
-```
+Do not bind that new agent to `mbx_demo` unless you also replace the seeded
+`agt_demo` binding through the deployment flow; otherwise the older seeded
+binding remains the mailbox fallback execution target.
 
 ## 9. Read mailbox messages through the mailbox-scoped routes
 
@@ -213,7 +211,7 @@ curl -X POST http://127.0.0.1:8787/v1/messages/msg_demo_inbound/reply \
 Create:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/drafts \
+curl -X POST http://127.0.0.1:8787/v1/agents/agt_demo/drafts \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $TOKEN" \
   -d '{
@@ -225,6 +223,9 @@ curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/drafts \
     "text": "This is a local test draft."
   }'
 ```
+
+If you completed the optional R2-backed agent step above, you can substitute
+that returned agent id for `agt_demo` here.
 
 Send:
 

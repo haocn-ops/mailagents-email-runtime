@@ -18,6 +18,7 @@ import {
   buildTokenReissueText,
   parseSelfServeSignup,
   performSelfServeSignup,
+  SignupError,
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
 import {
@@ -25,9 +26,13 @@ import {
   createAgent,
   createAgentDeployment,
   createAgentVersion,
+  DeploymentConflictError,
   getAgent,
   getAgentDeployment,
   getAgentVersion,
+  hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
+  MailboxConflictError,
   getMailboxByAddress,
   getMailboxById,
   listAgentDeployments,
@@ -44,14 +49,17 @@ import {
 import {
   createDraft,
   createTask,
+  deleteTask,
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
+  getAttachmentOwnerByR2Key,
   getMessage,
   getMessageByProviderMessageId,
   getMessageContent,
   listMessages,
   getThread,
+  getOutboundJobByDraftR2Key,
   getOutboundJobByMessageId,
   getOutboundJob,
   getSuppression,
@@ -62,6 +70,7 @@ import {
   reserveIdempotencyKey,
   addSuppression,
   updateOutboundJobStatus,
+  updateMessageStatus,
   updateMessageStatusByProviderMessageId,
 } from "../repositories/mail";
 import {
@@ -75,6 +84,233 @@ import {
 import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
+const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+
+class RouteRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RouteRequestError";
+    this.status = status;
+  }
+}
+
+async function enqueueReplayTask(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  sourceMessageId: string;
+  agentId: string;
+  agentVersionId?: string;
+  deploymentId?: string;
+}) {
+  const replayTask = await createTask(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    sourceMessageId: input.sourceMessageId,
+    taskType: "replay",
+    priority: 50,
+    status: "queued",
+    assignedAgent: input.agentId,
+  });
+
+  try {
+    await env.AGENT_EXECUTE_QUEUE.send({
+      taskId: replayTask.id,
+      agentId: input.agentId,
+      agentVersionId: input.agentVersionId,
+      deploymentId: input.deploymentId,
+    });
+  } catch (error) {
+    await deleteTask(env, replayTask.id).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
+  if (!draftId) {
+    throw new RouteRequestError("Stored idempotent draft send result is incomplete", 500);
+  }
+
+  const draft = await getDraft(env, draftId);
+  if (!draft) {
+    throw new RouteRequestError("Stored idempotent draft no longer exists", 409);
+  }
+
+  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  if (!outboundJob) {
+    throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+
+  return {
+    draft,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function restoreEnqueuedDraftSend(env: Env, input: {
+  draftId: string;
+  outboundJobId: string | undefined;
+}) {
+  if (!input.outboundJobId) {
+    throw new RouteRequestError("Stored idempotent draft send result is incomplete", 500);
+  }
+
+  const draft = await getDraft(env, input.draftId);
+  if (!draft) {
+    throw new RouteRequestError("Stored idempotent draft no longer exists", 409);
+  }
+
+  const outboundJob = await getOutboundJob(env, input.outboundJobId);
+  if (!outboundJob) {
+    throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+  if (outboundJob.draftR2Key !== draft.draftR2Key) {
+    throw new RouteRequestError("Stored idempotent outbound job does not belong to draft", 409);
+  }
+
+  return {
+    draftId: input.draftId,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function validateDraftReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}) {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new RouteRequestError("Thread not found", 404);
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Thread does not belong to tenant", 409);
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Thread does not belong to mailbox", 409);
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new RouteRequestError("Source message not found", 404);
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Source message does not belong to tenant", 409);
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Source message does not belong to mailbox", 409);
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new RouteRequestError("Source message does not belong to thread", 409);
+    }
+  }
+}
+
+async function validateDraftAttachments(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+}) {
+  for (const attachment of input.attachments) {
+    const r2Key = typeof attachment.r2Key === "string" ? attachment.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new RouteRequestError("Attachment r2Key is required", 400);
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new RouteRequestError("Attachment not found", 404);
+    }
+    if (owner.tenantId !== input.tenantId) {
+      throw new RouteRequestError("Attachment does not belong to tenant", 409);
+    }
+    if (owner.mailboxId !== input.mailboxId) {
+      throw new RouteRequestError("Attachment does not belong to mailbox", 409);
+    }
+  }
+}
+
+async function validateActiveDraftMailbox(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+}) {
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new RouteRequestError("Mailbox not found", 404);
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new RouteRequestError("Mailbox does not belong to tenant", 409);
+  }
+  if (mailbox.status !== "active") {
+    throw new RouteRequestError("Mailbox is not active", 409);
+  }
+}
+
+async function validateSendAgentBinding(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  mailboxId: string;
+}) {
+  const agent = await getAgent(env, input.agentId);
+  if (!agent) {
+    throw new RouteRequestError("Agent not found", 404);
+  }
+  if (agent.tenantId !== input.tenantId) {
+    throw new RouteRequestError("Agent does not belong to tenant", 409);
+  }
+
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+    roles: [...SEND_CAPABLE_MAILBOX_ROLES],
+  });
+  const hasAnyBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  const hasDeployment = await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (!hasBinding && (!hasDeployment || hasAnyBinding)) {
+    throw new RouteRequestError("Agent is not allowed to send for mailbox", 403);
+  }
+}
+
+async function canAgentSendForMailbox(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<boolean> {
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+    roles: [...SEND_CAPABLE_MAILBOX_ROLES],
+  });
+  if (hasBinding) {
+    return true;
+  }
+
+  const hasAnyBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (hasAnyBinding) {
+    return false;
+  }
+
+  return await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+}
 
 router.on("GET", "/public/signup", async () => {
   return methodNotAllowed(["POST"]);
@@ -110,7 +346,8 @@ router.on("POST", "/public/signup", async (request, env) => {
     return json(result, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to complete self-serve signup";
-    return json({ error: message, values: parsed.values }, { status: 502 });
+    const status = error instanceof SignupError ? error.status : 502;
+    return json({ error: message, values: parsed.values }, { status });
   }
 });
 
@@ -153,12 +390,13 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
   if (env.API_SIGNING_SECRET) {
     try {
       await reissueMailboxAccessToken(env, mailboxAddress);
+    } catch {
+      // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
+    } finally {
       await logTokenReissueRequest(env, {
         mailboxAddress,
         requesterIpHash: requesterIpHash ?? undefined,
       }).catch(() => undefined);
-    } catch {
-      // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
     }
   }
 
@@ -208,7 +446,7 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
   }
 
   return json({
-    token: delivery === "self_mailbox" ? undefined : rotated.accessToken,
+    token: delivery === "self_mailbox" && deliveryStatus === "queued" ? undefined : rotated.accessToken,
     expiresAt: rotated.accessTokenExpiresAt,
     scopes: rotated.accessTokenScopes,
     delivery,
@@ -915,14 +1153,21 @@ router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, 
     return json({ error: "Agent version not found" }, { status: 404 });
   }
 
-  return json(await createAgentDeployment(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    agentVersionId: body.agentVersionId,
-    targetType: body.targetType,
-    targetId: body.targetId,
-    status: body.status,
-  }), { status: 201 });
+  try {
+    return json(await createAgentDeployment(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      agentVersionId: body.agentVersionId,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      status: body.status,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, route) => {
@@ -1046,13 +1291,20 @@ router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env
     return json({ error: "Agent version not found" }, { status: 404 });
   }
 
-  return json(await rolloutAgentDeployment(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    agentVersionId: body.agentVersionId,
-    targetType: body.targetType,
-    targetId: body.targetId,
-  }), { status: 201 });
+  try {
+    return json(await rolloutAgentDeployment(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      agentVersionId: body.agentVersionId,
+      targetType: body.targetType,
+      targetId: body.targetId,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", async (request, env, _ctx, route) => {
@@ -1136,12 +1388,19 @@ router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, ro
     return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
   }
 
-  return json(await bindMailbox(env, {
-    tenantId: body.tenantId,
-    agentId: route.params.agentId,
-    mailboxId: body.mailboxId,
-    role: body.role,
-  }), { status: 201 });
+  try {
+    return json(await bindMailbox(env, {
+      tenantId: body.tenantId,
+      agentId: route.params.agentId,
+      mailboxId: body.mailboxId,
+      role: body.role,
+    }), { status: 201 });
+  } catch (error) {
+    if (error instanceof MailboxConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 });
 
 router.on("GET", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, route) => {
@@ -1302,11 +1561,15 @@ router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, ro
   if (message.internetMessageId && !references.includes(message.internetMessageId)) {
     references.push(message.internetMessageId);
   }
+  const replyMailbox = await getMailboxById(env, message.mailboxId);
+  if (!replyMailbox) {
+    return json({ error: "Mailbox not found" }, { status: 404 });
+  }
 
   const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
     ? message.subject
     : `Re: ${message.subject ?? ""}`.trim();
-  const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+  const replyFrom = replyMailbox.address;
 
   const result = await createAndSendDraft(env, {
     tenantId: message.tenantId,
@@ -1368,23 +1631,34 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   if (mailboxError) {
     return mailboxError;
   }
-  if (body.mode === "normalize" && !existingMessage.rawR2Key) {
-    return badRequest("normalize replay requires the message to have raw email content");
-  }
-  const replayRawR2Key = body.mode === "normalize" ? existingMessage.rawR2Key : undefined;
 
   const idempotencyKey = body.idempotencyKey?.trim();
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
 
-  const replayTarget = body.mode === "rerun_agent"
-    ? await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId)
-    : null;
-  if (replayTarget instanceof Response) {
-    return replayTarget;
-  }
-  const replayAgentTarget = replayTarget ?? undefined;
+  const resolveReplayExecution = async () => {
+    if (body.mode === "normalize") {
+      if (!existingMessage.rawR2Key) {
+        return badRequest("normalize replay requires the message to have raw email content");
+      }
+
+      return {
+        replayRawR2Key: existingMessage.rawR2Key,
+        replayAgentTarget: undefined,
+      };
+    }
+
+    const replayTarget = await resolveReplayAgentTarget(env, auth, existingMessage.mailboxId, body.agentId);
+    if (replayTarget instanceof Response) {
+      return replayTarget;
+    }
+
+    return {
+      replayRawR2Key: undefined,
+      replayAgentTarget: replayTarget,
+    };
+  };
 
   const replayResponse = {
     messageId: route.params.messageId,
@@ -1416,28 +1690,31 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     }
 
     try {
+      const replayExecution = await resolveReplayExecution();
+      if (replayExecution instanceof Response) {
+        await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
+        return replayExecution;
+      }
+
       if (body.mode === "normalize") {
+        if (!replayExecution.replayRawR2Key) {
+          await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
+          return badRequest("normalize replay requires the message to have raw email content");
+        }
         await env.EMAIL_INGEST_QUEUE.send({
           messageId: route.params.messageId,
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
-          rawR2Key: replayRawR2Key!,
+          rawR2Key: replayExecution.replayRawR2Key,
         });
       } else {
-        const replayTask = await createTask(env, {
+        await enqueueReplayTask(env, {
           tenantId: existingMessage.tenantId,
           mailboxId: existingMessage.mailboxId,
           sourceMessageId: route.params.messageId,
-          taskType: "replay",
-          priority: 50,
-          status: "queued",
-          assignedAgent: replayAgentTarget!.agentId,
-        });
-        await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: replayTask.id,
-          agentId: replayAgentTarget!.agentId,
-          agentVersionId: replayAgentTarget!.agentVersionId,
-          deploymentId: replayAgentTarget!.deploymentId,
+          agentId: replayExecution.replayAgentTarget!.agentId,
+          agentVersionId: replayExecution.replayAgentTarget!.agentVersionId,
+          deploymentId: replayExecution.replayAgentTarget!.deploymentId,
         });
       }
 
@@ -1455,34 +1732,29 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
     }
   }
 
+  const replayExecution = await resolveReplayExecution();
+  if (replayExecution instanceof Response) {
+    return replayExecution;
+  }
+
   if (body.mode === "normalize") {
-    if (!replayRawR2Key) {
+    if (!replayExecution.replayRawR2Key) {
       return badRequest("normalize replay requires the message to have raw email content");
     }
     await env.EMAIL_INGEST_QUEUE.send({
       messageId: route.params.messageId,
       tenantId: existingMessage.tenantId,
       mailboxId: existingMessage.mailboxId,
-      rawR2Key: replayRawR2Key,
+      rawR2Key: replayExecution.replayRawR2Key,
     });
   } else {
-    if (!replayAgentTarget) {
-      return badRequest("agentId is required for rerun_agent replay");
-    }
-    const replayTask = await createTask(env, {
+    await enqueueReplayTask(env, {
       tenantId: existingMessage.tenantId,
       mailboxId: existingMessage.mailboxId,
       sourceMessageId: route.params.messageId,
-      taskType: "replay",
-      priority: 50,
-      status: "queued",
-      assignedAgent: replayAgentTarget.agentId,
-    });
-    await env.AGENT_EXECUTE_QUEUE.send({
-      taskId: replayTask.id,
-      agentId: replayAgentTarget.agentId,
-      agentVersionId: replayAgentTarget.agentVersionId,
-      deploymentId: replayAgentTarget.deploymentId,
+      agentId: replayExecution.replayAgentTarget!.agentId,
+      agentVersionId: replayExecution.replayAgentTarget!.agentVersionId,
+      deploymentId: replayExecution.replayAgentTarget!.deploymentId,
     });
   }
 
@@ -1501,6 +1773,10 @@ router.on("GET", "/v1/threads/:threadId", async (request, env, _ctx, route) => {
   const thread = await getThread(env, route.params.threadId);
   if (!thread) {
     return json({ error: "Thread not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(auth, thread.tenantId);
+  if (tenantError) {
+    return tenantError;
   }
   const mailboxError = enforceMailboxAccess(auth, thread.mailboxId);
   if (mailboxError) {
@@ -1547,6 +1823,31 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
   if (mailboxError) {
     return mailboxError;
   }
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  if (agent.tenantId !== body.tenantId) {
+    return json({ error: "Agent does not belong to tenant" }, { status: 409 });
+  }
+  const mailbox = await getMailboxById(env, body.mailboxId);
+  if (!mailbox) {
+    return json({ error: "Mailbox not found" }, { status: 404 });
+  }
+  if (mailbox.tenant_id !== body.tenantId) {
+    return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+  }
+  await validateDraftReferences(env, {
+    tenantId: body.tenantId,
+    mailboxId: body.mailboxId,
+    threadId: body.threadId,
+    sourceMessageId: body.sourceMessageId,
+  });
+  await validateDraftAttachments(env, {
+    tenantId: body.tenantId,
+    mailboxId: body.mailboxId,
+    attachments: body.attachments ?? [],
+  });
 
   return json(await createDraft(env, {
     tenantId: body.tenantId,
@@ -1639,11 +1940,10 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
-      return accepted(reservation.record.response ?? {
+      return accepted(reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
         draftId: route.params.draftId,
         outboundJobId: reservation.record.resourceId,
-        status: "queued",
-      });
+      }));
     }
 
     if (draft.status !== "draft" && draft.status !== "approved") {
@@ -1652,6 +1952,15 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
     }
 
     try {
+      await validateActiveDraftMailbox(env, {
+        tenantId: draft.tenantId,
+        mailboxId: draft.mailboxId,
+      });
+      await validateSendAgentBinding(env, {
+        tenantId: draft.tenantId,
+        agentId: draft.agentId,
+        mailboxId: draft.mailboxId,
+      });
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
         draftId: route.params.draftId,
@@ -1676,6 +1985,15 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   if (draft.status !== "draft" && draft.status !== "approved") {
     return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
   }
+  await validateActiveDraftMailbox(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+  });
+  await validateSendAgentBinding(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    mailboxId: draft.mailboxId,
+  });
 
   const result = await enqueueDraftSend(env, route.params.draftId);
   return accepted({
@@ -1700,16 +2018,24 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  const message = normalized.providerMessageId
+  const providerMessage = normalized.providerMessageId
     ? await getMessageByProviderMessageId(env, normalized.providerMessageId)
     : null;
   const taggedMessageId = normalized.mailTags.message_id;
   const taggedTenantId = normalized.mailTags.tenant_id;
-  if (message && taggedMessageId && message.id !== taggedMessageId) {
+  const taggedMessage = !providerMessage && taggedMessageId
+    ? await getMessage(env, taggedMessageId)
+    : null;
+  const message = providerMessage ?? taggedMessage;
+
+  if (providerMessage && taggedMessageId && providerMessage.id !== taggedMessageId) {
     return json({ error: "Webhook message tag mismatch" }, { status: 409 });
   }
   if (message && taggedTenantId && message.tenantId !== taggedTenantId) {
     return json({ error: "Webhook tenant tag mismatch" }, { status: 409 });
+  }
+  if (taggedMessage && normalized.providerMessageId && taggedMessage.providerMessageId && taggedMessage.providerMessageId !== normalized.providerMessageId) {
+    return json({ error: "Webhook provider message mismatch" }, { status: 409 });
   }
 
   await insertDeliveryEvent(env, {
@@ -1719,7 +2045,20 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     payloadR2Key,
   });
 
-  if (normalized.providerMessageId) {
+  const isTerminalSesEvent =
+    normalized.eventType === "delivery"
+    || normalized.eventType === "bounce"
+    || normalized.eventType === "complaint"
+    || normalized.eventType === "reject";
+
+  if (isTerminalSesEvent && message) {
+    const status =
+      normalized.eventType === "delivery" ? "replied" :
+      normalized.eventType === "bounce" ? "failed" :
+      normalized.eventType === "complaint" ? "failed" :
+      "failed";
+    await updateMessageStatus(env, message.id, status);
+  } else if (isTerminalSesEvent && normalized.providerMessageId) {
     const status =
       normalized.eventType === "delivery" ? "replied" :
       normalized.eventType === "bounce" ? "failed" :
@@ -1728,7 +2067,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     await updateMessageStatusByProviderMessageId(env, normalized.providerMessageId, status);
   }
 
-  if (message) {
+  if (isTerminalSesEvent && message) {
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;
@@ -1768,6 +2107,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
       return badRequest(error.message);
+    }
+    if (error instanceof RouteRequestError) {
+      return json({ error: error.message }, { status: error.status });
     }
 
     throw error;
@@ -1809,7 +2151,7 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
     return;
   }
 
-  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id);
+  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
     return;
   }
@@ -1922,10 +2264,36 @@ async function createAndSendDraft(env: Env, input: {
 }) {
   const idempotencyKey = input.idempotencyKey?.trim();
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
-    return Promise.reject(new Error("idempotencyKey must be a non-empty string"));
+    throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
+  const validateCreateAndSendInput = async () => {
+    if (!input.payload.text && !input.payload.html) {
+      throw new RouteRequestError("text or html is required", 400);
+    }
+    await validateActiveDraftMailbox(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+    });
+    await validateSendAgentBinding(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    await validateDraftReferences(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+    });
+    await validateDraftAttachments(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      attachments: input.payload.attachments,
+    });
+  };
 
   if (!idempotencyKey) {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -1952,20 +2320,21 @@ async function createAndSendDraft(env: Env, input: {
   });
 
   if (reservation.status === "conflict") {
-    throw new Error("Idempotency key is already used for a different send request");
+    throw new RouteRequestError("Idempotency key is already used for a different send request", 409);
   }
   if (reservation.status === "pending") {
-    throw new Error("A send request with this idempotency key is already in progress");
+    throw new RouteRequestError("A send request with this idempotency key is already in progress", 409);
   }
   if (reservation.status === "completed") {
-    return reservation.record.response ?? {
-      draftId: reservation.record.resourceId,
-      outboundJobId: reservation.record.resourceId,
-      status: "queued",
-    };
+    if (reservation.record.response) {
+      return reservation.record.response;
+    }
+
+    return await restoreDraftSendReplay(env, reservation.record.resourceId);
   }
 
   try {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -2041,9 +2410,12 @@ async function deliverRotatedTokenToSelfMailbox(
     return false;
   }
 
-  const executionTarget = claims.agentId
+  const executionTarget = claims.agentId && await canAgentSendForMailbox(env, {
+    agentId: claims.agentId,
+    mailboxId,
+  })
     ? { agentId: claims.agentId }
-    : await resolveAgentExecutionTarget(env, mailboxId);
+    : await resolveAgentExecutionTarget(env, mailboxId, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
     return false;
   }
@@ -2055,37 +2427,41 @@ async function deliverRotatedTokenToSelfMailbox(
     : "Mailagents";
   const agentName = agent?.name ?? "Mailagents Agent";
 
-  const draft = await createDraft(env, {
-    tenantId: mailbox.tenant_id,
-    agentId: executionTarget.agentId,
-    mailboxId: mailbox.id,
-    createdVia: "system:token_reissue_self_mailbox",
-    payload: {
-      from: mailbox.address,
-      to: [mailbox.address],
-      subject: `Your rotated Mailagents access token for ${mailbox.address}`,
-      text: buildTokenReissueText({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName,
-        accessToken,
-        accessTokenExpiresAt,
-        accessTokenScopes,
-      }),
-      html: buildTokenReissueHtml({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName,
-        accessToken,
-        accessTokenExpiresAt,
-        accessTokenScopes,
-      }),
-      attachments: [],
-    },
-  });
+  try {
+    const draft = await createDraft(env, {
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
+      mailboxId: mailbox.id,
+      createdVia: "system:token_reissue_self_mailbox",
+      payload: {
+        from: mailbox.address,
+        to: [mailbox.address],
+        subject: `Your rotated Mailagents access token for ${mailbox.address}`,
+        text: buildTokenReissueText({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
+        }),
+        html: buildTokenReissueHtml({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName,
+          accessToken,
+          accessTokenExpiresAt,
+          accessTokenScopes,
+        }),
+        attachments: [],
+      },
+    });
 
-  await enqueueDraftSend(env, draft.id);
-  return true;
+    await enqueueDraftSend(env, draft.id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveReplayAgentTarget(
@@ -2112,10 +2488,15 @@ async function resolveReplayAgentTarget(
       return tenantError;
     }
 
-    return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
+    const target = await resolveAgentExecutionTarget(env, mailboxId, agentId, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+    if (!target?.agentId) {
+      return badRequest("agentId must be active for the mailbox");
+    }
+
+    return target;
   }
 
-  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
   if (!target?.agentId) {
     return badRequest("agentId is required when the mailbox has no active agent deployment");
   }

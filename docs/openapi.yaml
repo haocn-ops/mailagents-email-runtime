@@ -1261,7 +1261,7 @@ components:
       properties:
         token:
           type: string
-          description: Omitted when delivery is self_mailbox only.
+          description: Omitted only when self-mailbox delivery is requested and queuing succeeds.
         expiresAt:
           type: string
           format: date-time
@@ -1601,7 +1601,7 @@ components:
           format: uri
     MessageContent:
       type: object
-      required: [text, attachments]
+      required: [attachments]
       properties:
         text:
           type: string
@@ -1613,9 +1613,11 @@ components:
             $ref: '#/components/schemas/Attachment'
     Thread:
       type: object
-      required: [id, mailboxId, messages]
+      required: [id, tenantId, mailboxId, messages]
       properties:
         id:
+          type: string
+        tenantId:
           type: string
         mailboxId:
           type: string

@@ -153,35 +153,28 @@ export interface ToolsListResult {
 }
 
 export interface PublicSignupRequest {
+  mailboxAlias: string;
+  agentName: string;
   productName: string;
   operatorEmail: string;
-  mailboxAlias?: string;
-  useCase?: string;
-  requestedLocalPart?: string;
+  useCase: string;
 }
 
 export interface PublicSignupResult {
-  accepted?: boolean;
-  mailbox: {
-    id: string;
-    address: string;
-    localPart?: string;
-  };
-  agent: {
-    id: string;
-    name?: string;
-  };
-  version?: {
-    id: string;
-    version?: string;
-  };
-  deployment?: {
-    id: string;
-    targetId?: string;
-  };
+  tenantId: string;
+  productName: string;
+  operatorEmail: string;
+  mailboxAddress: string;
+  mailboxId: string;
+  agentId: string;
+  agentVersionId: string;
+  deploymentId: string;
   accessToken?: string;
-  expiresAt?: string;
-  scopes?: string[];
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
+  outboundJobId?: string;
+  welcomeStatus: "queued" | "failed";
+  welcomeError?: string;
 }
 
 export interface PublicTokenReissueRequest {
@@ -235,26 +228,30 @@ export interface CreateAccessTokenResult {
   expiresAt: string;
 }
 
+export type AgentMode = "assistant" | "autonomous" | "review_only";
+export type AgentStatus = "draft" | "active" | "disabled" | "archived";
+
 export interface AgentRecord {
   id: string;
   tenantId: string;
-  name: string;
-  status?: string;
-  mode: string;
   slug?: string;
+  name: string;
   description?: string;
-  config?: Record<string, unknown>;
-  createdAt?: string;
-  updatedAt?: string;
+  status: AgentStatus;
+  mode: AgentMode;
+  configR2Key?: string;
+  defaultVersionId?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentMailboxBinding {
+  id: string;
   agentId: string;
-  tenantId: string;
   mailboxId: string;
-  role: string;
-  status?: string;
-  createdAt?: string;
+  role: "primary" | "shared" | "send_only" | "receive_only";
+  status: "active" | "disabled";
+  createdAt: string;
 }
 
 export type TaskStatus = "queued" | "running" | "done" | "needs_review" | "failed";
@@ -290,21 +287,21 @@ export interface MessageRecord {
   id: string;
   tenantId: string;
   mailboxId: string;
-  threadId: string | null;
+  threadId?: string;
   direction: MessageDirection;
-  provider?: "cloudflare" | "ses";
+  provider: "cloudflare" | "ses";
   internetMessageId?: string;
   providerMessageId?: string;
-  fromAddr?: string;
-  toAddr?: string;
+  fromAddr: string;
+  toAddr: string;
   subject?: string;
   snippet?: string;
-  status?: MessageStatus;
+  status: MessageStatus;
   rawR2Key?: string;
   normalizedR2Key?: string;
   receivedAt?: string;
   sentAt?: string;
-  createdAt?: string;
+  createdAt: string;
 }
 
 export interface MessageAttachment {
@@ -316,7 +313,7 @@ export interface MessageAttachment {
 }
 
 export interface MessageContentResult {
-  text: string;
+  text?: string;
   html?: string;
   attachments: MessageAttachment[];
 }
@@ -325,6 +322,7 @@ export interface SelfMailboxMessageContent extends MessageContentResult {}
 
 export interface ThreadResult {
   id: string;
+  tenantId: string;
   mailboxId: string;
   subjectNorm?: string;
   status?: string;
@@ -348,10 +346,9 @@ export interface DraftRecord {
   sourceMessageId?: string;
   createdVia?: string;
   status: DraftStatus;
-  draftR2Key?: string;
-  subject?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  draftR2Key: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateDraftResult extends DraftRecord {}
@@ -409,7 +406,7 @@ export interface HighLevelSendResult extends CreateAndSendAccepted {}
 
 export interface ReplyAccepted extends CreateAndSendAccepted {
   sourceMessageId?: string;
-  threadId?: string | null;
+  threadId?: string;
 }
 
 export interface ReplayMessageRequest {
@@ -425,28 +422,17 @@ export interface ReplayAccepted {
 }
 
 export interface ReplyWorkflowResult {
-  sourceMessage: {
-    id: string;
-    threadId: string | null;
-  };
+  sourceMessage: MessageRecord;
   draft: DraftRecord;
   sendRequested: boolean;
-  sendResult?: {
-    draftId: string;
-    outboundJobId: string;
-    status: string;
-  };
+  sendResult?: SendDraftResult;
   usedThreadContext: boolean;
 }
 
 export interface OperatorManualSendResult {
   draft: DraftRecord;
   sendRequested: boolean;
-  sendResult?: {
-    draftId: string;
-    outboundJobId: string;
-    status: string;
-  };
+  sendResult?: SendDraftResult;
 }
 
 export interface JsonRpcSuccess<T> {
@@ -639,7 +625,7 @@ export class MailagentsAgentClient {
   async createAgent(args: {
     tenantId: string;
     name: string;
-    mode: string;
+    mode: AgentMode;
     slug?: string;
     description?: string;
     config?: Record<string, unknown>;
@@ -789,13 +775,13 @@ export class MailagentsAgentClient {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}`);
   }
 
-  async sendDraft(draftId: string, idempotencyKey: string): Promise<SendDraftResult> {
+  async sendDraft(draftId: string, idempotencyKey?: string): Promise<SendDraftResult> {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}/send`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({ idempotencyKey }),
+      body: JSON.stringify(idempotencyKey ? { idempotencyKey } : {}),
     });
   }
 
@@ -832,14 +818,18 @@ export class MailagentsAgentClient {
     attachments?: DraftAttachment[];
     idempotencyKey?: string;
   }): Promise<HighLevelSendResult> {
-    if (!args.mailboxId) {
+    if (args.attachments?.length) {
+      if (args.mailboxId) {
+        throw new MailagentsClientError(
+          "attachments are only supported for self-mailbox HTTP sends; mailboxId cannot be honored"
+        );
+      }
+
       return this.sendMessage(args);
     }
 
-    if (args.attachments?.length) {
-      throw new MailagentsClientError(
-        "attachments are only supported when using the mailbox-scoped HTTP send routes"
-      );
+    if (!args.mailboxId) {
+      return this.sendMessage(args);
     }
 
     return this.callTool<HighLevelSendResult>("send_email", args);
@@ -877,24 +867,44 @@ export class MailagentsAgentClient {
   async replyToInboundEmail(args: {
     agentId: string;
     messageId: string;
-    replyText: string;
+    replyText?: string;
+    replyHtml?: string;
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<ReplyWorkflowResult> {
-    return this.callTool<ReplyWorkflowResult>("reply_to_inbound_email", args);
+    if (!args.replyText && !args.replyHtml) {
+      throw new MailagentsClientError("replyText or replyHtml is required");
+    }
+
+    const result = await this.callTool<Omit<ReplyWorkflowResult, "sendRequested">>("reply_to_inbound_email", args);
+    return {
+      ...result,
+      sendRequested: Boolean(result.sendResult),
+    };
   }
 
   async operatorManualSend(args: {
     agentId: string;
     tenantId: string;
     mailboxId: string;
+    threadId?: string;
+    sourceMessageId?: string;
     from: string;
     to: string[];
+    cc?: string[];
+    bcc?: string[];
     subject: string;
-    text: string;
+    text?: string;
+    html?: string;
+    inReplyTo?: string;
+    references?: string[];
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<OperatorManualSendResult> {
+    if (!args.text && !args.html) {
+      throw new MailagentsClientError("text or html is required");
+    }
+
     return this.callTool<OperatorManualSendResult>("operator_manual_send", args);
   }
 

@@ -5,14 +5,18 @@ import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
-  createTask,
+  claimTaskForExecution,
   getDraftByR2Key,
   getMessage,
+  getOrCreateTaskForSourceMessage,
   getOrCreateThread,
   getOutboundJob,
+  getSuppression,
+  getTaskBySourceMessageId,
   insertAttachments,
   markDraftStatus,
   markMessageSent,
+  updateMessageStatus,
   updateTaskStatus,
   updateInboundMessageNormalized,
   updateOutboundJobStatus,
@@ -20,15 +24,36 @@ import {
 } from "../repositories/mail";
 import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJob } from "../types";
 
+class OutboundPolicyError extends Error {}
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
+
 function getOutboundSendMaxRetries(env: Env): number {
   const raw = env.OUTBOUND_SEND_MAX_RETRIES;
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
 }
 
+function normalizeRecipientAddress(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<string[]> {
+  const uniqueRecipients = [...new Set(recipients.map(normalizeRecipientAddress).filter(Boolean))];
+  const suppressed: string[] = [];
+
+  for (const recipient of uniqueRecipients) {
+    if (await getSuppression(env, recipient)) {
+      suppressed.push(recipient);
+    }
+  }
+
+  return suppressed;
+}
+
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
+      const existingMessage = await getMessage(env, message.body.messageId);
       const rawObject = await env.R2_EMAIL.get(message.body.rawR2Key);
       if (!rawObject) {
         throw new Error("Raw email object not found");
@@ -70,13 +95,14 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       await updateThreadTimestamp(env, thread.id);
 
       const attachmentRows = [];
-      for (const attachment of parsed.attachments) {
-        const r2Key = `attachments/${message.body.messageId}/${attachment.id}`;
+      for (const [index, attachment] of parsed.attachments.entries()) {
+        const attachmentId = `att_${message.body.messageId}_${index + 1}`;
+        const r2Key = `attachments/${message.body.messageId}/${attachmentId}`;
         await env.R2_EMAIL.put(r2Key, attachment.content, {
           httpMetadata: { contentType: attachment.contentType ?? "application/octet-stream" },
         });
         attachmentRows.push({
-          id: attachment.id,
+          id: attachmentId,
           filename: attachment.filename,
           contentType: attachment.contentType,
           sizeBytes: attachment.content.byteLength,
@@ -88,22 +114,30 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         attachments: attachmentRows,
       });
 
-      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId);
-      const task = await createTask(env, {
-        tenantId: message.body.tenantId,
-        mailboxId: message.body.mailboxId,
-        sourceMessageId: message.body.messageId,
-        taskType: "reply",
-        priority: 50,
-        status: "queued",
-        assignedAgent: executionTarget?.agentId,
-      });
+      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+      const task = executionTarget
+        ? await getOrCreateTaskForSourceMessage(env, {
+            tenantId: message.body.tenantId,
+            mailboxId: message.body.mailboxId,
+            sourceMessageId: message.body.messageId,
+            taskType: "reply",
+            priority: 50,
+            status: "queued",
+            assignedAgent: executionTarget.agentId,
+          })
+        : await getTaskBySourceMessageId(env, message.body.messageId, "reply");
 
-      await env.D1_DB.prepare(
-        "UPDATE messages SET status = ? WHERE id = ?"
-      ).bind("tasked", message.body.messageId).run();
+      if (task && (task.status === "queued" || task.status === "running" || task.status === "needs_review")) {
+        await updateMessageStatus(env, message.body.messageId, "tasked");
+      } else if (
+        existingMessage?.status
+        && existingMessage.status !== "received"
+        && existingMessage.status !== "normalized"
+      ) {
+        await updateMessageStatus(env, message.body.messageId, existingMessage.status);
+      }
 
-      if (executionTarget) {
+      if (executionTarget && task?.status === "queued") {
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: task.id,
           agentId: executionTarget.agentId,
@@ -123,10 +157,11 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
 async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
-      await updateTaskStatus(env, {
-        taskId: message.body.taskId,
-        status: "running",
-      });
+      const claimed = await claimTaskForExecution(env, message.body.taskId);
+      if (!claimed) {
+        message.ack();
+        continue;
+      }
 
       const runId = `run_${message.body.taskId}`;
       const timestamp = nowIso();
@@ -228,6 +263,11 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       const attachmentRefs = Array.isArray(draftPayload.attachments)
         ? draftPayload.attachments.filter((item): item is { filename?: unknown; contentType?: unknown; r2Key?: unknown } => typeof item === "object" && item !== null)
         : [];
+      const suppressedRecipients = await getSuppressedRecipients(env, [...to, ...cc, ...bcc]);
+      if (suppressedRecipients.length > 0) {
+        const label = suppressedRecipients.length === 1 ? "recipient is" : "recipients are";
+        throw new OutboundPolicyError(`Suppressed ${label} blocked: ${suppressedRecipients.join(", ")}`);
+      }
 
       const emailTags = [
         { Name: "message_id", Value: outboundJob.messageId },
@@ -288,7 +328,8 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
     } catch (error) {
       const nextRetryCount = outboundJob ? outboundJob.retryCount + 1 : undefined;
       const maxRetries = getOutboundSendMaxRetries(env);
-      const exhausted = nextRetryCount !== undefined && nextRetryCount > maxRetries;
+      const exhausted = error instanceof OutboundPolicyError
+        || (nextRetryCount !== undefined && nextRetryCount > maxRetries);
 
       await updateOutboundJobStatus(env, {
         outboundJobId: message.body.outboundJobId,
@@ -296,6 +337,9 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         retryCount: nextRetryCount,
         lastError: error instanceof Error ? error.message : "unknown_error",
       }).catch(() => undefined);
+      if (outboundJob && exhausted) {
+        await updateMessageStatus(env, outboundJob.messageId, "failed").catch(() => undefined);
+      }
       if (draft && exhausted) {
         await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
       }

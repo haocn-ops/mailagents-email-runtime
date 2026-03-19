@@ -17,7 +17,10 @@ import {
   bindMailbox,
   createAgent,
   getAgent,
+  hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
   getMailboxById,
+  MailboxConflictError,
   resolveAgentExecutionTarget,
   upsertAgentPolicy,
 } from "../repositories/agents";
@@ -25,10 +28,14 @@ import {
   completeIdempotencyKey,
   createDraft,
   createTask,
+  deleteTask,
   enqueueDraftSend,
+  getAttachmentOwnerByR2Key,
   getDraft,
   getMessage,
   getMessageContent,
+  getOutboundJob,
+  getOutboundJobByDraftR2Key,
   getThread,
   listMessages,
   listTasks,
@@ -38,6 +45,8 @@ import {
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
 type JsonRpcId = string | number | null;
+const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
+const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -60,6 +69,176 @@ class McpToolError extends Error {
     readonly data?: unknown
   ) {
     super(message);
+  }
+}
+
+async function enqueueReplayTask(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  sourceMessageId: string;
+  agentId: string;
+  agentVersionId?: string;
+  deploymentId?: string;
+}) {
+  const replayTask = await createTask(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    sourceMessageId: input.sourceMessageId,
+    taskType: "replay",
+    priority: 50,
+    status: "queued",
+    assignedAgent: input.agentId,
+  });
+
+  try {
+    await env.AGENT_EXECUTE_QUEUE.send({
+      taskId: replayTask.id,
+      agentId: input.agentId,
+      agentVersionId: input.agentVersionId,
+      deploymentId: input.deploymentId,
+    });
+  } catch (error) {
+    await deleteTask(env, replayTask.id).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
+  if (!draftId) {
+    throw new McpToolError("internal_error", "Stored idempotent draft send result is incomplete");
+  }
+
+  const draft = await getDraft(env, draftId);
+  if (!draft) {
+    throw new McpToolError("conflict", "Stored idempotent draft no longer exists");
+  }
+
+  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  if (!outboundJob) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+  }
+
+  return {
+    draft,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function restoreEnqueuedDraftSend(env: Env, input: {
+  draftId: string;
+  outboundJobId: string | undefined;
+}) {
+  if (!input.outboundJobId) {
+    throw new McpToolError("internal_error", "Stored idempotent draft send result is incomplete");
+  }
+
+  const draft = await getDraft(env, input.draftId);
+  if (!draft) {
+    throw new McpToolError("conflict", "Stored idempotent draft no longer exists");
+  }
+
+  const outboundJob = await getOutboundJob(env, input.outboundJobId);
+  if (!outboundJob) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+  }
+  if (outboundJob.draftR2Key !== draft.draftR2Key) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job does not belong to draft");
+  }
+
+  return {
+    draftId: input.draftId,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function restoreOperatorManualSendReplay(env: Env, draftId: string | undefined) {
+  const replay = await restoreDraftSendReplay(env, draftId);
+  return {
+    draft: replay.draft,
+    sendRequested: true as const,
+    sendResult: {
+      draftId: replay.draft.id,
+      outboundJobId: replay.outboundJobId,
+      status: replay.status,
+    },
+  };
+}
+
+async function validateDraftReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}) {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new McpToolError("resource_thread_not_found", "Thread not found");
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Thread does not belong to tenant");
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Thread does not belong to mailbox");
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new McpToolError("resource_message_not_found", "Source message not found");
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to tenant");
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to mailbox");
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new McpToolError("invalid_arguments", "Source message does not belong to thread");
+    }
+  }
+}
+
+async function validateDraftAttachments(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+}) {
+  for (const attachment of input.attachments) {
+    const r2Key = typeof attachment.r2Key === "string" ? attachment.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new McpToolError("invalid_arguments", "Attachment r2Key is required");
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new McpToolError("invalid_arguments", "Attachment not found");
+    }
+    if (owner.tenantId !== input.tenantId) {
+      throw new McpToolError("invalid_arguments", "Attachment does not belong to tenant");
+    }
+    if (owner.mailboxId !== input.mailboxId) {
+      throw new McpToolError("invalid_arguments", "Attachment does not belong to mailbox");
+    }
+  }
+}
+
+async function validateActiveDraftMailbox(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+}) {
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new McpToolError("invalid_arguments", "Mailbox does not belong to tenant");
+  }
+  if (mailbox.status !== "active") {
+    throw new McpToolError("access_mailbox_denied", "Mailbox is not active");
   }
 }
 
@@ -409,6 +588,17 @@ function optionalInteger(value: unknown, field: string): number | undefined {
   return value;
 }
 
+function optionalIdempotencyKey(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
+  }
+
+  return value.trim();
+}
+
 async function requireClaims(request: Request, env: Env, scopes: string[]): Promise<AccessTokenClaims | Response> {
   return await requireAuth(request, env, scopes);
 }
@@ -470,7 +660,8 @@ async function validateBindingResources(
   env: Env,
   tenantId: string,
   agentId: string,
-  mailboxId: string
+  mailboxId: string,
+  bindingRoles?: Array<"primary" | "shared" | "send_only" | "receive_only">
 ): Promise<void> {
   const agent = await getAgent(env, agentId);
   if (!agent) {
@@ -487,6 +678,25 @@ async function validateBindingResources(
   if (mailbox.tenant_id !== tenantId) {
     throw new McpToolError("invalid_arguments", "Mailbox does not belong to tenant");
   }
+
+  if (bindingRoles?.length) {
+    const hasBinding = await hasActiveMailboxBinding(env, {
+      agentId,
+      mailboxId,
+      roles: bindingRoles,
+    });
+    const hasAnyBinding = await hasActiveMailboxBinding(env, {
+      agentId,
+      mailboxId,
+    });
+    const hasDeployment = await hasActiveMailboxDeployment(env, {
+      agentId,
+      mailboxId,
+    });
+    if (!hasBinding && (!hasDeployment || hasAnyBinding)) {
+      throw new McpToolError("access_mailbox_denied", "Agent is not allowed to send for mailbox");
+    }
+  }
 }
 
 function requireSelfAgentId(claims: AccessTokenClaims): string {
@@ -500,7 +710,8 @@ function requireSelfAgentId(claims: AccessTokenClaims): string {
 async function resolveMailboxForClaims(
   env: Env,
   claims: AccessTokenClaims,
-  requestedMailboxId?: string
+  requestedMailboxId?: string,
+  options?: { requireActive?: boolean },
 ) {
   const mailboxId = requestedMailboxId?.trim()
     || (claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : undefined);
@@ -521,6 +732,9 @@ async function resolveMailboxForClaims(
   const mailboxError = enforceMailboxAccess(claims, mailbox.id);
   if (mailboxError) {
     await throwIfResponseError(mailboxError);
+  }
+  if (options?.requireActive && mailbox.status !== "active") {
+    throw new McpToolError("access_mailbox_denied", "Mailbox is not active");
   }
 
   return mailbox;
@@ -553,8 +767,27 @@ async function createAndSendDraftForMcp(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
   }
+  const validateCreateAndSendInput = async () => {
+    await validateActiveDraftMailbox(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+    });
+    await validateBindingResources(env, input.tenantId, input.agentId, input.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateDraftReferences(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+    });
+    await validateDraftAttachments(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      attachments: input.payload.attachments,
+    });
+  };
 
   if (!idempotencyKey) {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -587,14 +820,15 @@ async function createAndSendDraftForMcp(env: Env, input: {
     throw new McpToolError("idempotency_in_progress", "A send request with this idempotency key is already in progress");
   }
   if (reservation.status === "completed") {
-    return reservation.record.response ?? {
-      draftId: reservation.record.resourceId,
-      outboundJobId: reservation.record.resourceId,
-      status: "queued",
-    };
+    if (reservation.record.response) {
+      return reservation.record.response;
+    }
+
+    return await restoreDraftSendReplay(env, reservation.record.resourceId);
   }
 
   try {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -671,12 +905,19 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
     await validateBindingResources(env, tenantId, agentId, mailboxId);
 
-    return await bindMailbox(env, {
-      tenantId,
-      agentId,
-      mailboxId,
-      role,
-    });
+    try {
+      return await bindMailbox(env, {
+        tenantId,
+        agentId,
+        mailboxId,
+        role,
+      });
+    } catch (error) {
+      if (error instanceof MailboxConflictError) {
+        throw new McpToolError("conflict", error.message);
+      }
+      throw error;
+    }
   }
 
   if (toolName === "upsert_agent_policy") {
@@ -723,7 +964,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     const send = args.send === true;
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
     if (send) {
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
       if (sendAuth instanceof Response) {
@@ -754,36 +995,53 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (agentError) {
       await throwIfResponseError(agentError);
     }
+    const buildReplyDraftInput = async () => {
+      await validateBindingResources(env, message.tenantId, agentId, message.mailboxId);
+      if (send) {
+        await validateActiveDraftMailbox(env, {
+          tenantId: message.tenantId,
+          mailboxId: message.mailboxId,
+        });
+        await validateBindingResources(env, message.tenantId, agentId, message.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+      }
 
-    const thread = message.threadId ? await getThread(env, message.threadId) : null;
-    const references = Array.from(new Set(
-      (thread?.messages ?? [])
-        .map((item) => item.internetMessageId)
-        .filter((item): item is string => Boolean(item))
-    ));
-    if (message.internetMessageId && !references.includes(message.internetMessageId)) {
-      references.push(message.internetMessageId);
-    }
+      const thread = message.threadId ? await getThread(env, message.threadId) : null;
+      const references = Array.from(new Set(
+        (thread?.messages ?? [])
+          .map((item) => item.internetMessageId)
+          .filter((item): item is string => Boolean(item))
+      ));
+      if (message.internetMessageId && !references.includes(message.internetMessageId)) {
+        references.push(message.internetMessageId);
+      }
+      const replyMailbox = await getMailboxById(env, message.mailboxId);
+      if (!replyMailbox) {
+        throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+      }
 
-    const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
-      ? message.subject
-      : `Re: ${message.subject ?? ""}`.trim();
-    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+      const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
+        ? message.subject
+        : `Re: ${message.subject ?? ""}`.trim();
 
-    const draftPayload = {
-      from: replyFrom,
-      to: [message.fromAddr],
-      cc: [],
-      bcc: [],
-      subject: replySubject || "Re:",
-      text: replyText ?? "",
-      html: replyHtml ?? "",
-      inReplyTo: message.internetMessageId,
-      references,
-      attachments: [],
+      return {
+        thread,
+        draftPayload: {
+          from: replyMailbox.address,
+          to: [message.fromAddr],
+          cc: [],
+          bcc: [],
+          subject: replySubject || "Re:",
+          text: replyText ?? "",
+          html: replyHtml ?? "",
+          inReplyTo: message.internetMessageId,
+          references,
+          attachments: [],
+        },
+      };
     };
 
     if (!send) {
+      const { thread, draftPayload } = await buildReplyDraftInput();
       const draft = await createDraft(env, {
         tenantId: message.tenantId,
         agentId,
@@ -823,11 +1081,18 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      const thread = message.threadId ? await getThread(env, message.threadId) : null;
+      const replay = await restoreDraftSendReplay(env, reservation.record.resourceId);
+      return {
+        draft: replay.draft,
         sendResult: {
-          draftId: reservation.record.resourceId,
-          outboundJobId: reservation.record.resourceId,
-          status: "queued",
+          draftId: replay.draft.id,
+          outboundJobId: replay.outboundJobId,
+          status: replay.status,
         },
         sourceMessage: message,
         usedThreadContext: Boolean(thread),
@@ -835,6 +1100,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     try {
+      const { thread, draftPayload } = await buildReplyDraftInput();
       const draft = await createDraft(env, {
         tenantId: message.tenantId,
         agentId,
@@ -882,7 +1148,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     const text = optionalString(args.text) ?? "";
     const html = optionalString(args.html) ?? "";
     const send = args.send === true;
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
+    const threadId = optionalString(args.threadId);
+    const sourceMessageId = optionalString(args.sourceMessageId);
+    const inReplyTo = optionalString(args.inReplyTo);
+    const references = optionalStringArray(args.references) ?? [];
 
     if (!text && !html) {
       throw new McpToolError("invalid_arguments", "text or html is required");
@@ -900,7 +1170,23 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId);
+    const validateOperatorManualSendInput = async () => {
+      await validateBindingResources(env, tenantId, agentId, mailboxId);
+      await validateDraftReferences(env, {
+        tenantId,
+        mailboxId,
+        threadId,
+        sourceMessageId,
+      });
+
+      if (send) {
+        await validateActiveDraftMailbox(env, {
+          tenantId,
+          mailboxId,
+        });
+        await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+      }
+    };
 
     if (send) {
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
@@ -910,6 +1196,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!idempotencyKey) {
         throw new McpToolError("invalid_arguments", "idempotencyKey is required when send is true");
       }
+    } else {
+      await validateOperatorManualSendInput();
     }
 
     const draftPayload = {
@@ -920,8 +1208,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       subject,
       text,
       html,
-      inReplyTo: optionalString(args.inReplyTo),
-      references: optionalStringArray(args.references) ?? [],
+      inReplyTo,
+      references,
       attachments: [],
     };
 
@@ -930,8 +1218,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         tenantId,
         agentId,
         mailboxId,
-        threadId: optionalString(args.threadId),
-        sourceMessageId: optionalString(args.sourceMessageId),
+        threadId,
+        sourceMessageId,
         createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
@@ -957,10 +1245,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         subject,
         text,
         html,
-        inReplyTo: optionalString(args.inReplyTo) ?? null,
-        references: optionalStringArray(args.references) ?? [],
-        threadId: optionalString(args.threadId) ?? null,
-        sourceMessageId: optionalString(args.sourceMessageId) ?? null,
+        inReplyTo: inReplyTo ?? null,
+        references,
+        threadId: threadId ?? null,
+        sourceMessageId: sourceMessageId ?? null,
         send: true,
       }),
       resourceId: mailboxId,
@@ -973,18 +1261,21 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       throw new McpToolError("idempotency_in_progress", "An operator send request with this idempotency key is already in progress");
     }
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
-        sendRequested: true,
-      };
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      return await restoreOperatorManualSendReplay(env, reservation.record.resourceId);
     }
 
     try {
+      await validateOperatorManualSendInput();
       const draft = await createDraft(env, {
         tenantId,
         agentId,
         mailboxId,
-        threadId: optionalString(args.threadId),
-        sourceMessageId: optionalString(args.sourceMessageId),
+        threadId,
+        sourceMessageId,
         createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
@@ -1099,6 +1390,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (!thread) {
       throw new McpToolError("resource_thread_not_found", "Thread not found");
     }
+    const tenantError = enforceTenantAccess(auth, thread.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
     const mailboxError = enforceMailboxAccess(auth, thread.mailboxId);
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
@@ -1108,7 +1403,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
   if (toolName === "send_email") {
     const auth = await requireClaimsStrict(request, env, ["draft:create", "draft:send"]);
-    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId));
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId), { requireActive: true });
     const agentId = requireSelfAgentId(auth);
     const to = requireStringArray(args.to, "to");
     const subject = requireString(args.subject, "subject");
@@ -1136,7 +1431,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         attachments: [],
       },
       createdVia: "mcp:send_email",
-      idempotencyKey: optionalString(args.idempotencyKey),
+      idempotencyKey: optionalIdempotencyKey(args.idempotencyKey),
       requestFingerprint: JSON.stringify({
         tool: "send_email",
         mailboxId: mailbox.id,
@@ -1189,11 +1484,15 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (message.internetMessageId && !references.includes(message.internetMessageId)) {
       references.push(message.internetMessageId);
     }
+    const replyMailbox = await getMailboxById(env, message.mailboxId);
+    if (!replyMailbox) {
+      throw new McpToolError("resource_mailbox_not_found", "Mailbox not found");
+    }
 
     const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
       ? message.subject
       : `Re: ${message.subject ?? ""}`.trim();
-    const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+    const replyFrom = replyMailbox.address;
 
     const result = await createAndSendDraftForMcp(env, {
       tenantId: message.tenantId,
@@ -1214,7 +1513,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         attachments: [],
       },
       createdVia: "mcp:reply_to_message",
-      idempotencyKey: optionalString(args.idempotencyKey),
+      idempotencyKey: optionalIdempotencyKey(args.idempotencyKey),
       requestFingerprint: JSON.stringify({
         tool: "reply_to_message",
         messageId,
@@ -1251,6 +1550,13 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
+    await validateBindingResources(env, tenantId, agentId, mailboxId);
+    await validateDraftReferences(env, {
+      tenantId,
+      mailboxId,
+      threadId: optionalString(args.threadId),
+      sourceMessageId: optionalString(args.sourceMessageId),
+    });
 
     return await createDraft(env, {
       tenantId,
@@ -1318,7 +1624,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
 
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
         operation: "draft_send",
@@ -1335,11 +1641,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
-        return reservation.record.response ?? {
+        return reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
           draftId,
           outboundJobId: reservation.record.resourceId,
-          status: "queued",
-        };
+        });
       }
 
       if (draft.status !== "draft" && draft.status !== "approved") {
@@ -1348,6 +1653,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       }
 
       try {
+        await validateActiveDraftMailbox(env, {
+          tenantId: draft.tenantId,
+          mailboxId: draft.mailboxId,
+        });
+        await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
         const result = await enqueueDraftSend(env, draftId);
         const response = {
           draftId,
@@ -1371,6 +1681,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (draft.status !== "draft" && draft.status !== "approved") {
       throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
     }
+    await validateActiveDraftMailbox(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+    });
+    await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
 
     const result = await enqueueDraftSend(env, draftId);
     return {
@@ -1402,15 +1717,24 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     const agentId = optionalString(args.agentId);
-    const idempotencyKey = optionalString(args.idempotencyKey);
-    if (mode === "normalize" && !message.rawR2Key) {
-      throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
-    }
-    const replayRawR2Key = mode === "normalize" ? message.rawR2Key : undefined;
-    const replayTarget = mode === "rerun_agent"
-      ? await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId)
-      : null;
-    const replayAgentTarget = replayTarget ?? undefined;
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
+    const resolveReplayExecution = async () => {
+      if (mode === "normalize") {
+        if (!message.rawR2Key) {
+          throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
+        }
+
+        return {
+          replayRawR2Key: message.rawR2Key,
+          replayAgentTarget: undefined,
+        };
+      }
+
+      return {
+        replayRawR2Key: undefined,
+        replayAgentTarget: await resolveReplayAgentTarget(env, auth, message.mailboxId, agentId),
+      };
+    };
     const response = {
       messageId,
       mode,
@@ -1441,6 +1765,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       }
 
       try {
+        const { replayRawR2Key, replayAgentTarget } = await resolveReplayExecution();
         if (mode === "normalize") {
           if (!replayRawR2Key) {
             throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
@@ -1455,17 +1780,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           if (!replayAgentTarget) {
             throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
           }
-          const replayTask = await createTask(env, {
+          await enqueueReplayTask(env, {
             tenantId: message.tenantId,
             mailboxId: message.mailboxId,
             sourceMessageId: messageId,
-            taskType: "replay",
-            priority: 50,
-            status: "queued",
-            assignedAgent: replayAgentTarget.agentId,
-          });
-          await env.AGENT_EXECUTE_QUEUE.send({
-            taskId: replayTask.id,
             agentId: replayAgentTarget.agentId,
             agentVersionId: replayAgentTarget.agentVersionId,
             deploymentId: replayAgentTarget.deploymentId,
@@ -1485,6 +1803,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       }
     }
 
+    const { replayRawR2Key, replayAgentTarget } = await resolveReplayExecution();
     if (mode === "normalize") {
       if (!replayRawR2Key) {
         throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
@@ -1499,17 +1818,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!replayAgentTarget) {
         throw new McpToolError("invalid_arguments", "agentId is required for rerun_agent replay");
       }
-      const replayTask = await createTask(env, {
+      await enqueueReplayTask(env, {
         tenantId: message.tenantId,
         mailboxId: message.mailboxId,
         sourceMessageId: messageId,
-        taskType: "replay",
-        priority: 50,
-        status: "queued",
-        assignedAgent: replayAgentTarget.agentId,
-      });
-      await env.AGENT_EXECUTE_QUEUE.send({
-        taskId: replayTask.id,
         agentId: replayAgentTarget.agentId,
         agentVersionId: replayAgentTarget.agentVersionId,
         deploymentId: replayAgentTarget.deploymentId,
@@ -1543,10 +1855,15 @@ async function resolveReplayAgentTarget(
       await throwIfResponseError(tenantError);
     }
 
-    return await resolveAgentExecutionTarget(env, mailboxId, agentId) ?? { agentId };
+    const target = await resolveAgentExecutionTarget(env, mailboxId, agentId, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+    if (!target?.agentId) {
+      throw new McpToolError("invalid_arguments", "agentId must be active for the mailbox");
+    }
+
+    return target;
   }
 
-  const target = await resolveAgentExecutionTarget(env, mailboxId);
+  const target = await resolveAgentExecutionTarget(env, mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
   if (!target?.agentId) {
     throw new McpToolError("invalid_arguments", "agentId is required when the mailbox has no active agent deployment");
   }

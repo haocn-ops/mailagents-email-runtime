@@ -14,6 +14,7 @@ import {
   createAgentVersion,
   ensureMailbox,
   getMailboxByAddress,
+  MailboxConflictError,
   updateAgent,
   upsertAgentPolicy,
 } from "../../repositories/agents";
@@ -21,6 +22,16 @@ import { createDraft, enqueueDraftSend } from "../../repositories/mail";
 import type { Env } from "../../types";
 import { issueSelfServeAccessToken } from "./default-access";
 import { buildWelcomeHtml, buildWelcomeText } from "./welcome";
+
+export class SignupError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SignupError";
+    this.status = status;
+  }
+}
 
 export interface SignupFormValues {
   mailboxAlias: string;
@@ -103,32 +114,46 @@ export async function parseSelfServeSignup(request: Request): Promise<
 export async function performSelfServeSignup(env: Env, values: SignupFormValues): Promise<SignupSuccessResult> {
   const configError = requireCloudflareEmailConfig(env);
   if (configError) {
-    throw new Error("Self-serve signup is not configured on this environment yet. Please use the contact address instead.");
+    throw new SignupError("Self-serve signup is not configured on this environment yet. Please use the contact address instead.", 503);
   }
 
   if (!env.CLOUDFLARE_EMAIL_WORKER) {
-    throw new Error("Mailbox provisioning is not configured yet. Please use the contact address instead.");
+    throw new SignupError("Mailbox provisioning is not configured yet. Please use the contact address instead.", 503);
   }
 
   const domain = env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net";
   const alias = normalizeAlias(values.mailboxAlias);
 
   if (RESERVED_SELF_SERVE_ALIASES.has(alias)) {
-    throw new Error(`The mailbox alias "${alias}" is reserved. Please choose a different alias.`);
+    throw new SignupError(`The mailbox alias "${alias}" is reserved. Please choose a different alias.`, 409);
   }
 
   const address = `${alias}@${domain}`;
   const existing = await getMailboxByAddress(env, address);
   if (existing) {
-    throw new Error(`The mailbox ${address} is already taken. Please choose a different alias.`);
+    throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
+  }
+
+  const rules = await listEmailRoutingRules(env);
+  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
+  if (!catchAllRule) {
+    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
   }
 
   const tenantId = createId("tnt");
-  const mailbox = await ensureMailbox(env, {
-    tenantId,
-    address,
-    status: "active",
-  });
+  let mailbox;
+  try {
+    mailbox = await ensureMailbox(env, {
+      tenantId,
+      address,
+      status: "active",
+    });
+  } catch (error) {
+    if (error instanceof MailboxConflictError) {
+      throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
+    }
+    throw error;
+  }
 
   const agent = await createAgent(env, {
     tenantId,
@@ -198,12 +223,6 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     blockedSenderDomains: [],
     allowedTools: ["reply_email", "mark_task_done"],
   });
-
-  const rules = await listEmailRoutingRules(env);
-  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
-  if (!catchAllRule) {
-    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
-  }
 
   const access = await issueSelfServeAccessToken({
     env,

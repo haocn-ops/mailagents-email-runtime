@@ -18,6 +18,7 @@ import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import {
   ensureMailbox,
   getMailboxById,
+  MailboxConflictError,
   listMailboxes,
 } from "../repositories/agents";
 import {
@@ -39,11 +40,82 @@ import {
   markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateMessageStatus,
   updateOutboundJobStatus,
 } from "../repositories/mail";
 import type { Env } from "../types";
 
 const site = new Router<Env>();
+
+class SiteRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "SiteRequestError";
+    this.status = status;
+  }
+}
+
+async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefined) {
+  if (!outboundJobId) {
+    throw new SiteRequestError("Stored idempotent admin send result is incomplete", 500);
+  }
+
+  const outboundJob = await getOutboundJob(env, outboundJobId);
+  if (!outboundJob) {
+    throw new SiteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+
+  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+  if (!draft) {
+    throw new SiteRequestError("Stored idempotent draft no longer exists", 409);
+  }
+
+  return {
+    ok: true,
+    draftId: draft.id,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function validateAdminSendReferences(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+}): Promise<void> {
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (!thread) {
+      throw new SiteRequestError("Thread not found", 404);
+    }
+    if (thread.tenantId !== input.tenantId) {
+      throw new SiteRequestError("Thread does not belong to tenant", 409);
+    }
+    if (thread.mailboxId !== input.mailboxId) {
+      throw new SiteRequestError("Thread does not belong to mailbox", 409);
+    }
+  }
+
+  if (input.sourceMessageId) {
+    const sourceMessage = await getMessage(env, input.sourceMessageId);
+    if (!sourceMessage) {
+      throw new SiteRequestError("Source message not found", 404);
+    }
+    if (sourceMessage.tenantId !== input.tenantId) {
+      throw new SiteRequestError("Source message does not belong to tenant", 409);
+    }
+    if (sourceMessage.mailboxId !== input.mailboxId) {
+      throw new SiteRequestError("Source message does not belong to mailbox", 409);
+    }
+    if (input.threadId && sourceMessage.threadId !== input.threadId) {
+      throw new SiteRequestError("Source message does not belong to thread", 409);
+    }
+  }
+}
+
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("HEAD", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("GET", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
@@ -148,14 +220,15 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
     const existing = rules.find((entry) =>
       entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
     );
-    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
     const mailbox = await ensureMailbox(env, {
       tenantId: CONTACT_ALIAS_TENANT_ID,
       address,
     });
+    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
     return json({ ok: true, rule, mailbox });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unable to save alias" }, { status: 502 });
+    const status = error instanceof MailboxConflictError ? 409 : 502;
+    return json({ error: error instanceof Error ? error.message : "Unable to save alias" }, { status });
   }
 });
 site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
@@ -191,17 +264,18 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
         continue;
       }
 
-      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
       const mailbox = await ensureMailbox(env, {
         tenantId: CONTACT_ALIAS_TENANT_ID,
         address,
       });
+      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
       results.push({ alias, skipped: false, ruleId: rule.id, mailboxId: mailbox.id });
     }
 
     return json({ ok: true, results });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unable to bootstrap aliases" }, { status: 502 });
+    const status = error instanceof MailboxConflictError ? 409 : 502;
+    return json({ error: error instanceof Error ? error.message : "Unable to bootstrap aliases" }, { status });
   }
 });
 site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {
@@ -374,6 +448,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
     const message = await getMessage(env, job.messageId);
+    const previousMessageStatus = message?.status;
     if (message?.providerMessageId) {
       return json({ error: "Outbound jobs with provider delivery events cannot be retried from the queue state" }, { status: 409 });
     }
@@ -388,7 +463,9 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       lastError: null,
       nextRetryAt: null,
     });
+    await updateMessageStatus(env, job.messageId, "tasked");
     const draft = await getDraftByR2Key(env, job.draftR2Key);
+    const previousDraftStatus = draft?.status;
     if (draft) {
       await markDraftStatus(env, draft.id, "queued");
     }
@@ -402,8 +479,11 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
         lastError: job.lastError ?? null,
         nextRetryAt: job.nextRetryAt ?? null,
       }).catch(() => undefined);
-      if (draft) {
-        await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+      if (previousMessageStatus) {
+        await updateMessageStatus(env, job.messageId, previousMessageStatus).catch(() => undefined);
+      }
+      if (draft && previousDraftStatus) {
+        await markDraftStatus(env, draft.id, previousDraftStatus).catch(() => undefined);
       }
       throw error;
     }
@@ -478,6 +558,9 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   if (!body.mailboxId || !body.tenantId || !body.from || !body.to?.length || !body.subject) {
     return badRequest("mailboxId, tenantId, from, to, and subject are required");
   }
+  if (!body.text && !body.html) {
+    return badRequest("text or html is required");
+  }
   const normalizedFrom = body.from.trim().toLowerCase();
   if (!normalizedFrom) {
     return badRequest("from must be a non-empty string");
@@ -487,30 +570,50 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
+  const mailboxId = body.mailboxId;
+  const tenantId = body.tenantId;
 
   try {
-    const mailbox = await getMailboxById(env, body.mailboxId);
-    if (!mailbox) {
-      return json({ error: "Mailbox not found" }, { status: 404 });
-    }
-    if (mailbox.tenant_id !== body.tenantId) {
-      return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
-    }
-    if (mailbox.status !== "active") {
-      return json({ error: "Mailbox is not active" }, { status: 409 });
-    }
-    if (normalizedFrom !== mailbox.address.toLowerCase()) {
-      return json({ error: "from must match the mailbox address" }, { status: 409 });
+    const validateAdminSendInput = async () => {
+      const mailbox = await getMailboxById(env, mailboxId);
+      if (!mailbox) {
+        return json({ error: "Mailbox not found" }, { status: 404 });
+      }
+      if (mailbox.tenant_id !== tenantId) {
+        return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+      }
+      if (mailbox.status !== "active") {
+        return json({ error: "Mailbox is not active" }, { status: 409 });
+      }
+      if (normalizedFrom !== mailbox.address.toLowerCase()) {
+        return json({ error: "from must match the mailbox address" }, { status: 409 });
+      }
+
+      await validateAdminSendReferences(env, {
+        tenantId,
+        mailboxId,
+        threadId: body.threadId,
+        sourceMessageId: body.sourceMessageId,
+      });
+
+      return null;
+    };
+
+    if (!idempotencyKey) {
+      const validationError = await validateAdminSendInput();
+      if (validationError) {
+        return validationError;
+      }
     }
 
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
         operation: "admin_send",
-        tenantId: body.tenantId,
+        tenantId,
         idempotencyKey,
         requestFingerprint: JSON.stringify({
-          mailboxId: body.mailboxId,
-          tenantId: body.tenantId,
+          mailboxId,
+          tenantId,
           from: body.from,
           to: body.to,
           cc: body.cc ?? [],
@@ -532,14 +635,24 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         return json({ error: "An admin send request with this idempotency key is already in progress" }, { status: 409 });
       }
       if (reservation.status === "completed") {
-        return json(reservation.record.response ?? { ok: true });
+        if (reservation.record.response) {
+          return json(reservation.record.response);
+        }
+
+        return json(await restoreAdminSendReplay(env, reservation.record.resourceId));
+      }
+
+      const validationError = await validateAdminSendInput();
+      if (validationError) {
+        await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
+        return validationError;
       }
     }
 
     const draft = await createDraft(env, {
-      tenantId: body.tenantId,
+      tenantId,
       agentId: "admin_console",
-      mailboxId: body.mailboxId,
+      mailboxId,
       threadId: body.threadId,
       sourceMessageId: body.sourceMessageId,
       createdVia: "site:admin_send",
@@ -567,7 +680,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     if (idempotencyKey) {
       await completeIdempotencyKey(env, {
         operation: "admin_send",
-        tenantId: body.tenantId,
+        tenantId,
         idempotencyKey,
         resourceId: result.outboundJobId,
         response,
@@ -577,7 +690,10 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     return json(response);
   } catch (error) {
     if (idempotencyKey) {
-      await releaseIdempotencyKey(env, "admin_send", body.tenantId, idempotencyKey).catch(() => undefined);
+      await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
+    }
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
     }
     return json({ error: error instanceof Error ? error.message : "Unable to send message" }, { status: 502 });
   }
@@ -633,6 +749,9 @@ export async function handleSiteRequest(request: Request, env: Env, ctx: Executi
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
       return badRequest(error.message);
+    }
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
     }
 
     throw error;

@@ -3,6 +3,7 @@ export {
   type SignupPageState,
   type SignupSuccessResult,
   RESERVED_SELF_SERVE_ALIASES,
+  SignupError,
   parseSelfServeSignup,
   performSelfServeSignup,
   normalizeAlias,

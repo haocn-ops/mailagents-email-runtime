@@ -122,6 +122,24 @@ function isMissingTableError(error: unknown): boolean {
   return error instanceof Error && /no such table/i.test(error.message);
 }
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
+export class DeploymentConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeploymentConflictError";
+  }
+}
+
+export class MailboxConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MailboxConflictError";
+  }
+}
+
 function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
@@ -468,21 +486,32 @@ export async function createAgentDeployment(env: Env, input: {
   const id = createId("agd");
   const timestamp = nowIso();
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agent_deployments (
-       id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.agentId,
-    input.agentVersionId,
-    input.targetType,
-    input.targetId,
-    input.status ?? "active",
-    timestamp,
-    timestamp
-  ));
+  const status = input.status ?? "active";
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_deployments (
+         id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.agentVersionId,
+      input.targetType,
+      input.targetId,
+      status,
+      timestamp,
+      timestamp
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    throw new DeploymentConflictError(
+      `A ${status} deployment already exists for ${input.targetType} ${input.targetId}`
+    );
+  }
 
   return requireRow(await getAgentDeployment(env, input.agentId, id), "Failed to load created agent deployment");
 }
@@ -610,35 +639,133 @@ export async function resolveAgentExecutionTarget(
   env: Env,
   mailboxId: string,
   requestedAgentId?: string,
+  bindingRoles?: AgentMailboxBindingRecord["role"][],
 ): Promise<AgentExecutionTarget | null> {
-  try {
-    const deploymentQuery = requestedAgentId
-      ? env.D1_DB.prepare(
-          `SELECT id, agent_id, agent_version_id
-           FROM agent_deployments
-           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
-           ORDER BY created_at DESC
-           LIMIT 1`
-        ).bind(mailboxId, requestedAgentId)
-      : env.D1_DB.prepare(
-          `SELECT id, agent_id, agent_version_id
-           FROM agent_deployments
-           WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
-           ORDER BY created_at DESC
-           LIMIT 1`
-        ).bind(mailboxId);
-    const deployment = await firstRow<{
-      id: string;
-      agent_id: string;
-      agent_version_id: string;
-    }>(deploymentQuery);
+  let requestedAgentHasRoleBinding = false;
 
-    if (deployment) {
-      return {
-        agentId: deployment.agent_id,
-        agentVersionId: deployment.agent_version_id,
-        deploymentId: deployment.id,
-      };
+  if (bindingRoles?.length && requestedAgentId) {
+    requestedAgentHasRoleBinding = await hasActiveMailboxBinding(env, {
+      agentId: requestedAgentId,
+      mailboxId,
+      roles: bindingRoles,
+    });
+    if (!requestedAgentHasRoleBinding) {
+      const hasAnyBinding = await hasActiveMailboxBinding(env, {
+        agentId: requestedAgentId,
+        mailboxId,
+      });
+      if (hasAnyBinding) {
+        return null;
+      }
+    }
+  }
+
+  try {
+    if (bindingRoles?.length) {
+      const deploymentRows = requestedAgentId
+        ? await allRows<{
+            id: string;
+            agent_id: string;
+            agent_version_id: string;
+          }>(
+            env.D1_DB.prepare(
+              `SELECT id, agent_id, agent_version_id
+               FROM agent_deployments
+               WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+               ORDER BY created_at DESC`
+            ).bind(mailboxId, requestedAgentId)
+          )
+        : await allRows<{
+            id: string;
+            agent_id: string;
+            agent_version_id: string;
+          }>(
+            env.D1_DB.prepare(
+              `SELECT id, agent_id, agent_version_id
+               FROM agent_deployments
+               WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+               ORDER BY created_at DESC`
+            ).bind(mailboxId)
+          );
+
+      let fallbackDeployment:
+        | { id: string; agent_id: string; agent_version_id: string }
+        | undefined;
+
+      for (const deployment of deploymentRows) {
+        const hasMatchingBinding = await hasActiveMailboxBinding(env, {
+          agentId: deployment.agent_id,
+          mailboxId,
+          roles: bindingRoles,
+        });
+        if (hasMatchingBinding) {
+          return {
+            agentId: deployment.agent_id,
+            agentVersionId: deployment.agent_version_id,
+            deploymentId: deployment.id,
+          };
+        }
+
+        const hasAnyBinding = await hasActiveMailboxBinding(env, {
+          agentId: deployment.agent_id,
+          mailboxId,
+        });
+        if (!hasAnyBinding && !fallbackDeployment) {
+          fallbackDeployment = deployment;
+        }
+      }
+
+      if (!requestedAgentId) {
+        const fallbackBinding = await firstRow<{ agent_id: string }>(
+          env.D1_DB.prepare(
+            `SELECT agent_id
+             FROM agent_mailboxes
+             WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+             ORDER BY created_at ASC
+             LIMIT 1`
+          ).bind(mailboxId, ...bindingRoles)
+        );
+        if (fallbackBinding) {
+          return { agentId: fallbackBinding.agent_id };
+        }
+      }
+
+      if (fallbackDeployment) {
+        return {
+          agentId: fallbackDeployment.agent_id,
+          agentVersionId: fallbackDeployment.agent_version_id,
+          deploymentId: fallbackDeployment.id,
+        };
+      }
+    } else {
+      const deploymentQuery = requestedAgentId
+        ? env.D1_DB.prepare(
+            `SELECT id, agent_id, agent_version_id
+             FROM agent_deployments
+             WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1`
+          ).bind(mailboxId, requestedAgentId)
+        : env.D1_DB.prepare(
+            `SELECT id, agent_id, agent_version_id
+             FROM agent_deployments
+             WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active'
+             ORDER BY created_at DESC
+             LIMIT 1`
+          ).bind(mailboxId);
+      const deployment = await firstRow<{
+        id: string;
+        agent_id: string;
+        agent_version_id: string;
+      }>(deploymentQuery);
+
+      if (deployment) {
+        return {
+          agentId: deployment.agent_id,
+          agentVersionId: deployment.agent_version_id,
+          deploymentId: deployment.id,
+        };
+      }
     }
   } catch (error) {
     if (!isMissingTableError(error)) {
@@ -647,6 +774,10 @@ export async function resolveAgentExecutionTarget(
   }
 
   if (requestedAgentId) {
+    if (bindingRoles?.length && !requestedAgentHasRoleBinding) {
+      return null;
+    }
+
     const agent = await getAgent(env, requestedAgentId);
     if (!agent) {
       return null;
@@ -658,17 +789,88 @@ export async function resolveAgentExecutionTarget(
     };
   }
 
-  const fallback = await firstRow<{ agent_id: string }>(
-    env.D1_DB.prepare(
-      `SELECT agent_id
-       FROM agent_mailboxes
-       WHERE mailbox_id = ? AND status = 'active'
-       ORDER BY created_at ASC
-       LIMIT 1`
-    ).bind(mailboxId)
-  );
+  const fallback = bindingRoles?.length
+    ? await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(mailboxId, ...bindingRoles)
+      )
+    : await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND status = 'active'
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(mailboxId)
+      );
 
   return fallback ? { agentId: fallback.agent_id } : null;
+}
+
+export async function hasActiveMailboxBinding(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+  roles?: AgentMailboxBindingRecord["role"][];
+}): Promise<boolean> {
+  const row = input.roles?.length
+    ? await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active' AND role IN (${input.roles.map(() => "?").join(", ")})
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(input.mailboxId, input.agentId, ...input.roles)
+      )
+    : await firstRow<{ agent_id: string }>(
+        env.D1_DB.prepare(
+          `SELECT agent_id
+           FROM agent_mailboxes
+           WHERE mailbox_id = ? AND agent_id = ? AND status = 'active'
+           ORDER BY created_at ASC
+           LIMIT 1`
+        ).bind(input.mailboxId, input.agentId)
+      );
+
+  return Boolean(row);
+}
+
+export async function hasActiveMailboxDeployment(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<boolean> {
+  const row = await firstRow<{ id: string }>(
+    env.D1_DB.prepare(
+      `SELECT id
+       FROM agent_deployments
+       WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(input.mailboxId, input.agentId)
+  );
+
+  return Boolean(row);
+}
+
+async function getAgentMailboxBinding(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<AgentMailboxBindingRecord | null> {
+  const row = await firstRow<AgentMailboxRow>(
+    env.D1_DB.prepare(
+      `SELECT id, agent_id, mailbox_id, role, status, created_at
+       FROM agent_mailboxes
+       WHERE agent_id = ? AND mailbox_id = ?
+       LIMIT 1`
+    ).bind(input.agentId, input.mailboxId)
+  );
+
+  return row ? mapMailboxRow(row) : null;
 }
 
 export async function bindMailbox(env: Env, input: {
@@ -680,18 +882,40 @@ export async function bindMailbox(env: Env, input: {
   const id = createId("amb");
   const createdAt = nowIso();
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.agentId,
-    input.mailboxId,
-    input.role,
-    "active",
-    createdAt
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.agentId,
+      input.mailboxId,
+      input.role,
+      "active",
+      createdAt
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const existing = await getAgentMailboxBinding(env, {
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    if (existing) {
+      if (existing.role !== input.role) {
+        throw new MailboxConflictError(`Mailbox ${input.mailboxId} is already bound to agent ${input.agentId} with role ${existing.role}`);
+      }
+      if (existing.status !== "active") {
+        throw new MailboxConflictError(`Mailbox ${input.mailboxId} is already bound to agent ${input.agentId} with status ${existing.status}`);
+      }
+      return existing;
+    }
+
+    throw error;
+  }
 
   return {
     id,
@@ -799,21 +1023,40 @@ export async function ensureMailbox(env: Env, input: {
   const normalizedAddress = input.address.trim().toLowerCase();
   const existing = await getMailboxByAddress(env, normalizedAddress);
   if (existing) {
+    if (existing.tenant_id !== input.tenantId) {
+      throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+    }
     return mapMailboxRecord(existing);
   }
 
   const id = createId("mbx");
   const createdAt = nowIso();
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO mailboxes (id, tenant_id, address, status, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    normalizedAddress,
-    input.status ?? "active",
-    createdAt
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO mailboxes (id, tenant_id, address, status, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      normalizedAddress,
+      input.status ?? "active",
+      createdAt
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const concurrent = await getMailboxByAddress(env, normalizedAddress);
+    if (concurrent) {
+      if (concurrent.tenant_id !== input.tenantId) {
+        throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
+      }
+      return mapMailboxRecord(concurrent);
+    }
+
+    throw error;
+  }
 
   return {
     id,

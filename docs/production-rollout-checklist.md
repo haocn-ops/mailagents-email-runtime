@@ -67,14 +67,14 @@ Recommended:
 - keep `ADMIN_ROUTES_ENABLED=false`
 - keep `DEBUG_ROUTES_ENABLED=false`
 
-## 3. Repo Config Changes
+## 3. Repo Config Confirmation
 
-Update [wrangler.toml](../wrangler.toml):
+Review [wrangler.toml](../wrangler.toml):
 
-- replace `REPLACE_WITH_PRODUCTION_D1_DATABASE_ID`
+- confirm the current production D1 binding still points at the intended live database
 - confirm production `SES_FROM_DOMAIN`
 - confirm production `SES_CONFIGURATION_SET`
-- add route or custom domain settings once the hostname is confirmed
+- confirm the managed production route still matches `api.mailagents.net/*`
 
 Then run:
 
@@ -124,15 +124,17 @@ After deploy:
 - verify at least one real inbound mailbox path end to end
 - verify at least one controlled outbound reply path end to end using a verified recipient while SES remains sandbox-limited
 
-## 6. Domain Binding
+## 6. Domain Binding Confirmation
 
-After the production Worker exists:
+For the currently live production hostname:
 
-- add the final production route or custom domain in Cloudflare
-- update `wrangler.toml` if route config is managed in repo
-- verify DNS is active
+- confirm the Worker is still attached to `api.mailagents.net/*`
+- verify DNS is still active for `api.mailagents.net`
 - verify HTTPS response on the final hostname
 - rerun the read-only runtime checks on the final domain
+
+Only treat route or custom-domain creation as a separate task when moving the
+production API to a new hostname.
 
 ## 7. Operational Notes
 

@@ -62,7 +62,7 @@ Use these docs when you are touching live infrastructure or production mailboxes
 - [docs/deployment.md](./deployment.md) — shared deployment checklist
 - [docs/production-rollout-checklist.md](./production-rollout-checklist.md) — production rollout record and runbook
 - [docs/production-operator-bootstrap.md](./production-operator-bootstrap.md) — first safe production write path
-- [docs/testing.md](./testing.md) — live verification notes and smoke coverage boundaries
+- [docs/testing.md](./testing.md) — current smoke coverage and verification boundaries
 - [docs/archive/README.md](./archive/README.md) — dated rollout and verification records
 
 ## SDK And Client Work

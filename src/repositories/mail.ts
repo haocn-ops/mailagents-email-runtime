@@ -69,6 +69,12 @@ interface AttachmentRow {
   r2_key: string;
 }
 
+interface AttachmentOwnerRow {
+  message_id: string;
+  tenant_id: string;
+  mailbox_id: string;
+}
+
 interface OutboundJobRow {
   id: string;
   message_id: string;
@@ -98,6 +104,11 @@ interface SuppressionRow {
   reason: string;
   source: string;
   created_at: string;
+}
+
+interface MailboxAddressRow {
+  address: string;
+  status: string;
 }
 
 interface IdempotencyRow {
@@ -171,6 +182,10 @@ function isMissingCreatedViaColumn(error: unknown): boolean {
   return error instanceof Error && /created_via/i.test(error.message);
 }
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
 function mapOutboundJobRow(row: OutboundJobRow): OutboundJobRecord {
   return {
     id: row.id,
@@ -234,6 +249,14 @@ function mapIdempotencyRow<T>(row: IdempotencyRow): IdempotencyRecord<T> {
   };
 }
 
+function normalizeListLimit(limit?: number, fallback = 50, max = 200): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.trunc(limit), max));
+}
+
 export async function listTasks(env: Env, agentId: string, status?: TaskRecord["status"]): Promise<TaskRecord[]> {
   const query = status
     ? env.D1_DB.prepare(
@@ -276,7 +299,7 @@ export async function listMessages(env: Env, input?: {
   direction?: MessageRecord["direction"];
   status?: MessageRecord["status"];
 }): Promise<MessageRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
@@ -330,16 +353,82 @@ export async function getMessageContent(env: Env, messageId: string): Promise<Me
     ).bind(messageId)
   );
 
+  let text = typeof normalized.text === "string" ? normalized.text : undefined;
+  let html = typeof normalized.html === "string" ? normalized.html : undefined;
+  let attachments = rows.map((row) => ({
+    id: row.id,
+    filename: row.filename ?? undefined,
+    contentType: row.content_type ?? undefined,
+    sizeBytes: row.size_bytes,
+    downloadUrl: row.r2_key,
+  }));
+
+  if (message.direction === "outbound" && (!text && !html || attachments.length === 0)) {
+    const outboundJob = await getOutboundJobByMessageId(env, messageId);
+    if (outboundJob) {
+      const draftObject = await env.R2_EMAIL.get(outboundJob.draftR2Key);
+      if (draftObject) {
+        const draftPayload = await draftObject.json<Record<string, unknown>>();
+        text = text ?? (typeof draftPayload.text === "string" ? draftPayload.text : undefined);
+        html = html ?? (typeof draftPayload.html === "string" ? draftPayload.html : undefined);
+
+        if (attachments.length === 0) {
+          const attachmentRefs = Array.isArray(draftPayload.attachments)
+            ? draftPayload.attachments.filter((item): item is { filename?: unknown; contentType?: unknown; r2Key?: unknown } => typeof item === "object" && item !== null)
+            : [];
+
+          attachments = [];
+          for (let index = 0; index < attachmentRefs.length; index += 1) {
+            const ref = attachmentRefs[index];
+            const r2Key = typeof ref.r2Key === "string" ? ref.r2Key : "";
+            if (!r2Key) {
+              continue;
+            }
+
+            const object = await env.R2_EMAIL.get(r2Key);
+            attachments.push({
+              id: `draft_attachment_${index + 1}`,
+              filename: typeof ref.filename === "string" ? ref.filename : r2Key.split("/").pop() ?? `attachment-${index + 1}`,
+              contentType: typeof ref.contentType === "string" ? ref.contentType : object?.httpMetadata?.contentType ?? undefined,
+              sizeBytes: typeof object?.size === "number" ? object.size : 0,
+              downloadUrl: r2Key,
+            });
+          }
+        }
+      }
+    }
+  }
+
   return {
-    text: typeof normalized.text === "string" ? normalized.text : undefined,
-    html: typeof normalized.html === "string" ? normalized.html : undefined,
-    attachments: rows.map((row) => ({
-      id: row.id,
-      filename: row.filename ?? undefined,
-      contentType: row.content_type ?? undefined,
-      sizeBytes: row.size_bytes,
-      downloadUrl: row.r2_key,
-    })),
+    text,
+    html,
+    attachments,
+  };
+}
+
+export async function getAttachmentOwnerByR2Key(env: Env, r2Key: string): Promise<{
+  messageId: string;
+  tenantId: string;
+  mailboxId: string;
+} | null> {
+  const row = await firstRow<AttachmentOwnerRow>(
+    env.D1_DB.prepare(
+      `SELECT a.message_id, m.tenant_id, m.mailbox_id
+       FROM attachments a
+       JOIN messages m ON m.id = a.message_id
+       WHERE a.r2_key = ?
+       LIMIT 1`
+    ).bind(r2Key)
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    messageId: row.message_id,
+    tenantId: row.tenant_id,
+    mailboxId: row.mailbox_id,
   };
 }
 
@@ -369,6 +458,7 @@ export async function getThread(env: Env, threadId: string): Promise<ThreadRecor
 
   return {
     id: thread.id,
+    tenantId: thread.tenant_id ?? messageRows[0]?.tenant_id ?? "",
     mailboxId: thread.mailbox_id,
     subjectNorm: thread.subject_norm ?? undefined,
     status: thread.status ?? undefined,
@@ -380,7 +470,7 @@ export async function listOutboundJobs(env: Env, input?: {
   limit?: number;
   status?: OutboundJobRecord["status"];
 }): Promise<OutboundJobRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const query = input?.status
     ? env.D1_DB.prepare(
         `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
@@ -419,6 +509,7 @@ export async function getOrCreateThread(env: Env, input: {
   if (existing) {
     return {
       id: existing.id,
+      tenantId: existing.tenant_id ?? input.tenantId,
       mailboxId: existing.mailbox_id,
       subjectNorm: existing.subject_norm ?? undefined,
       status: existing.status ?? undefined,
@@ -427,21 +518,49 @@ export async function getOrCreateThread(env: Env, input: {
   }
 
   const id = createId("thr");
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO threads (id, tenant_id, mailbox_id, thread_key, subject_norm, last_message_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.mailboxId,
-    input.threadKey,
-    input.subjectNorm ?? null,
-    nowIso(),
-    "open"
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO threads (id, tenant_id, mailbox_id, thread_key, subject_norm, last_message_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.mailboxId,
+      input.threadKey,
+      input.subjectNorm ?? null,
+      nowIso(),
+      "open"
+    ));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const concurrent = await firstRow<ThreadRow>(
+      env.D1_DB.prepare(
+        `SELECT id, tenant_id, mailbox_id, thread_key, subject_norm, status
+         FROM threads
+         WHERE mailbox_id = ? AND thread_key = ?`
+      ).bind(input.mailboxId, input.threadKey)
+    );
+
+    if (concurrent) {
+      return {
+        id: concurrent.id,
+        tenantId: concurrent.tenant_id ?? input.tenantId,
+        mailboxId: concurrent.mailbox_id,
+        subjectNorm: concurrent.subject_norm ?? undefined,
+        status: concurrent.status ?? undefined,
+        messages: [],
+      };
+    }
+
+    throw error;
+  }
 
   return {
     id,
+    tenantId: input.tenantId,
     mailboxId: input.mailboxId,
     subjectNorm: input.subjectNorm,
     status: "open",
@@ -546,7 +665,7 @@ export async function listDrafts(env: Env, input?: {
   status?: DraftRecord["status"];
   limit?: number;
 }): Promise<DraftRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
@@ -633,6 +752,48 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+  const attachmentRefs = Array.isArray(draftPayload.attachments)
+    ? draftPayload.attachments.filter((item): item is { r2Key?: unknown } => typeof item === "object" && item !== null)
+    : [];
+  const mailbox = await firstRow<MailboxAddressRow>(
+    env.D1_DB.prepare(
+      `SELECT address, status
+       FROM mailboxes
+       WHERE id = ?`
+    ).bind(draft.mailboxId)
+  );
+  const fromAddress = typeof draftPayload.from === "string" ? draftPayload.from.trim().toLowerCase() : "";
+  const mailboxAddress = mailbox?.address.trim().toLowerCase() ?? "";
+
+  if (!mailboxAddress) {
+    throw new Error("Mailbox not found");
+  }
+  if (mailbox?.status !== "active") {
+    throw new Error("Mailbox is not active");
+  }
+  if (!fromAddress) {
+    throw new Error("Draft from address is required");
+  }
+  if (fromAddress !== mailboxAddress) {
+    throw new Error("Draft from address must match the mailbox address");
+  }
+  for (const ref of attachmentRefs) {
+    const r2Key = typeof ref.r2Key === "string" ? ref.r2Key.trim() : "";
+    if (!r2Key) {
+      throw new Error("Attachment r2Key is required");
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new Error(`Attachment not found: ${r2Key}`);
+    }
+    if (owner.tenantId !== draft.tenantId) {
+      throw new Error("Attachment does not belong to tenant");
+    }
+    if (owner.mailboxId !== draft.mailboxId) {
+      throw new Error("Attachment does not belong to mailbox");
+    }
+  }
 
   await execute(env.D1_DB.prepare(
     `INSERT INTO messages (
@@ -646,7 +807,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     draft.threadId ?? null,
     "outbound",
     "ses",
-    typeof draftPayload.from === "string" ? draftPayload.from : "",
+    fromAddress,
     Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
     typeof draftPayload.subject === "string" ? draftPayload.subject : "",
     "tasked",
@@ -822,7 +983,7 @@ export async function listIdempotencyRecords(env: Env, input?: {
   status?: "pending" | "completed";
   limit?: number;
 }): Promise<IdempotencyRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
@@ -879,6 +1040,21 @@ export async function getOutboundJobByMessageId(env: Env, messageId: string): Pr
   return row ? mapOutboundJobRow(row) : null;
 }
 
+export async function getOutboundJobByDraftR2Key(env: Env, draftR2Key: string): Promise<OutboundJobRecord | null> {
+  const row = await firstRow<OutboundJobRow>(
+    env.D1_DB.prepare(
+      `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+              last_error, draft_r2_key, created_at, updated_at
+       FROM outbound_jobs
+       WHERE draft_r2_key = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(draftR2Key)
+  );
+
+  return row ? mapOutboundJobRow(row) : null;
+}
+
 export async function updateInboundMessageNormalized(env: Env, input: {
   messageId: string;
   threadId: string;
@@ -924,6 +1100,10 @@ export async function insertAttachments(env: Env, input: {
     sha256?: string;
   }>;
 }): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM attachments WHERE message_id = ?`
+  ).bind(input.messageId));
+
   for (const attachment of input.attachments) {
     await execute(env.D1_DB.prepare(
       `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
@@ -997,6 +1177,138 @@ export async function createTask(env: Env, input: {
   };
 }
 
+export async function getOrCreateTaskForSourceMessage(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  sourceMessageId: string;
+  taskType: string;
+  priority: number;
+  status: TaskRecord["status"];
+  assignedAgent?: string | null;
+}): Promise<TaskRecord> {
+  const id = createId("tsk");
+  const timestamp = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `INSERT INTO tasks (
+       id, tenant_id, mailbox_id, source_message_id, task_type, priority, status, assigned_agent, created_at, updated_at
+     )
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM tasks
+       WHERE source_message_id = ? AND task_type = ?
+     )`
+  ).bind(
+    id,
+    input.tenantId,
+    input.mailboxId,
+    input.sourceMessageId,
+    input.taskType,
+    input.priority,
+    input.status,
+    input.assignedAgent ?? null,
+    timestamp,
+    timestamp,
+    input.sourceMessageId,
+    input.taskType
+  ));
+
+  if ((result.meta?.changes ?? 0) > 0) {
+    return {
+      id,
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      sourceMessageId: input.sourceMessageId,
+      taskType: input.taskType,
+      priority: input.priority,
+      status: input.status,
+      assignedAgent: input.assignedAgent ?? undefined,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  }
+
+  const existing = requireRow(
+    await getTaskBySourceMessageId(env, input.sourceMessageId, input.taskType),
+    "Task lookup failed after duplicate source-message insert"
+  );
+
+  if (existing.status !== "failed") {
+    return existing;
+  }
+
+  await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET priority = ?, status = ?, assigned_agent = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.priority,
+    input.status,
+    input.assignedAgent ?? null,
+    timestamp,
+    existing.id
+  ));
+
+  return {
+    ...existing,
+    priority: input.priority,
+    status: input.status,
+    assignedAgent: input.assignedAgent ?? undefined,
+    updatedAt: timestamp,
+  };
+}
+
+export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string, taskType: string): Promise<TaskRecord | null> {
+  const row = await firstRow<TaskRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, mailbox_id, source_message_id, task_type, priority, status,
+              assigned_agent, result_r2_key, created_at, updated_at
+       FROM tasks
+       WHERE source_message_id = ? AND task_type = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(sourceMessageId, taskType)
+  );
+
+  return row ? mapTaskRow(row) : null;
+}
+
+export async function getTask(env: Env, taskId: string): Promise<TaskRecord | null> {
+  const row = await firstRow<TaskRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, mailbox_id, source_message_id, task_type, priority, status,
+              assigned_agent, result_r2_key, created_at, updated_at
+       FROM tasks
+       WHERE id = ?
+       LIMIT 1`
+    ).bind(taskId)
+  );
+
+  return row ? mapTaskRow(row) : null;
+}
+
+export async function deleteTask(env: Env, taskId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tasks WHERE id = ?`
+  ).bind(taskId));
+}
+
+export async function claimTaskForExecution(env: Env, taskId: string): Promise<boolean> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET status = ?, updated_at = ?
+     WHERE id = ? AND status IN (?, ?)`
+  ).bind(
+    "running",
+    nowIso(),
+    taskId,
+    "queued",
+    "failed"
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 export async function updateTaskStatus(env: Env, input: {
   taskId: string;
   status: TaskRecord["status"];
@@ -1062,12 +1374,13 @@ export async function listDeliveryEventsByMessageId(env: Env, messageId: string)
 }
 
 export async function getSuppression(env: Env, email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
   const row = await firstRow<SuppressionRow>(
     env.D1_DB.prepare(
       `SELECT email, reason, source, created_at
        FROM suppressions
-       WHERE email = ?`
-    ).bind(email)
+       WHERE lower(email) = ?`
+    ).bind(normalizedEmail)
   );
 
   return row ? mapSuppressionRow(row) : null;
@@ -1079,12 +1392,55 @@ export async function updateMessageStatusByProviderMessageId(env: Env, providerM
   ).bind(status, providerMessageId));
 }
 
-export async function addSuppression(env: Env, email: string, reason: string, source = "ses"): Promise<void> {
+export async function updateMessageStatus(env: Env, messageId: string, status: MessageRecord["status"]): Promise<void> {
   await execute(env.D1_DB.prepare(
-    `INSERT INTO suppressions (email, reason, source, created_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source = excluded.source, created_at = excluded.created_at`
-  ).bind(email, reason, source, nowIso()));
+    `UPDATE messages SET status = ? WHERE id = ?`
+  ).bind(status, messageId));
+}
+
+export async function addSuppression(env: Env, email: string, reason: string, source = "ses"): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const timestamp = nowIso();
+  const updateExisting = async () => {
+    const existing = await firstRow<{ email: string }>(
+      env.D1_DB.prepare(
+        `SELECT email
+         FROM suppressions
+         WHERE lower(email) = ?
+         LIMIT 1`
+      ).bind(normalizedEmail)
+    );
+
+    if (!existing) {
+      return false;
+    }
+
+    await execute(env.D1_DB.prepare(
+      `UPDATE suppressions
+       SET reason = ?, source = ?, created_at = ?
+       WHERE email = ?`
+    ).bind(reason, source, timestamp, existing.email));
+    return true;
+  };
+
+  if (await updateExisting()) {
+    return;
+  }
+
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO suppressions (email, reason, source, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(normalizedEmail, reason, source, timestamp));
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    if (!(await updateExisting())) {
+      throw error;
+    }
+  }
 }
 
 export async function updateOutboundJobStatus(env: Env, input: {
