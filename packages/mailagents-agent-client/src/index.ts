@@ -818,7 +818,17 @@ export class MailagentsAgentClient {
     attachments?: DraftAttachment[];
     idempotencyKey?: string;
   }): Promise<HighLevelSendResult> {
-    if (!args.mailboxId || args.attachments?.length) {
+    if (args.attachments?.length) {
+      if (args.mailboxId) {
+        throw new MailagentsClientError(
+          "attachments are only supported for self-mailbox HTTP sends; mailboxId cannot be honored"
+        );
+      }
+
+      return this.sendMessage(args);
+    }
+
+    if (!args.mailboxId) {
       return this.sendMessage(args);
     }
 
