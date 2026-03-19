@@ -641,6 +641,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 
       const validationError = await validateAdminSendInput();
       if (validationError) {
+        await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
         return validationError;
       }
     }
