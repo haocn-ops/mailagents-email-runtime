@@ -409,6 +409,17 @@ function optionalInteger(value: unknown, field: string): number | undefined {
   return value;
 }
 
+function optionalIdempotencyKey(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    throw new McpToolError("invalid_arguments", "idempotencyKey must be a non-empty string");
+  }
+
+  return value.trim();
+}
+
 async function requireClaims(request: Request, env: Env, scopes: string[]): Promise<AccessTokenClaims | Response> {
   return await requireAuth(request, env, scopes);
 }
@@ -723,7 +734,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     const send = args.send === true;
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
     if (send) {
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
       if (sendAuth instanceof Response) {
@@ -882,7 +893,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     const text = optionalString(args.text) ?? "";
     const html = optionalString(args.html) ?? "";
     const send = args.send === true;
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
 
     if (!text && !html) {
       throw new McpToolError("invalid_arguments", "text or html is required");
@@ -1136,7 +1147,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         attachments: [],
       },
       createdVia: "mcp:send_email",
-      idempotencyKey: optionalString(args.idempotencyKey),
+      idempotencyKey: optionalIdempotencyKey(args.idempotencyKey),
       requestFingerprint: JSON.stringify({
         tool: "send_email",
         mailboxId: mailbox.id,
@@ -1214,7 +1225,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         attachments: [],
       },
       createdVia: "mcp:reply_to_message",
-      idempotencyKey: optionalString(args.idempotencyKey),
+      idempotencyKey: optionalIdempotencyKey(args.idempotencyKey),
       requestFingerprint: JSON.stringify({
         tool: "reply_to_message",
         messageId,
@@ -1318,7 +1329,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
 
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
     if (idempotencyKey) {
       const reservation = await reserveIdempotencyKey(env, {
         operation: "draft_send",
@@ -1402,7 +1413,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     const agentId = optionalString(args.agentId);
-    const idempotencyKey = optionalString(args.idempotencyKey);
+    const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
     if (mode === "normalize" && !message.rawR2Key) {
       throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
     }
