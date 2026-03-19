@@ -130,7 +130,8 @@ Recommended entry points:
 - [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for the fastest agent-integrator overview
 - [`docs/local-dev.md`](docs/local-dev.md) for local setup, migrations, seeds, and demo API calls
 - [`docs/deployment.md`](docs/deployment.md) for Cloudflare and SES environment wiring
-- [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and live verification notes
+- [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and current coverage guidance
+- [`docs/archive/README.md`](docs/archive/README.md) for dated rollout and verification records
 - [`docs/runtime-metadata.md`](docs/runtime-metadata.md) and [`docs/runtime-compatibility.md`](docs/runtime-compatibility.md) for discovery and stable integration contracts
 - [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) and [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for copyable integration examples and the TypeScript helper
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) and [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for production rollout and operator bootstrap
@@ -159,7 +160,8 @@ Key repo locations:
 
 Operational references:
 
-- [`docs/testing.md`](docs/testing.md) — smoke flows, webhook fixtures, and live verification notes
+- [`docs/testing.md`](docs/testing.md) — smoke flows, webhook fixtures, and current coverage guidance
+- [`docs/archive/README.md`](docs/archive/README.md) — dated rollout and verification records
 - [`docs/deployment.md`](docs/deployment.md) — shared deployment checklist and environment wiring
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) — production rollout record and caveats
 - [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) — first safe production write path
