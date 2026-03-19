@@ -2235,28 +2235,31 @@ async function createAndSendDraft(env: Env, input: {
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
     throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
-  await validateActiveDraftMailbox(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-  });
-  await validateSendAgentBinding(env, {
-    tenantId: input.tenantId,
-    agentId: input.agentId,
-    mailboxId: input.mailboxId,
-  });
-  await validateDraftReferences(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-    threadId: input.threadId,
-    sourceMessageId: input.sourceMessageId,
-  });
-  await validateDraftAttachments(env, {
-    tenantId: input.tenantId,
-    mailboxId: input.mailboxId,
-    attachments: input.payload.attachments,
-  });
+  const validateCreateAndSendInput = async () => {
+    await validateActiveDraftMailbox(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+    });
+    await validateSendAgentBinding(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    await validateDraftReferences(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+    });
+    await validateDraftAttachments(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      attachments: input.payload.attachments,
+    });
+  };
 
   if (!idempotencyKey) {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
@@ -2297,6 +2300,7 @@ async function createAndSendDraft(env: Env, input: {
   }
 
   try {
+    await validateCreateAndSendInput();
     const draft = await createDraft(env, {
       tenantId: input.tenantId,
       agentId: input.agentId,
