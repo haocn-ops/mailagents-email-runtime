@@ -21,18 +21,18 @@ paths:
   /public/signup:
     get:
       tags: [Auth]
-      summary: Redirect to the public signup page
+      summary: Method not allowed for the self-serve signup API
       security: []
       responses:
-        '302':
-          description: Redirect to the hosted signup page
+        '405':
+          description: Use POST with application/json
     head:
       tags: [Auth]
-      summary: Redirect to the public signup page
+      summary: Method not allowed for the self-serve signup API
       security: []
       responses:
-        '302':
-          description: Redirect to the hosted signup page
+        '405':
+          description: Use POST with application/json
     post:
       tags: [Auth]
       summary: Create a self-serve mailbox and default mailbox-scoped access token
@@ -53,6 +53,8 @@ paths:
                 $ref: '#/components/schemas/PublicSignupResult'
         '400':
           description: Invalid signup request
+        '415':
+          description: content-type must be application/json
         '502':
           description: Provisioning failed
   /public/token/reissue:

@@ -64,28 +64,14 @@ export async function parseSelfServeSignup(request: Request): Promise<
   | { ok: true; values: SignupFormValues }
   | { ok: false; values: Partial<SignupFormValues>; error: string }
 > {
-  const contentType = request.headers.get("content-type") ?? "";
-  let values: Partial<SignupFormValues>;
-
-  if (contentType.includes("application/json")) {
-    const body = await readJson<Record<string, unknown>>(request);
-    values = {
-      mailboxAlias: String(body.mailboxAlias ?? "").trim().toLowerCase(),
-      agentName: String(body.agentName ?? "").trim(),
-      operatorEmail: String(body.operatorEmail ?? "").trim().toLowerCase(),
-      productName: String(body.productName ?? "").trim(),
-      useCase: String(body.useCase ?? "").trim(),
-    };
-  } else {
-    const formData = await request.formData();
-    values = {
-      mailboxAlias: String(formData.get("mailboxAlias") ?? "").trim().toLowerCase(),
-      agentName: String(formData.get("agentName") ?? "").trim(),
-      operatorEmail: String(formData.get("operatorEmail") ?? "").trim().toLowerCase(),
-      productName: String(formData.get("productName") ?? "").trim(),
-      useCase: String(formData.get("useCase") ?? "").trim(),
-    };
-  }
+  const body = await readJson<Record<string, unknown>>(request);
+  const values: Partial<SignupFormValues> = {
+    mailboxAlias: String(body.mailboxAlias ?? "").trim().toLowerCase(),
+    agentName: String(body.agentName ?? "").trim(),
+    operatorEmail: String(body.operatorEmail ?? "").trim().toLowerCase(),
+    productName: String(body.productName ?? "").trim(),
+    useCase: String(body.useCase ?? "").trim(),
+  };
 
   if (!values.mailboxAlias || !values.agentName || !values.operatorEmail || !values.productName || !values.useCase) {
     return {
