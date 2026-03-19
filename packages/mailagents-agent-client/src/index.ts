@@ -289,19 +289,19 @@ export interface MessageRecord {
   mailboxId: string;
   threadId?: string;
   direction: MessageDirection;
-  provider?: "cloudflare" | "ses";
+  provider: "cloudflare" | "ses";
   internetMessageId?: string;
   providerMessageId?: string;
-  fromAddr?: string;
-  toAddr?: string;
+  fromAddr: string;
+  toAddr: string;
   subject?: string;
   snippet?: string;
-  status?: MessageStatus;
+  status: MessageStatus;
   rawR2Key?: string;
   normalizedR2Key?: string;
   receivedAt?: string;
   sentAt?: string;
-  createdAt?: string;
+  createdAt: string;
 }
 
 export interface MessageAttachment {
@@ -346,10 +346,10 @@ export interface DraftRecord {
   sourceMessageId?: string;
   createdVia?: string;
   status: DraftStatus;
-  draftR2Key?: string;
+  draftR2Key: string;
   subject?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CreateDraftResult extends DraftRecord {}
