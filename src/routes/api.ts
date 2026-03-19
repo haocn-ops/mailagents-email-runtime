@@ -76,6 +76,16 @@ import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
 
+class RouteRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RouteRequestError";
+    this.status = status;
+  }
+}
+
 router.on("GET", "/public/signup", async () => {
   return methodNotAllowed(["POST"]);
 });
@@ -1769,6 +1779,9 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     if (error instanceof InvalidJsonBodyError) {
       return badRequest(error.message);
     }
+    if (error instanceof RouteRequestError) {
+      return json({ error: error.message }, { status: error.status });
+    }
 
     throw error;
   }
@@ -1922,7 +1935,7 @@ async function createAndSendDraft(env: Env, input: {
 }) {
   const idempotencyKey = input.idempotencyKey?.trim();
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
-    return Promise.reject(new Error("idempotencyKey must be a non-empty string"));
+    throw new RouteRequestError("idempotencyKey must be a non-empty string", 400);
   }
 
   if (!idempotencyKey) {
@@ -1952,10 +1965,10 @@ async function createAndSendDraft(env: Env, input: {
   });
 
   if (reservation.status === "conflict") {
-    throw new Error("Idempotency key is already used for a different send request");
+    throw new RouteRequestError("Idempotency key is already used for a different send request", 409);
   }
   if (reservation.status === "pending") {
-    throw new Error("A send request with this idempotency key is already in progress");
+    throw new RouteRequestError("A send request with this idempotency key is already in progress", 409);
   }
   if (reservation.status === "completed") {
     return reservation.record.response ?? {
