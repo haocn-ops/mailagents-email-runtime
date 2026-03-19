@@ -53,6 +53,7 @@ async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
+      const existingMessage = await getMessage(env, message.body.messageId);
       const rawObject = await env.R2_EMAIL.get(message.body.rawR2Key);
       if (!rawObject) {
         throw new Error("Raw email object not found");
@@ -126,9 +127,13 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       });
 
       if (task.status === "queued" || task.status === "running" || task.status === "needs_review") {
-        await env.D1_DB.prepare(
-          "UPDATE messages SET status = ? WHERE id = ?"
-        ).bind("tasked", message.body.messageId).run();
+        await updateMessageStatus(env, message.body.messageId, "tasked");
+      } else if (
+        existingMessage?.status
+        && existingMessage.status !== "received"
+        && existingMessage.status !== "normalized"
+      ) {
+        await updateMessageStatus(env, message.body.messageId, existingMessage.status);
       }
 
       if (executionTarget && task.status === "queued") {
