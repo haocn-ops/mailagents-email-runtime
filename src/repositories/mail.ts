@@ -1192,6 +1192,20 @@ export async function getTaskBySourceMessageId(env: Env, sourceMessageId: string
   return row ? mapTaskRow(row) : null;
 }
 
+export async function getTask(env: Env, taskId: string): Promise<TaskRecord | null> {
+  const row = await firstRow<TaskRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, mailbox_id, source_message_id, task_type, priority, status,
+              assigned_agent, result_r2_key, created_at, updated_at
+       FROM tasks
+       WHERE id = ?
+       LIMIT 1`
+    ).bind(taskId)
+  );
+
+  return row ? mapTaskRow(row) : null;
+}
+
 export async function deleteTask(env: Env, taskId: string): Promise<void> {
   await execute(env.D1_DB.prepare(
     `DELETE FROM tasks WHERE id = ?`
