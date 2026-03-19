@@ -100,59 +100,19 @@ Before running remote smoke:
 - apply `npm run d1:seed:remote:dev` if the seeded inbound MCP flow is needed
 - confirm `ADMIN_API_SECRET`, `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` are configured as Worker secrets for `dev`
 
-## Live `dev` Verification
+## Historical Verification Records
 
-As of 2026-03-18, the shared `dev` environment has been live-verified for:
+The main purpose of this page is to explain current smoke coverage and how to
+run it.
 
-- agent registration
-- outbound SES send
-- inbound email to `agent@mailagents.net`
-- versioned registry resolution via `agent_versions` and `agent_deployments`
-- deployment rollout and rollback against the same mailbox target
+For dated `dev` and production verification records from the March 2026 rollout
+window, see [docs/archive/2026-03-runtime-verification.md](./archive/2026-03-runtime-verification.md).
 
-The validation sequence was:
+Current interpretation guidance:
 
-1. deploy the latest `dev` Worker
-2. apply remote D1 migrations including `0002_agent_registry.sql`
-3. create a demo agent version for `agt_demo`
-4. create an active mailbox deployment for `mbx_demo`
-5. send a live email to `agent@mailagents.net`
-6. confirm a new `tasks` row exists
-7. confirm the new `agent_runs` row has a non-null `trace_r2_key`
-8. fetch the trace object from remote R2 and verify it contains `agentVersionId` and `deploymentId`
-9. roll the mailbox target to a newer deployment and then roll it back, confirming only one deployment remains `active`
-
-## Live `production` Verification
-
-As of 2026-03-18, production has been live-verified for:
-
-- inbound email to `support@mailagents.net`
-- task creation for `agt_support_primary`
-- version-aware run tracing for `agv_support_v1`
-- controlled outbound reply through SES
-
-Verified production records:
-
-- inbound message: `msg_48e8daa3d719442fadd210d33d298590`
-- task: `tsk_842060e1e2904cb5be11612d0174573b`
-- run: `run_tsk_842060e1e2904cb5be11612d0174573b`
-- successful outbound draft: `drf_0609d3589a034460960f807fe0031cd3`
-- successful outbound job: `obj_c1745e2c87e741baaf10b9e783ba7560`
-- successful outbound message: `msg_7a423d1ac5234bdbb17cda24c1dce175`
-
-One earlier outbound attempt intentionally revealed an environment dependency:
-
-- failed outbound job: `obj_c175ddc4f9cd4581b230f802d95e4d72`
-- failure cause: `Configuration set <mailagents-production> does not exist.`
-
-That failure was resolved by creating the missing SES configuration set
-`mailagents-production` in `us-east-1`, after which the reply path succeeded.
-
-Important SES sandbox note:
-
-- these production checks prove the runtime can handle internal mailbox flows and can send through SES to verified paths used during operator validation
-- until SES production access is approved for unrestricted sending in the active AWS account and region, do not assume delivery to arbitrary external recipients will succeed
-- black-box outbound tests for external delivery should continue to use verified inboxes such as internal operator mailboxes
+- shared `dev` has been verified live during the current rollout era, but the detailed dated evidence now lives in the archive
+- production has also been verified for the controlled support-mailbox path, but dated record IDs and incident notes now live in the archive
+- treat any archived verification record as evidence from a specific point in time, not as proof that the same state still holds today
 
 ## Sample SES fixtures
 
@@ -180,6 +140,7 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either
   `resource_mailbox_not_found` or `access_mailbox_denied`, depending on token mailbox scope.
+- historical rollout-era evidence now lives under [docs/archive/](./archive/README.md)
 
 ## Historical Subject Backfill
 

@@ -9,7 +9,7 @@ An email-first AI agent runtime built on:
 - Cloudflare D1
 - Amazon SES
 
-## What It Includes
+## Current Status
 
 This repository includes:
 
@@ -18,26 +18,22 @@ This repository includes:
 - OpenAPI draft in `docs/openapi.yaml`
 - Cloudflare Worker scaffold in `src/`
 
-The code started as a scaffold, but the HTTP API now uses D1-backed repositories for
-agents, mailbox bindings, policies, tasks, messages, threads, and drafts.
-Agent configs and draft payloads are stored in R2, and the outbound queue now contains
-the first real SES sender implementation using SigV4-signed API v2 requests.
-Inbound email normalization now parses raw email into normalized content, thread state,
-attachment objects, and tasks. SES webhooks now persist delivery lifecycle events.
-The HTTP API now enforces tenant-scoped signed bearer tokens for agent, task, mail,
-and draft operations.
-Outbound sending now supports SES `Raw` MIME when drafts include reply headers or attachments.
-Inbound email and replay jobs now carry mailbox-specific routing data instead of relying on demo defaults.
-The runtime now also supports a versioned agent registry with mailbox deployments, and the
-shared `dev` environment has been verified end to end for agent registration, inbound mail,
-outbound SES send, and deployment-aware agent execution traces.
-The same runtime module now also includes the public website and admin dashboard routes,
-so the main Worker can serve site, mailbox admin, contact inbox, and alias-management
-features when the corresponding Cloudflare email bindings are configured.
-Production has also been verified end to end for `support@mailagents.net`, including
-mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-aware
-agent execution traces, and a controlled outbound reply through SES with a recorded
-`provider_message_id`.
+Implemented runtime capabilities:
+
+- D1-backed HTTP APIs for agents, mailbox bindings, policies, tasks, messages, threads, and drafts
+- R2-backed storage for agent configs, draft payloads, and runtime artifacts
+- inbound email normalization with parsed content, thread state, attachments, and task creation
+- SES delivery event ingestion with persisted lifecycle records
+- tenant-scoped signed bearer-token auth for agent, task, mail, and draft operations
+- outbound SES sending, including `Raw` MIME for replies and attachments
+- mailbox-specific routing for inbound handling and replay jobs
+- versioned agent registry with mailbox deployments and deployment-aware execution traces
+- site, admin dashboard, contact inbox, and alias-management routes in the main Worker when the related bindings are configured
+
+Verified environments:
+
+- shared `dev` has been verified end to end for agent registration, inbound mail, outbound SES send, and deployment-aware agent execution traces
+- production has been verified end to end for `support@mailagents.net`, including mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-aware execution traces, and a controlled outbound reply with a recorded `provider_message_id`
 
 Current SES limitation as of 2026-03-18:
 
@@ -125,109 +121,34 @@ npm run smoke:local
 
 See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 
-## Key Files
+## Documentation
 
-- `docs/mvp-spec.md`
-- `docs/ai-onboarding.md`
-- `docs/ai-decision-rules.md`
-- `docs/ai-auth.md`
-- `docs/ai-agents.md`
-- `docs/agent-feedback-roadmap.md`
-- `docs/agent-registry.md`
-- `docs/ai-mail-workflows.md`
-- `docs/ai-debug.md`
-- `docs/llms-agent-guide.md`
-- `docs/mcp-local.md`
-- `docs/runtime-metadata.md`
-- `docs/runtime-compatibility.md`
-- `docs/runtime-compatibility.schema.json`
-- `docs/agent-sdk-examples.md`
-- `docs/agent-capabilities.json`
-- `docs/agent-client-helper.md`
-- `docs/agent-client-release.md`
-- `docs/agent-workflow-packs.md`
-- `docs/agent-workflow-packs.json`
-- `docs/local-dev.md`
-- `docs/dev-bootstrap.md`
-- `docs/deployment.md`
-- `docs/production-rollout-checklist.md`
-- `docs/production-operator-bootstrap.md`
-- `docs/testing.md`
-- `docs/openapi.yaml`
-- `llms-full.txt`
-- `fixtures/ses/delivery.json`
-- `migrations/0001_initial.sql`
-- `migrations/0002_agent_registry.sql`
-- `migrations/0002_idempotency_keys.sql`
-- `migrations/0003_agent_deployment_history.sql`
-- `seeds/0001_demo.sql`
-- `wrangler.toml`
-- `src/index.ts`
-- `src/repositories/agents.ts`
-- `src/repositories/mail.ts`
+See [`docs/README.md`](docs/README.md) for the full documentation map by reader type and task.
 
-## Local Development
+Recommended entry points:
 
-See [`docs/local-dev.md`](docs/local-dev.md) for:
+- [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for the fastest agent-integrator overview
+- [`docs/local-dev.md`](docs/local-dev.md) for local setup, migrations, seeds, and demo API calls
+- [`docs/deployment.md`](docs/deployment.md) for Cloudflare and SES environment wiring
+- [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and live verification notes
+- [`docs/runtime-metadata.md`](docs/runtime-metadata.md) and [`docs/runtime-compatibility.md`](docs/runtime-compatibility.md) for discovery and stable integration contracts
+- [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) and [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for copyable integration examples and the TypeScript helper
+- [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) and [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for production rollout and operator bootstrap
 
-- local Wrangler setup
-- D1 migration commands
-- seed commands
-- `.dev.vars` usage
-- demo API calls
+## Project Layout
 
-See [`docs/ai-onboarding.md`](docs/ai-onboarding.md) and
-[`docs/ai-decision-rules.md`](docs/ai-decision-rules.md) for:
+Key repo locations:
 
-- agent-focused setup guidance
-- authentication and scope boundaries
-- replay, retry, and send safety rules
-- recommended API call sequences
-
-See [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for:
-
-- the single best agent-first starting point
-- capability discovery order
-- stable error-handling guidance
-- the recommended external-agent startup sequence
-
-See [`docs/runtime-metadata.md`](docs/runtime-metadata.md) for:
-
-- the versioned `/v2/meta/runtime` discovery endpoint
-- the versioned `/v2/meta/compatibility` compatibility contract
-- MCP capability discovery details
-- runtime-exposed workflow and idempotency metadata
-
-See [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) for:
-
-- copyable HTTP and MCP integration examples
-- compatibility contract usage
-- stable error-handling patterns
-- a minimal TypeScript integration snippet
-
-See [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for:
-
-- a lightweight TypeScript client wrapper
-- a copyable starting point for external SDKs
-- a path toward a future published client
-
-See [`docs/agent-registry.md`](docs/agent-registry.md) for:
-
-- the versioned agent registry model
-- agent versions, capabilities, tools, and deployments
-- the migration path from MVP agent records to a real control plane
-
-See [`docs/agent-client-release.md`](docs/agent-client-release.md) for:
-
-- the package publish checklist
-- pre-release validation steps
-- recommended first-release scope
-
-See [`docs/agent-capabilities.json`](docs/agent-capabilities.json) for:
-
-- a pinned machine-readable capability snapshot
-- integration fixture data for SDKs or CI
-- a stable example of current tools, workflows, and error codes
+- `src/index.ts` — main Worker entrypoint
+- `src/repositories/agents.ts` and `src/repositories/mail.ts` — core D1-backed data access
+- `migrations/` — schema history, including registry, idempotency, token-reissue, and draft-audit changes
+- `seeds/0001_demo.sql` — local demo seed data
+- `fixtures/ses/delivery.json` and `fixtures/ses/bounce.json` — webhook fixtures
+- `packages/mailagents-agent-client/` — publishable client package skeleton
+- `docs/openapi.yaml` — HTTP API draft
+- `docs/agent-capabilities.json` — pinned capability snapshot
+- `llms-full.txt` — combined LLM-facing runtime guidance
+- `wrangler.toml` — local and remote environment bindings
 
 ## Repo Hygiene
 
@@ -236,41 +157,13 @@ See [`docs/agent-capabilities.json`](docs/agent-capabilities.json) for:
 - `node_modules/` is gitignored
 - [`SECURITY.md`](SECURITY.md) documents open source safety and secret handling expectations
 
-See [`docs/testing.md`](docs/testing.md) for:
+Operational references:
 
-- local smoke flow
-- deployed `dev` smoke flow
-- live inbound/outbound verification notes
-- SES webhook fixtures
-- smoke script usage
-
-See [`docs/deployment.md`](docs/deployment.md) for:
-
-- real Cloudflare/AWS resource wiring
-- environment-specific resource naming
-- current `dev` worker URL and verification notes
-- admin/debug route exposure guidance
-- pre-deploy config validation
-- deploy checklist
-
-See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) for:
-
-- the current production blockers
-- the exact inputs still needed for a real rollout
-- the production deploy and domain-binding sequence
-
-See [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for:
-
-- the first safe write path in production
-- mailbox, agent, version, and deployment bootstrap order
-- post-bootstrap validation expectations
-- a real verified `support@mailagents.net` production example
-
-See [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) for:
-
-- first real `dev` environment creation
-- Cloudflare resource creation commands
-- the order to migrate, seed, and deploy
+- [`docs/testing.md`](docs/testing.md) — smoke flows, webhook fixtures, and live verification notes
+- [`docs/deployment.md`](docs/deployment.md) — shared deployment checklist and environment wiring
+- [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) — production rollout record and caveats
+- [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) — first safe production write path
+- [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) — first real `dev` environment bootstrap
 
 Template scripts:
 
@@ -278,54 +171,21 @@ Template scripts:
 - [`scripts/bootstrap_worker_secrets.sh`](scripts/bootstrap_worker_secrets.sh)
 - [`scripts/backfill_message_subjects.mjs`](scripts/backfill_message_subjects.mjs)
 
-## Deployment Notes
+## Deploy
 
-- `wrangler.toml` intentionally uses placeholder environment IDs and domains
-- real Cloudflare and SES values should be supplied per environment before deploy
+- See [`docs/deployment.md`](docs/deployment.md) for the shared deployment checklist and environment wiring details
+- See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) for the live production rollout record and SES caveats
+- `wrangler.toml` contains a mix of intentionally public, non-secret runtime config and placeholders for not-yet-provisioned environments
 - keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
-- `npm run deploy:dev` updates the existing Cloudflare `dev` environment rather than creating a second one
-- the current shared `dev` worker URL is `https://mailagents-dev.izhenghaocn.workers.dev`
-- `npm run d1:migrate:*` now applies the base schema, versioned agent registry schema, idempotency schema, and deployment-history schema in sequence
-- `wrangler.site.toml` remains available as a standalone site-only deployment profile, but
-  `src/index.ts` now exposes the same site/admin routes for the main runtime worker
-- keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false` outside the environment that should
-  actively own `hello/security/privacy/dmarc` alias routing
-
-## GitHub Actions Deploy
-
-This repository includes a manual deploy workflow at [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml).
-
-Set these GitHub Actions secrets before using it:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-Then run the `Deploy` workflow and choose:
-
-- `dev`
-- `staging`
-- `production`
-
-You can also choose whether to run the demo seed during the deployment.
-
-## Production Read-Only Smoke
-
-Run:
-
-```bash
-npm run smoke:production:readonly
-```
-
-This verifies:
-
-- production runtime metadata
-- production compatibility metadata
-- admin routes are disabled
-- debug routes are disabled
+- `npm run deploy:dev` updates the existing shared `dev` environment at `https://mailagents-dev.izhenghaocn.workers.dev`
+- the environment-specific `d1:migrate` scripts apply the full schema chain, including registry, idempotency, token-reissue, and draft-audit migrations
+- keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false` outside the single environment that should own managed alias routing
+- use [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) for manual GitHub Actions deploys after setting `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+- run `npm run smoke:production:readonly` after production deploys to verify runtime metadata plus admin/debug route exposure
 
 ## Next Steps
 
-1. Keep `0002_agent_registry.sql` in all future environment migrations so versioned runtime resolution stays enabled.
+1. Keep the full migration chain, including registry, idempotency, token-reissue, and draft-audit migrations, in all future environment rollouts.
 2. Replace the MVP email parser with a full RFC-aware MIME parser if needed.
 3. Add deeper D1/R2 integration assertions or a real test suite.
 4. Further harden queue/webhook tenant ownership checks.

@@ -37,15 +37,15 @@ Important:
 - full remote smoke depends on the current remote `ADMIN_API_SECRET`,
   `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` matching the smoke inputs
 
-Current production status as of 2026-03-17:
+Current production status as of 2026-03-18:
 
 - `mailagents-production` Worker is now deployed
 - `env.production` in [wrangler.toml](../wrangler.toml)
   now points at the real production D1 database
 - production route is attached as `api.mailagents.net/*`
-- DNS for `api.mailagents.net` is still the remaining blocker
+- `api.mailagents.net` responds successfully
 - see [docs/production-rollout-checklist.md](../docs/production-rollout-checklist.md)
-  before attempting a production deploy or domain bind
+  for the rollout record, production sequence, and remaining operational caveats
 
 ## Cloudflare Resources
 
@@ -252,6 +252,8 @@ These migration commands now apply all required schema layers in order:
 2. `0002_agent_registry.sql`
 3. `0002_idempotency_keys.sql`
 4. `0003_agent_deployment_history.sql`
+5. `0004_token_reissue_requests.sql`
+6. `0005_draft_origin_audit.sql`
 
 If `mailagents-dev` was created before either `migrations/0002_agent_registry.sql` or
 `migrations/0002_idempotency_keys.sql` existed, or before deployment history was rebuilt

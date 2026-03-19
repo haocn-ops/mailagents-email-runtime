@@ -1,7 +1,10 @@
 # Production Rollout Checklist
 
-This checklist covers the remaining work before deploying the Mailagents
-runtime to the real production environment and binding a custom domain.
+This checklist now serves as both the production rollout record and the runbook
+for future production changes to the live environment and custom domain.
+
+For dated runtime verification evidence and March 2026 record IDs, see
+[docs/archive/2026-03-runtime-verification.md](./archive/2026-03-runtime-verification.md).
 
 Resolved during this rollout:
 

@@ -11,13 +11,19 @@ This project is intended to be safe to publish as open source.
 - production or staging admin secrets
 - live webhook shared secrets
 
-## What Should Stay as Placeholders
+## What Should Usually Stay as Placeholders
 
-- Cloudflare D1 `database_id`
-- real deployment domains
+- environment values that are not intentionally public yet
+- deployment domains that are not intentionally live yet
 - environment-specific account identifiers when not needed
 
-The repository keeps these values as examples or placeholders in tracked files such as:
+The repository may intentionally keep some non-secret, operationally necessary
+resource names, public routes, or public domains in tracked files when they are
+required for deployment or integration docs. Secrets must still never be
+committed.
+
+Examples of tracked files that may contain either placeholders or intentionally
+public non-secret config:
 
 - `wrangler.toml`
 - `.dev.vars.example`
@@ -33,10 +39,11 @@ The repository keeps these values as examples or placeholders in tracked files s
 
 Before publishing or sharing:
 
-1. verify `wrangler.toml` contains placeholders, not live resource IDs
-2. verify `.dev.vars` is not tracked
-3. verify docs do not contain real domains, account IDs, or deployed URLs unless intentionally public
-4. rotate any secret that may have been exposed during development
+1. verify tracked config files contain no secrets
+2. verify any tracked domains, route patterns, or resource identifiers are intentionally public or operationally necessary
+3. verify `.dev.vars` is not tracked
+4. verify docs do not contain non-public domains, account IDs, or deployed URLs unless intentionally public
+5. rotate any secret that may have been exposed during development
 
 ## Incident Response
 

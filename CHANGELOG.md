@@ -24,7 +24,7 @@ The format is inspired by Keep a Changelog and follows a simple unreleased-first
   - `docs/ai-agents.md`
   - `docs/ai-mail-workflows.md`
   - `docs/ai-debug.md`
-  - `docs/mcp-tooling-draft.md`
+  - `docs/mcp-local.md`
   - `docs/mcp-tools.schema.json`
   - `llms-full.txt`
 - idempotency support for draft send, message replay, and admin send flows
@@ -50,6 +50,12 @@ The format is inspired by Keep a Changelog and follows a simple unreleased-first
 - sanitized tracked configuration to avoid committing live infrastructure identifiers
 - adjusted queue handling to normalize Cloudflare queue names across environments
 - updated README and deployment docs for open source and GitHub-based workflows
+- restructured `README.md` into a clearer project homepage with status, documentation, layout, and deploy summaries
+- added `docs/README.md` as the documentation landing page for integrators, operators, and contributors
+- added `docs/archive/` for dated rollout and verification records that should not stay mixed into long-lived guides
+- clarified `docs/local-dev.md` to distinguish pure local development from remote Cloudflare and SES-backed validation
+- aligned `docs/deployment.md` and `docs/production-rollout-checklist.md` with the current verified production state
+- updated `SECURITY.md`, `.dev.vars.example`, and `CONTRIBUTING.md` to better explain public config, local env vars, validation expectations, and doc-sync requirements
 - aligned `docs/openapi.yaml` with current route behavior, request requirements, and debug endpoints
 - updated local smoke coverage to assert idempotent send and replay behavior
 - added hourly cron configuration and retention vars for idempotency cleanup

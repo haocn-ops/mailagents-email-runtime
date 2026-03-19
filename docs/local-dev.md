@@ -4,11 +4,8 @@
 
 - Node.js 20+
 - npm
-- Cloudflare account with:
-  - one D1 database
-  - one R2 bucket
-  - four Queues
-- AWS account with SES access keys
+- optional for remote environment work: Cloudflare account with D1, R2, and Queues
+- optional for real outbound validation: AWS account with SES API access keys
 
 ## 1. Install dependencies
 
@@ -18,29 +15,46 @@ npm install
 
 ## 2. Configure Wrangler
 
-Update [wrangler.toml](../wrangler.toml):
+For the default purely local workflow, you can usually keep the top-level local
+bindings in [wrangler.toml](../wrangler.toml) as-is.
 
-- replace `database_id`
-- replace `bucket_name` if needed
-- make sure queue names exist
-- adjust `SES_REGION`, `SES_FROM_DOMAIN`, and `SES_CONFIGURATION_SET`
+Only update `wrangler.toml` when you want to:
+
+- point remote commands at real Cloudflare environments
+- change local bucket or queue names
+- adjust `SES_REGION`, `SES_FROM_DOMAIN`, or `SES_CONFIGURATION_SET`
 
 ## 3. Configure secrets for local development
 
-Copy [.dev.vars.example](../.dev.vars.example) to `.dev.vars` and fill in:
+Copy [.dev.vars.example](../.dev.vars.example) to `.dev.vars` and fill in the
+values you need for your local workflow:
 
-- `SES_ACCESS_KEY_ID`
-- `SES_SECRET_ACCESS_KEY`
+Required for the default local API flow:
+
 - `WEBHOOK_SHARED_SECRET`
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
-- `ADMIN_ROUTES_ENABLED`
-- `DEBUG_ROUTES_ENABLED`
-- `IDEMPOTENCY_COMPLETED_RETENTION_HOURS`
-- `IDEMPOTENCY_PENDING_RETENTION_HOURS`
+
+Optional for real outbound SES-backed validation:
+
+- `SES_ACCESS_KEY_ID`
+- `SES_SECRET_ACCESS_KEY`
+
+Optional for contact inbox, alias-management, or Email Routing admin flows:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ZONE_ID`
+- `CLOUDFLARE_EMAIL_DOMAIN`
+- `CLOUDFLARE_EMAIL_WORKER`
+- `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED`
 
 Wrangler automatically loads `.dev.vars` for local development.
 Do not commit `.dev.vars`; it is intentionally gitignored.
+
+The default local values for `ADMIN_ROUTES_ENABLED`, `DEBUG_ROUTES_ENABLED`,
+and idempotency retention windows already live in [wrangler.toml](../wrangler.toml).
+You only need to override them in `.dev.vars` if you intentionally want different
+local behavior.
 
 ## 4. Apply schema locally
 
@@ -48,15 +62,17 @@ Do not commit `.dev.vars`; it is intentionally gitignored.
 npm run d1:migrate:local
 ```
 
-This creates the initial schema in the local D1 instance persisted under `.wrangler/state`.
+This applies the full local schema in the local D1 instance persisted under
+`.wrangler/state`, including:
+
+- `migrations/0001_initial.sql`
+- `migrations/0002_agent_registry.sql`
+- `migrations/0002_idempotency_keys.sql`
+- `migrations/0003_agent_deployment_history.sql`
+- `migrations/0004_token_reissue_requests.sql`
+- `migrations/0005_draft_origin_audit.sql`
+
 The entire `.wrangler/` directory is local-only and is intentionally gitignored.
-
-If your local or remote database was created before the idempotency update, also
-apply:
-
-```bash
-wrangler d1 execute mailagents-local --local --file=./migrations/0002_idempotency_keys.sql
-```
 
 ## 5. Seed demo data locally
 
@@ -137,7 +153,7 @@ curl -X POST http://127.0.0.1:8787/v1/agents \
   }'
 ```
 
-Then bind it to `mbx_demo`:
+Store the returned agent id, then bind that agent to `mbx_demo`:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/mailboxes \
@@ -197,7 +213,7 @@ curl -X POST http://127.0.0.1:8787/v1/messages/msg_demo_inbound/reply \
 Create:
 
 ```bash
-curl -X POST http://127.0.0.1:8787/v1/agents/agt_demo/drafts \
+curl -X POST http://127.0.0.1:8787/v1/agents/REPLACE_WITH_AGENT_ID/drafts \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $TOKEN" \
   -d '{
@@ -254,4 +270,5 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 - The current parser is MVP-grade, not a full RFC-complete MIME parser.
 - Outbound now chooses SES `Raw` content when reply headers or attachments are present.
 - Idempotency cleanup can be triggered manually with `POST /admin/api/maintenance/idempotency-cleanup`.
-- For remote D1, use `npm run d1:migrate:remote` and `npm run d1:seed:remote`.
+- For remote D1, use the environment-specific scripts such as `npm run d1:migrate:remote:dev` and `npm run d1:seed:remote:dev`.
+- With fake or sandbox-limited SES credentials, local send tests can still exercise the accepted-to-retry path without proving external delivery.
