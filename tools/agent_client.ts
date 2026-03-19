@@ -4,6 +4,31 @@ export interface MailagentsClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations: {
+    riskLevel: "read" | "write" | "high_risk" | "privileged";
+    sideEffecting: boolean;
+    humanReviewRequired: boolean;
+    composite: boolean;
+    supportsPartialAuthorization: boolean;
+    sendAdditionalScopes: string[];
+    category:
+      | "provisioning"
+      | "policy"
+      | "task_read"
+      | "mail_read"
+      | "thread_read"
+      | "draft_control"
+      | "mail_send"
+      | "mail_reply"
+      | "recovery";
+    recommendedForMailboxAgents: boolean;
+  };
+}
+
 export interface JsonRpcSuccess<T> {
   jsonrpc: "2.0";
   id: string | number | null;
@@ -76,7 +101,7 @@ export class MailagentsAgentClient {
     return this.requestJson("/v2/meta/compatibility/schema");
   }
 
-  async listTools(): Promise<unknown> {
+  async listTools(): Promise<{ tools: McpToolDefinition[] }> {
     const payload = await this.callMcp("tools/list", {});
     return payload.result;
   }
@@ -113,6 +138,40 @@ export class MailagentsAgentClient {
     return this.callTool("send_draft", { draftId, idempotencyKey });
   }
 
+  async listMessages(args: {
+    mailboxId?: string;
+    limit?: number;
+    search?: string;
+    direction?: "inbound" | "outbound";
+    status?: "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
+  } = {}): Promise<unknown> {
+    return this.callTool("list_messages", args);
+  }
+
+  async sendEmail(args: {
+    mailboxId?: string;
+    to: string[];
+    cc?: string[];
+    bcc?: string[];
+    subject: string;
+    text?: string;
+    html?: string;
+    inReplyTo?: string;
+    references?: string[];
+    idempotencyKey?: string;
+  }): Promise<unknown> {
+    return this.callTool("send_email", args);
+  }
+
+  async replyToMessage(args: {
+    messageId: string;
+    text?: string;
+    html?: string;
+    idempotencyKey?: string;
+  }): Promise<unknown> {
+    return this.callTool("reply_to_message", args);
+  }
+
   async replyToInboundEmail(args: {
     agentId: string;
     messageId: string;
@@ -121,6 +180,11 @@ export class MailagentsAgentClient {
     idempotencyKey?: string;
   }): Promise<unknown> {
     return this.callTool("reply_to_inbound_email", args);
+  }
+
+  async listRecommendedMailboxTools(): Promise<McpToolDefinition[]> {
+    const result = await this.listTools();
+    return result.tools.filter((tool) => tool.annotations.recommendedForMailboxAgents);
   }
 
   private async requestJson(path: string): Promise<unknown> {

@@ -18,6 +18,17 @@ export interface RuntimeToolSummary {
   sendAdditionalScopes: string[];
   composite: boolean;
   supportsPartialAuthorization: boolean;
+  category:
+    | "provisioning"
+    | "policy"
+    | "task_read"
+    | "mail_read"
+    | "thread_read"
+    | "draft_control"
+    | "mail_send"
+    | "mail_reply"
+    | "recovery";
+  recommendedForMailboxAgents: boolean;
   riskLevel: "read" | "write" | "high_risk" | "privileged";
   sideEffecting: boolean;
   humanReviewRequired: boolean;
@@ -123,6 +134,17 @@ export interface McpToolDefinition {
     composite: boolean;
     supportsPartialAuthorization: boolean;
     sendAdditionalScopes: string[];
+    category:
+      | "provisioning"
+      | "policy"
+      | "task_read"
+      | "mail_read"
+      | "thread_read"
+      | "draft_control"
+      | "mail_send"
+      | "mail_reply"
+      | "recovery";
+    recommendedForMailboxAgents: boolean;
   };
 }
 
@@ -190,6 +212,10 @@ export interface ThreadResult {
   messages?: MessageRecord[];
 }
 
+export interface ListMessagesResult {
+  items: MessageRecord[];
+}
+
 export interface DraftRecord {
   id: string;
   tenantId: string;
@@ -205,6 +231,14 @@ export interface SendDraftResult {
   draftId: string;
   outboundJobId: string;
   status: string;
+}
+
+export interface HighLevelSendResult {
+  accepted: true;
+  draftId: string;
+  outboundJobId: string;
+  status: string;
+  createdVia?: string;
 }
 
 export interface ReplyWorkflowResult {
@@ -379,6 +413,16 @@ export class MailagentsAgentClient {
     return this.callTool<{ items: TaskRecord[] }>("list_agent_tasks", args);
   }
 
+  async listMessages(args: {
+    mailboxId?: string;
+    limit?: number;
+    search?: string;
+    direction?: "inbound" | "outbound";
+    status?: "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
+  } = {}): Promise<ListMessagesResult> {
+    return this.callTool<ListMessagesResult>("list_messages", args);
+  }
+
   async getMessage(messageId: string): Promise<MessageRecord> {
     return this.callTool<MessageRecord>("get_message", { messageId });
   }
@@ -424,6 +468,30 @@ export class MailagentsAgentClient {
     return this.callTool<SendDraftResult>("send_draft", { draftId, idempotencyKey });
   }
 
+  async sendEmail(args: {
+    mailboxId?: string;
+    to: string[];
+    cc?: string[];
+    bcc?: string[];
+    subject: string;
+    text?: string;
+    html?: string;
+    inReplyTo?: string;
+    references?: string[];
+    idempotencyKey?: string;
+  }): Promise<HighLevelSendResult> {
+    return this.callTool<HighLevelSendResult>("send_email", args);
+  }
+
+  async replyToMessage(args: {
+    messageId: string;
+    text?: string;
+    html?: string;
+    idempotencyKey?: string;
+  }): Promise<HighLevelSendResult> {
+    return this.callTool<HighLevelSendResult>("reply_to_message", args);
+  }
+
   async replyToInboundEmail(args: {
     agentId: string;
     messageId: string;
@@ -446,6 +514,11 @@ export class MailagentsAgentClient {
     idempotencyKey?: string;
   }): Promise<OperatorManualSendResult> {
     return this.callTool<OperatorManualSendResult>("operator_manual_send", args);
+  }
+
+  async listRecommendedMailboxTools(): Promise<McpToolDefinition[]> {
+    const result = await this.listTools();
+    return result.tools.filter((tool) => tool.annotations.recommendedForMailboxAgents);
   }
 
   private async requestJson<T>(path: string): Promise<T> {

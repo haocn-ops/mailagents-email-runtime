@@ -19,8 +19,12 @@ It is intentionally lightweight:
 - `getCompatibilityContract()`
 - `getCompatibilitySchema()`
 - `listTools()`
+- `listRecommendedMailboxTools()`
 - `callTool()`
 - convenience helpers for:
+  - `listMessages()`
+  - `sendEmail()`
+  - `replyToMessage()`
   - `createDraft()`
   - `sendDraft()`
   - `replyToInboundEmail()`
@@ -49,9 +53,20 @@ const client = new MailagentsAgentClient({
 
 const contract = await client.getCompatibilityContract();
 const tools = await client.listTools();
+const recommended = await client.listRecommendedMailboxTools();
 
-console.log(contract, tools);
+console.log(contract, tools, recommended);
 ```
+
+For mailbox-scoped agents, the default helper path is:
+
+1. `listRecommendedMailboxTools()`
+2. `listMessages()`
+3. `sendEmail()`
+4. `replyToMessage()`
+
+Use `createDraft()` and `sendDraft()` only when the workflow needs explicit
+draft lifecycle control.
 
 Runnable repository examples:
 

@@ -9,7 +9,7 @@ Current scope:
 - MCP `tools/list`
 - MCP `tools/call`
 - typed models for discovery and high-value draft/send workflows
-- a few convenience helpers for common draft and reply flows
+- mailbox-first convenience helpers for common read, send, and reply flows
 - stable error-code helpers for branching on MCP failures
 
 ## Status
@@ -31,8 +31,9 @@ const client = new MailagentsAgentClient({
 
 const contract = await client.getCompatibilityContract();
 const tools = await client.listTools();
+const recommended = await client.listRecommendedMailboxTools();
 
-console.log(contract, tools);
+console.log(contract, tools, recommended);
 ```
 
 Typed helpers currently cover:
@@ -40,12 +41,16 @@ Typed helpers currently cover:
 - `getRuntimeMetadata()`
 - `getCompatibilityContract()`
 - `listTools()`
+- `listRecommendedMailboxTools()`
 - `createAgent()`
 - `bindMailbox()`
 - `listAgentTasks()`
+- `listMessages()`
 - `getMessage()`
 - `getMessageContent()`
 - `getThread()`
+- `sendEmail()`
+- `replyToMessage()`
 - `createDraft()`
 - `sendDraft()`
 - `replyToInboundEmail()`
@@ -73,7 +78,12 @@ const client = new MailagentsAgentClient({
 });
 
 try {
-  await client.sendDraft("draft_123", "send:demo:001");
+  await client.sendEmail({
+    to: ["user@example.com"],
+    subject: "Hello from the mailbox-first helper",
+    text: "Sent through the high-level helper method.",
+    idempotencyKey: "send:demo:001",
+  });
 } catch (error) {
   if (hasMailagentsErrorCode(error, "idempotency_conflict")) {
     console.log("Do not retry with a different logical request.");
