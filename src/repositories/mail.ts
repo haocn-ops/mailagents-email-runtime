@@ -929,6 +929,13 @@ export async function updateTaskStatus(env: Env, input: {
   ));
 }
 
+export async function deleteTask(env: Env, taskId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tasks
+     WHERE id = ?`
+  ).bind(taskId));
+}
+
 export async function insertDeliveryEvent(env: Env, input: {
   messageId?: string;
   providerMessageId?: string;
