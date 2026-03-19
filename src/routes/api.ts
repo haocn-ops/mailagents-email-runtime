@@ -149,6 +149,34 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
   };
 }
 
+async function restoreEnqueuedDraftSend(env: Env, input: {
+  draftId: string;
+  outboundJobId: string | undefined;
+}) {
+  if (!input.outboundJobId) {
+    throw new RouteRequestError("Stored idempotent draft send result is incomplete", 500);
+  }
+
+  const draft = await getDraft(env, input.draftId);
+  if (!draft) {
+    throw new RouteRequestError("Stored idempotent draft no longer exists", 409);
+  }
+
+  const outboundJob = await getOutboundJob(env, input.outboundJobId);
+  if (!outboundJob) {
+    throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+  if (outboundJob.draftR2Key !== draft.draftR2Key) {
+    throw new RouteRequestError("Stored idempotent outbound job does not belong to draft", 409);
+  }
+
+  return {
+    draftId: input.draftId,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
 async function validateDraftReferences(env: Env, input: {
   tenantId: string;
   mailboxId: string;
@@ -1850,11 +1878,10 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
-      return accepted(reservation.record.response ?? {
+      return accepted(reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
         draftId: route.params.draftId,
         outboundJobId: reservation.record.resourceId,
-        status: "queued",
-      });
+      }));
     }
 
     if (draft.status !== "draft" && draft.status !== "approved") {

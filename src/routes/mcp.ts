@@ -33,6 +33,7 @@ import {
   getDraft,
   getMessage,
   getMessageContent,
+  getOutboundJob,
   getOutboundJobByDraftR2Key,
   getThread,
   listMessages,
@@ -118,6 +119,34 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
 
   return {
     draft,
+    outboundJobId: outboundJob.id,
+    status: "queued" as const,
+  };
+}
+
+async function restoreEnqueuedDraftSend(env: Env, input: {
+  draftId: string;
+  outboundJobId: string | undefined;
+}) {
+  if (!input.outboundJobId) {
+    throw new McpToolError("internal_error", "Stored idempotent draft send result is incomplete");
+  }
+
+  const draft = await getDraft(env, input.draftId);
+  if (!draft) {
+    throw new McpToolError("conflict", "Stored idempotent draft no longer exists");
+  }
+
+  const outboundJob = await getOutboundJob(env, input.outboundJobId);
+  if (!outboundJob) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+  }
+  if (outboundJob.draftR2Key !== draft.draftR2Key) {
+    throw new McpToolError("conflict", "Stored idempotent outbound job does not belong to draft");
+  }
+
+  return {
+    draftId: input.draftId,
     outboundJobId: outboundJob.id,
     status: "queued" as const,
   };
@@ -1568,11 +1597,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
-        return reservation.record.response ?? {
+        return reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
           draftId,
           outboundJobId: reservation.record.resourceId,
-          status: "queued",
-        };
+        });
       }
 
       if (draft.status !== "draft" && draft.status !== "approved") {
