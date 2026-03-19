@@ -238,6 +238,14 @@ function mapIdempotencyRow<T>(row: IdempotencyRow): IdempotencyRecord<T> {
   };
 }
 
+function normalizeListLimit(limit?: number, fallback = 50, max = 200): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.trunc(limit), max));
+}
+
 export async function listTasks(env: Env, agentId: string, status?: TaskRecord["status"]): Promise<TaskRecord[]> {
   const query = status
     ? env.D1_DB.prepare(
@@ -280,7 +288,7 @@ export async function listMessages(env: Env, input?: {
   direction?: MessageRecord["direction"];
   status?: MessageRecord["status"];
 }): Promise<MessageRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
@@ -384,7 +392,7 @@ export async function listOutboundJobs(env: Env, input?: {
   limit?: number;
   status?: OutboundJobRecord["status"];
 }): Promise<OutboundJobRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const query = input?.status
     ? env.D1_DB.prepare(
         `SELECT id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
@@ -550,7 +558,7 @@ export async function listDrafts(env: Env, input?: {
   status?: DraftRecord["status"];
   limit?: number;
 }): Promise<DraftRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
@@ -845,7 +853,7 @@ export async function listIdempotencyRecords(env: Env, input?: {
   status?: "pending" | "completed";
   limit?: number;
 }): Promise<IdempotencyRecord[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 50, 200));
+  const limit = normalizeListLimit(input?.limit);
   const conditions: string[] = [];
   const values: Array<string | number> = [];
 
