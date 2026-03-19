@@ -1133,6 +1133,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     const html = optionalString(args.html) ?? "";
     const send = args.send === true;
     const idempotencyKey = optionalIdempotencyKey(args.idempotencyKey);
+    const threadId = optionalString(args.threadId);
+    const sourceMessageId = optionalString(args.sourceMessageId);
+    const inReplyTo = optionalString(args.inReplyTo);
+    const references = optionalStringArray(args.references) ?? [];
 
     if (!text && !html) {
       throw new McpToolError("invalid_arguments", "text or html is required");
@@ -1150,20 +1154,25 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (mailboxError) {
       await throwIfResponseError(mailboxError);
     }
-    await validateBindingResources(env, tenantId, agentId, mailboxId);
-    await validateDraftReferences(env, {
-      tenantId,
-      mailboxId,
-      threadId: optionalString(args.threadId),
-      sourceMessageId: optionalString(args.sourceMessageId),
-    });
-
-    if (send) {
-      await validateActiveDraftMailbox(env, {
+    const validateOperatorManualSendInput = async () => {
+      await validateBindingResources(env, tenantId, agentId, mailboxId);
+      await validateDraftReferences(env, {
         tenantId,
         mailboxId,
+        threadId,
+        sourceMessageId,
       });
-      await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+
+      if (send) {
+        await validateActiveDraftMailbox(env, {
+          tenantId,
+          mailboxId,
+        });
+        await validateBindingResources(env, tenantId, agentId, mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+      }
+    };
+
+    if (send) {
       const sendAuth = await requireClaims(request, env, ["draft:send"]);
       if (sendAuth instanceof Response) {
         await throwIfResponseError(sendAuth);
@@ -1171,6 +1180,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!idempotencyKey) {
         throw new McpToolError("invalid_arguments", "idempotencyKey is required when send is true");
       }
+    } else {
+      await validateOperatorManualSendInput();
     }
 
     const draftPayload = {
@@ -1181,8 +1192,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       subject,
       text,
       html,
-      inReplyTo: optionalString(args.inReplyTo),
-      references: optionalStringArray(args.references) ?? [],
+      inReplyTo,
+      references,
       attachments: [],
     };
 
@@ -1191,8 +1202,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         tenantId,
         agentId,
         mailboxId,
-        threadId: optionalString(args.threadId),
-        sourceMessageId: optionalString(args.sourceMessageId),
+        threadId,
+        sourceMessageId,
         createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
@@ -1218,10 +1229,10 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         subject,
         text,
         html,
-        inReplyTo: optionalString(args.inReplyTo) ?? null,
-        references: optionalStringArray(args.references) ?? [],
-        threadId: optionalString(args.threadId) ?? null,
-        sourceMessageId: optionalString(args.sourceMessageId) ?? null,
+        inReplyTo: inReplyTo ?? null,
+        references,
+        threadId: threadId ?? null,
+        sourceMessageId: sourceMessageId ?? null,
         send: true,
       }),
       resourceId: mailboxId,
@@ -1242,12 +1253,13 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     }
 
     try {
+      await validateOperatorManualSendInput();
       const draft = await createDraft(env, {
         tenantId,
         agentId,
         mailboxId,
-        threadId: optionalString(args.threadId),
-        sourceMessageId: optionalString(args.sourceMessageId),
+        threadId,
+        sourceMessageId,
         createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
       });
