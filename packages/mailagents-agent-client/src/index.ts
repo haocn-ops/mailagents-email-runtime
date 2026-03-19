@@ -287,7 +287,7 @@ export interface MessageRecord {
   id: string;
   tenantId: string;
   mailboxId: string;
-  threadId: string | null;
+  threadId?: string;
   direction: MessageDirection;
   provider?: "cloudflare" | "ses";
   internetMessageId?: string;
@@ -407,7 +407,7 @@ export interface HighLevelSendResult extends CreateAndSendAccepted {}
 
 export interface ReplyAccepted extends CreateAndSendAccepted {
   sourceMessageId?: string;
-  threadId?: string | null;
+  threadId?: string;
 }
 
 export interface ReplayMessageRequest {
