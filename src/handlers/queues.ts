@@ -12,6 +12,7 @@ import {
   getOrCreateThread,
   getOutboundJob,
   getSuppression,
+  getTaskBySourceMessageId,
   insertAttachments,
   markDraftStatus,
   markMessageSent,
@@ -114,17 +115,19 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
       });
 
       const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
-      const task = await getOrCreateTaskForSourceMessage(env, {
-        tenantId: message.body.tenantId,
-        mailboxId: message.body.mailboxId,
-        sourceMessageId: message.body.messageId,
-        taskType: "reply",
-        priority: 50,
-        status: "queued",
-        assignedAgent: executionTarget?.agentId,
-      });
+      const task = executionTarget
+        ? await getOrCreateTaskForSourceMessage(env, {
+            tenantId: message.body.tenantId,
+            mailboxId: message.body.mailboxId,
+            sourceMessageId: message.body.messageId,
+            taskType: "reply",
+            priority: 50,
+            status: "queued",
+            assignedAgent: executionTarget.agentId,
+          })
+        : await getTaskBySourceMessageId(env, message.body.messageId, "reply");
 
-      if (task.status === "queued" || task.status === "running" || task.status === "needs_review") {
+      if (task && (task.status === "queued" || task.status === "running" || task.status === "needs_review")) {
         await updateMessageStatus(env, message.body.messageId, "tasked");
       } else if (
         existingMessage?.status
@@ -134,7 +137,7 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
         await updateMessageStatus(env, message.body.messageId, existingMessage.status);
       }
 
-      if (executionTarget && task.status === "queued") {
+      if (executionTarget && task?.status === "queued") {
         await env.AGENT_EXECUTE_QUEUE.send({
           taskId: task.id,
           agentId: executionTarget.agentId,
