@@ -73,6 +73,7 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 - `docs/ai-decision-rules.md`
 - `docs/ai-auth.md`
 - `docs/ai-agents.md`
+- `docs/agent-feedback-roadmap.md`
 - `docs/agent-registry.md`
 - `docs/ai-mail-workflows.md`
 - `docs/ai-debug.md`

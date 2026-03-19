@@ -50,6 +50,7 @@ import {
   getMessage,
   getMessageByProviderMessageId,
   getMessageContent,
+  listMessages,
   getThread,
   getOutboundJobByMessageId,
   getOutboundJob,
@@ -236,6 +237,266 @@ router.on("GET", "/v2/meta/compatibility/schema", async (_request, _env) => {
 });
 router.on("HEAD", "/v2/meta/compatibility/schema", async (_request, _env) => {
   return json(COMPATIBILITY_CONTRACT_SCHEMA);
+});
+
+router.on("GET", "/v1/mailboxes/self", async (request, env) => {
+  const auth = await requireAuth(request, env, ["mail:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  return json({
+    id: mailbox.id,
+    tenantId: mailbox.tenant_id,
+    address: mailbox.address,
+    status: mailbox.status,
+    createdAt: mailbox.created_at,
+    agentId: auth.agentId,
+  });
+});
+
+router.on("GET", "/v1/mailboxes/self/tasks", async (request, env) => {
+  const auth = await requireAuth(request, env, ["task:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const agentId = requireSelfAgent(auth);
+  if (agentId instanceof Response) {
+    return agentId;
+  }
+
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") as "queued" | "running" | "done" | "needs_review" | "failed" | null;
+  const items = await listTasks(env, agentId, status ?? undefined);
+  return json({ items: items.filter((item) => item.mailboxId === mailbox.id) });
+});
+
+router.on("GET", "/v1/mailboxes/self/messages", async (request, env) => {
+  const auth = await requireAuth(request, env, ["mail:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const url = new URL(request.url);
+  const limit = Number(url.searchParams.get("limit") ?? "50");
+  const search = url.searchParams.get("search")?.trim() || undefined;
+  const direction = (url.searchParams.get("direction")?.trim() as "inbound" | "outbound" | null) ?? undefined;
+  const status = (url.searchParams.get("status")?.trim() as
+    | "received"
+    | "normalized"
+    | "tasked"
+    | "replied"
+    | "ignored"
+    | "failed"
+    | null) ?? undefined;
+
+  return json({
+    items: await listMessages(env, {
+      mailboxId: mailbox.id,
+      limit,
+      search,
+      direction,
+      status,
+    }),
+  });
+});
+
+router.on("GET", "/v1/mailboxes/self/messages/:messageId", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["mail:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const message = await getMessage(env, route.params.messageId);
+  if (!message) {
+    return json({ error: "Message not found" }, { status: 404 });
+  }
+  if (message.mailboxId !== mailbox.id || message.tenantId !== mailbox.tenant_id) {
+    return json({ error: "Mailbox access denied" }, { status: 403 });
+  }
+
+  return json(message);
+});
+
+router.on("GET", "/v1/mailboxes/self/messages/:messageId/content", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["mail:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const message = await getMessage(env, route.params.messageId);
+  if (!message) {
+    return json({ error: "Message not found" }, { status: 404 });
+  }
+  if (message.mailboxId !== mailbox.id || message.tenantId !== mailbox.tenant_id) {
+    return json({ error: "Mailbox access denied" }, { status: 403 });
+  }
+
+  return json(await getMessageContent(env, route.params.messageId));
+});
+
+router.on("POST", "/v1/mailboxes/self/send", async (request, env) => {
+  const auth = await requireAuth(request, env, ["draft:create", "draft:send"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const agentId = requireSelfAgent(auth);
+  if (agentId instanceof Response) {
+    return agentId;
+  }
+
+  const body = await readJson<{
+    to?: string[];
+    cc?: string[];
+    bcc?: string[];
+    subject?: string;
+    text?: string;
+    html?: string;
+    inReplyTo?: string;
+    references?: string[];
+    attachments?: Array<{ filename: string; contentType: string; r2Key: string }>;
+    idempotencyKey?: string;
+  }>(request);
+
+  if (!body.to?.length || !body.subject) {
+    return badRequest("to and subject are required");
+  }
+
+  const result = await createAndSendDraft(env, {
+    tenantId: mailbox.tenant_id,
+    agentId,
+    mailboxId: mailbox.id,
+    payload: {
+      from: mailbox.address,
+      to: body.to,
+      cc: body.cc ?? [],
+      bcc: body.bcc ?? [],
+      subject: body.subject,
+      text: body.text ?? "",
+      html: body.html ?? "",
+      inReplyTo: body.inReplyTo,
+      references: body.references ?? [],
+      attachments: body.attachments ?? [],
+    },
+    createdVia: "api:v1/mailboxes/self/send",
+    idempotencyKey: body.idempotencyKey?.trim(),
+    requestFingerprint: JSON.stringify({
+      route: "v1/mailboxes/self/send",
+      mailboxId: mailbox.id,
+      to: body.to,
+      cc: body.cc ?? [],
+      bcc: body.bcc ?? [],
+      subject: body.subject,
+      text: body.text ?? "",
+      html: body.html ?? "",
+      inReplyTo: body.inReplyTo ?? null,
+      references: body.references ?? [],
+      attachments: body.attachments ?? [],
+    }),
+  });
+
+  return accepted(result);
+});
+
+router.on("POST", "/v1/messages/send", async (request, env) => {
+  const auth = await requireAuth(request, env, ["draft:create", "draft:send"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, auth);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  const agentId = requireSelfAgent(auth);
+  if (agentId instanceof Response) {
+    return agentId;
+  }
+
+  const body = await readJson<{
+    to?: string[];
+    cc?: string[];
+    bcc?: string[];
+    subject?: string;
+    text?: string;
+    html?: string;
+    inReplyTo?: string;
+    references?: string[];
+    attachments?: Array<{ filename: string; contentType: string; r2Key: string }>;
+    idempotencyKey?: string;
+  }>(request);
+
+  if (!body.to?.length || !body.subject) {
+    return badRequest("to and subject are required");
+  }
+
+  const result = await createAndSendDraft(env, {
+    tenantId: mailbox.tenant_id,
+    agentId,
+    mailboxId: mailbox.id,
+    payload: {
+      from: mailbox.address,
+      to: body.to,
+      cc: body.cc ?? [],
+      bcc: body.bcc ?? [],
+      subject: body.subject,
+      text: body.text ?? "",
+      html: body.html ?? "",
+      inReplyTo: body.inReplyTo,
+      references: body.references ?? [],
+      attachments: body.attachments ?? [],
+    },
+    createdVia: "api:v1/messages/send",
+    idempotencyKey: body.idempotencyKey?.trim(),
+    requestFingerprint: JSON.stringify({
+      route: "v1/messages/send",
+      mailboxId: mailbox.id,
+      to: body.to,
+      cc: body.cc ?? [],
+      bcc: body.bcc ?? [],
+      subject: body.subject,
+      text: body.text ?? "",
+      html: body.html ?? "",
+      inReplyTo: body.inReplyTo ?? null,
+      references: body.references ?? [],
+      attachments: body.attachments ?? [],
+    }),
+  });
+
+  return accepted(result);
 });
 
 router.on("GET", "/v1/debug/agents/:agentId", async (request, env, _ctx, route) => {
@@ -994,6 +1255,94 @@ router.on("GET", "/v1/messages/:messageId/content", async (request, env, _ctx, r
   return json(await getMessageContent(env, route.params.messageId));
 });
 
+router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["mail:read", "draft:create", "draft:send"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const message = await getMessage(env, route.params.messageId);
+  if (!message) {
+    return json({ error: "Message not found" }, { status: 404 });
+  }
+  if (message.direction !== "inbound") {
+    return badRequest("Only inbound messages can be replied to");
+  }
+
+  const tenantError = enforceTenantAccess(auth, message.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
+  if (mailboxError) {
+    return mailboxError;
+  }
+
+  const agentId = requireSelfAgent(auth);
+  if (agentId instanceof Response) {
+    return agentId;
+  }
+
+  const body = await readJson<{
+    text?: string;
+    html?: string;
+    idempotencyKey?: string;
+  }>(request);
+
+  if (!body.text && !body.html) {
+    return badRequest("text or html is required");
+  }
+
+  const thread = message.threadId ? await getThread(env, message.threadId) : null;
+  const references = Array.from(new Set(
+    (thread?.messages ?? [])
+      .map((item) => item.internetMessageId)
+      .filter((item): item is string => Boolean(item))
+  ));
+  if (message.internetMessageId && !references.includes(message.internetMessageId)) {
+    references.push(message.internetMessageId);
+  }
+
+  const replySubject = message.subject && message.subject.toLowerCase().startsWith("re:")
+    ? message.subject
+    : `Re: ${message.subject ?? ""}`.trim();
+  const replyFrom = message.toAddr.split(",")[0]?.trim() || "";
+
+  const result = await createAndSendDraft(env, {
+    tenantId: message.tenantId,
+    agentId,
+    mailboxId: message.mailboxId,
+    threadId: message.threadId,
+    sourceMessageId: message.id,
+    payload: {
+      from: replyFrom,
+      to: [message.fromAddr],
+      cc: [],
+      bcc: [],
+      subject: replySubject || "Re:",
+      text: body.text ?? "",
+      html: body.html ?? "",
+      inReplyTo: message.internetMessageId,
+      references,
+      attachments: [],
+    },
+    createdVia: "api:v1/messages/:messageId/reply",
+    idempotencyKey: body.idempotencyKey?.trim(),
+    requestFingerprint: JSON.stringify({
+      route: "v1/messages/:messageId/reply",
+      messageId: route.params.messageId,
+      text: body.text ?? "",
+      html: body.html ?? "",
+    }),
+  });
+
+  return accepted({
+    ...result,
+    sourceMessageId: message.id,
+    threadId: message.threadId,
+  });
+});
+
 router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, route) => {
   const auth = await requireAuth(request, env, ["mail:replay"]);
   if (auth instanceof Response) {
@@ -1522,6 +1871,128 @@ function resolveRotateMailboxId(claims: AccessTokenClaims, requestedMailboxId: s
   return requestedMailboxId?.trim()
     || (claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : null)
     || null;
+}
+
+function requireSelfAgent(claims: AccessTokenClaims): string | Response {
+  if (!claims.agentId) {
+    return badRequest("This token is not bound to a single agent");
+  }
+
+  return claims.agentId;
+}
+
+async function resolveSelfMailbox(env: Env, claims: AccessTokenClaims) {
+  const mailboxId = claims.mailboxIds?.length === 1 ? claims.mailboxIds[0] : null;
+  if (!mailboxId) {
+    return badRequest("This token is not bound to a single mailbox");
+  }
+
+  const mailbox = await getMailboxById(env, mailboxId);
+  if (!mailbox) {
+    return json({ error: "Mailbox not found" }, { status: 404 });
+  }
+  if (mailbox.tenant_id !== claims.tenantId) {
+    return json({ error: "Tenant access denied" }, { status: 403 });
+  }
+
+  return mailbox;
+}
+
+async function createAndSendDraft(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  mailboxId: string;
+  threadId?: string;
+  sourceMessageId?: string;
+  payload: {
+    from: string;
+    to: string[];
+    cc: string[];
+    bcc: string[];
+    subject: string;
+    text: string;
+    html: string;
+    inReplyTo?: string;
+    references: string[];
+    attachments: Array<{ filename: string; contentType: string; r2Key: string }>;
+  };
+  createdVia: string;
+  idempotencyKey?: string;
+  requestFingerprint: string;
+}) {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (input.idempotencyKey !== undefined && !idempotencyKey) {
+    return Promise.reject(new Error("idempotencyKey must be a non-empty string"));
+  }
+
+  if (!idempotencyKey) {
+    const draft = await createDraft(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+      payload: input.payload,
+    });
+    const sendResult = await enqueueDraftSend(env, draft.id);
+    return {
+      draft,
+      outboundJobId: sendResult.outboundJobId,
+      status: sendResult.status,
+    };
+  }
+
+  const reservation = await reserveIdempotencyKey(env, {
+    operation: "draft_send",
+    tenantId: input.tenantId,
+    idempotencyKey,
+    requestFingerprint: input.requestFingerprint,
+    resourceId: input.mailboxId,
+  });
+
+  if (reservation.status === "conflict") {
+    throw new Error("Idempotency key is already used for a different send request");
+  }
+  if (reservation.status === "pending") {
+    throw new Error("A send request with this idempotency key is already in progress");
+  }
+  if (reservation.status === "completed") {
+    return reservation.record.response ?? {
+      draftId: reservation.record.resourceId,
+      outboundJobId: reservation.record.resourceId,
+      status: "queued",
+    };
+  }
+
+  try {
+    const draft = await createDraft(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+      threadId: input.threadId,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+      payload: input.payload,
+    });
+    const sendResult = await enqueueDraftSend(env, draft.id);
+    const response = {
+      draft,
+      outboundJobId: sendResult.outboundJobId,
+      status: sendResult.status,
+    };
+    await completeIdempotencyKey(env, {
+      operation: "draft_send",
+      tenantId: input.tenantId,
+      idempotencyKey,
+      resourceId: draft.id,
+      response,
+    });
+    return response;
+  } catch (error) {
+    await releaseIdempotencyKey(env, "draft_send", input.tenantId, idempotencyKey);
+    throw error;
+  }
 }
 
 async function rotateAccessToken(env: Env, claims: AccessTokenClaims): Promise<{
