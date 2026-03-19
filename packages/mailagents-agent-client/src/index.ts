@@ -863,7 +863,11 @@ export class MailagentsAgentClient {
     send?: boolean;
     idempotencyKey?: string;
   }): Promise<ReplyWorkflowResult> {
-    return this.callTool<ReplyWorkflowResult>("reply_to_inbound_email", args);
+    const result = await this.callTool<Omit<ReplyWorkflowResult, "sendRequested">>("reply_to_inbound_email", args);
+    return {
+      ...result,
+      sendRequested: Boolean(result.sendResult),
+    };
   }
 
   async operatorManualSend(args: {
