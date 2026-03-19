@@ -153,35 +153,28 @@ export interface ToolsListResult {
 }
 
 export interface PublicSignupRequest {
+  mailboxAlias: string;
+  agentName: string;
   productName: string;
   operatorEmail: string;
-  mailboxAlias?: string;
-  useCase?: string;
-  requestedLocalPart?: string;
+  useCase: string;
 }
 
 export interface PublicSignupResult {
-  accepted?: boolean;
-  mailbox: {
-    id: string;
-    address: string;
-    localPart?: string;
-  };
-  agent: {
-    id: string;
-    name?: string;
-  };
-  version?: {
-    id: string;
-    version?: string;
-  };
-  deployment?: {
-    id: string;
-    targetId?: string;
-  };
+  tenantId: string;
+  productName: string;
+  operatorEmail: string;
+  mailboxAddress: string;
+  mailboxId: string;
+  agentId: string;
+  agentVersionId: string;
+  deploymentId: string;
   accessToken?: string;
-  expiresAt?: string;
-  scopes?: string[];
+  accessTokenExpiresAt?: string;
+  accessTokenScopes: string[];
+  outboundJobId?: string;
+  welcomeStatus: "queued" | "failed";
+  welcomeError?: string;
 }
 
 export interface PublicTokenReissueRequest {
