@@ -166,8 +166,9 @@ function parseMultipart(body: string, boundary: string): Array<{ headers: Record
   const parts = body
     .split(delimiter)
     .slice(1)
-    .map((part) => part.replace(/^\r?\n/, "").replace(/\r?\n--$/, "").trim())
-    .filter((part) => part.length > 0);
+    .map((part) => part.replace(/^\r?\n/, ""))
+    .filter((part) => part.length > 0 && !part.startsWith("--"))
+    .map((part) => part.replace(/\r?\n$/, ""));
 
   return parts.map((part) => splitHeaderAndBody(part));
 }
