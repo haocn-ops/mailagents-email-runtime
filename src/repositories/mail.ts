@@ -347,16 +347,56 @@ export async function getMessageContent(env: Env, messageId: string): Promise<Me
     ).bind(messageId)
   );
 
+  let text = typeof normalized.text === "string" ? normalized.text : undefined;
+  let html = typeof normalized.html === "string" ? normalized.html : undefined;
+  let attachments = rows.map((row) => ({
+    id: row.id,
+    filename: row.filename ?? undefined,
+    contentType: row.content_type ?? undefined,
+    sizeBytes: row.size_bytes,
+    downloadUrl: row.r2_key,
+  }));
+
+  if (message.direction === "outbound" && (!text && !html || attachments.length === 0)) {
+    const outboundJob = await getOutboundJobByMessageId(env, messageId);
+    if (outboundJob) {
+      const draftObject = await env.R2_EMAIL.get(outboundJob.draftR2Key);
+      if (draftObject) {
+        const draftPayload = await draftObject.json<Record<string, unknown>>();
+        text = text ?? (typeof draftPayload.text === "string" ? draftPayload.text : undefined);
+        html = html ?? (typeof draftPayload.html === "string" ? draftPayload.html : undefined);
+
+        if (attachments.length === 0) {
+          const attachmentRefs = Array.isArray(draftPayload.attachments)
+            ? draftPayload.attachments.filter((item): item is { filename?: unknown; contentType?: unknown; r2Key?: unknown } => typeof item === "object" && item !== null)
+            : [];
+
+          attachments = [];
+          for (let index = 0; index < attachmentRefs.length; index += 1) {
+            const ref = attachmentRefs[index];
+            const r2Key = typeof ref.r2Key === "string" ? ref.r2Key : "";
+            if (!r2Key) {
+              continue;
+            }
+
+            const object = await env.R2_EMAIL.get(r2Key);
+            attachments.push({
+              id: `draft_attachment_${index + 1}`,
+              filename: typeof ref.filename === "string" ? ref.filename : r2Key.split("/").pop() ?? `attachment-${index + 1}`,
+              contentType: typeof ref.contentType === "string" ? ref.contentType : object?.httpMetadata?.contentType ?? undefined,
+              sizeBytes: typeof object?.size === "number" ? object.size : 0,
+              downloadUrl: r2Key,
+            });
+          }
+        }
+      }
+    }
+  }
+
   return {
-    text: typeof normalized.text === "string" ? normalized.text : undefined,
-    html: typeof normalized.html === "string" ? normalized.html : undefined,
-    attachments: rows.map((row) => ({
-      id: row.id,
-      filename: row.filename ?? undefined,
-      contentType: row.content_type ?? undefined,
-      sizeBytes: row.size_bytes,
-      downloadUrl: row.r2_key,
-    })),
+    text,
+    html,
+    attachments,
   };
 }
 
