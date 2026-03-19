@@ -220,12 +220,13 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
   if (env.API_SIGNING_SECRET) {
     try {
       await reissueMailboxAccessToken(env, mailboxAddress);
+    } catch {
+      // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
+    } finally {
       await logTokenReissueRequest(env, {
         mailboxAddress,
         requesterIpHash: requesterIpHash ?? undefined,
       }).catch(() => undefined);
-    } catch {
-      // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
     }
   }
 
