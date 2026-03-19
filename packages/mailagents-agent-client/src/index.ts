@@ -771,13 +771,13 @@ export class MailagentsAgentClient {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}`);
   }
 
-  async sendDraft(draftId: string, idempotencyKey: string): Promise<SendDraftResult> {
+  async sendDraft(draftId: string, idempotencyKey?: string): Promise<SendDraftResult> {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}/send`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({ idempotencyKey }),
+      body: JSON.stringify(idempotencyKey ? { idempotencyKey } : {}),
     });
   }
 
