@@ -120,6 +120,19 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
   };
 }
 
+async function restoreOperatorManualSendReplay(env: Env, draftId: string | undefined) {
+  const replay = await restoreDraftSendReplay(env, draftId);
+  return {
+    draft: replay.draft,
+    sendRequested: true as const,
+    sendResult: {
+      draftId: replay.draft.id,
+      outboundJobId: replay.outboundJobId,
+      status: replay.status,
+    },
+  };
+}
+
 async function validateDraftReferences(env: Env, input: {
   tenantId: string;
   mailboxId: string;
@@ -1128,9 +1141,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       throw new McpToolError("idempotency_in_progress", "An operator send request with this idempotency key is already in progress");
     }
     if (reservation.status === "completed") {
-      return reservation.record.response ?? {
-        sendRequested: true,
-      };
+      if (reservation.record.response) {
+        return reservation.record.response;
+      }
+
+      return await restoreOperatorManualSendReplay(env, reservation.record.resourceId);
     }
 
     try {
