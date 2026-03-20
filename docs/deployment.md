@@ -156,6 +156,8 @@ For each deployed environment, set these as secrets:
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
 - `CLOUDFLARE_API_TOKEN` when the runtime should manage Cloudflare Email Routing from the admin UI or automatic alias bootstrap
+- `X402_FACILITATOR_AUTH_TOKEN` when using a real x402 facilitator
+- `X402_PAY_TO` when you want quotes to point at a real settlement recipient
 
 Template helper:
 
@@ -185,6 +187,47 @@ Important split:
   - token signing secret
   - admin secret
   - optional Cloudflare API token for Email Routing admin
+  - optional x402 facilitator auth token
+  - optional x402 settlement recipient when you do not want it stored in plain vars
+
+## x402 Real Payment Configuration
+
+For the first real Base Sepolia + USDC payment flow, confirm:
+
+- `X402_FACILITATOR_URL`
+- `X402_FACILITATOR_VERIFY_PATH`
+- `X402_FACILITATOR_SETTLE_PATH`
+- `X402_FACILITATOR_AUTH_TOKEN`
+- `X402_PAY_TO`
+- `X402_DEFAULT_SCHEME=exact`
+- `X402_DEFAULT_NETWORK_ID=eip155:84532`
+- `X402_DEFAULT_ASSET=usdc`
+- `X402_PRICE_PER_CREDIT_USD`
+- `X402_UPGRADE_PRICE_USD`
+
+Recommended split:
+
+- Worker secrets
+  - `X402_FACILITATOR_AUTH_TOKEN`
+  - `X402_PAY_TO`
+- `wrangler.toml` vars
+  - `X402_FACILITATOR_URL`
+  - `X402_FACILITATOR_VERIFY_PATH`
+  - `X402_FACILITATOR_SETTLE_PATH`
+  - `X402_DEFAULT_SCHEME`
+  - `X402_DEFAULT_NETWORK_ID`
+  - `X402_DEFAULT_ASSET`
+  - `X402_PRICE_PER_CREDIT_USD`
+  - `X402_UPGRADE_PRICE_USD`
+
+Before running the first real payment in `dev`, also verify:
+
+- hosted DID routes resolve publicly
+- the generated quote includes the expected `payTo`
+- the facilitator expects the same chain and asset as the runtime quote
+
+See [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) for
+the full runbook.
 
 ## Pre-Deploy Validation
 

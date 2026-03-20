@@ -22,6 +22,12 @@ CLOUDFLARE_EMAIL_WORKER=mailagents-dev
 
 # Optional for x402 facilitator-backed verification and settlement
 # Use `mock://local` to exercise the facilitator flow in local smoke tests.
+X402_DEFAULT_SCHEME=exact
+X402_DEFAULT_NETWORK_ID=eip155:84532
+X402_DEFAULT_ASSET=usdc
+X402_PAY_TO=replace-with-base-sepolia-usdc-recipient
+X402_PRICE_PER_CREDIT_USD=0.01
+X402_UPGRADE_PRICE_USD=10
 X402_FACILITATOR_URL=https://facilitator.example.com
 X402_FACILITATOR_VERIFY_PATH=/verify
 X402_FACILITATOR_SETTLE_PATH=/settle

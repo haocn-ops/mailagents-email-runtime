@@ -17,12 +17,17 @@ wrangler secret put ADMIN_API_SECRET --env ${ENVIRONMENT}
 #
 # Optional secret for contact-alias admin and Cloudflare Email Routing automation:
 wrangler secret put CLOUDFLARE_API_TOKEN --env ${ENVIRONMENT}
+# Optional secrets for x402 facilitator-backed verification and settlement:
+wrangler secret put X402_FACILITATOR_AUTH_TOKEN --env ${ENVIRONMENT}
+wrangler secret put X402_PAY_TO --env ${ENVIRONMENT}
 #
 # Recommended:
 # - Use unique WEBHOOK_SHARED_SECRET per environment
 # - Use unique API_SIGNING_SECRET per environment
 # - Use unique ADMIN_API_SECRET per environment
 # - Only set CLOUDFLARE_API_TOKEN on environments that should manage Email Routing
+# - Set X402_FACILITATOR_AUTH_TOKEN only when using a real facilitator
+# - Set X402_PAY_TO to the settlement recipient expected by your facilitator
 #
 # Suggested route exposure:
 # - dev: ADMIN_ROUTES_ENABLED=true, DEBUG_ROUTES_ENABLED=true
@@ -33,6 +38,14 @@ wrangler secret put CLOUDFLARE_API_TOKEN --env ${ENVIRONMENT}
 # - CLOUDFLARE_ZONE_ID
 # - CLOUDFLARE_EMAIL_DOMAIN
 # - CLOUDFLARE_EMAIL_WORKER
+# - X402_FACILITATOR_URL
+# - X402_FACILITATOR_VERIFY_PATH
+# - X402_FACILITATOR_SETTLE_PATH
+# - X402_DEFAULT_NETWORK_ID
+# - X402_DEFAULT_ASSET
+# - X402_DEFAULT_SCHEME
+# - X402_PRICE_PER_CREDIT_USD
+# - X402_UPGRADE_PRICE_USD
 # - CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED
 # Keep CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false unless this runtime should
 # become the active owner of managed contact inbox aliases.
