@@ -121,6 +121,46 @@ For the local mock facilitator path, the fastest command is:
 npm run smoke:billing:facilitator:local:auto
 ```
 
+## Run the dev real-chain topup smoke
+
+This flow is the closest current check to a real x402 payment:
+
+- it requests a live `402` topup quote from deployed `dev`
+- it sends a real Base Sepolia USDC transfer to the quoted `payTo`
+- it submits that chain-backed payment proof to `POST /v1/billing/topup`
+- it finishes with manual admin settlement through `POST /v1/billing/payment/confirm`
+
+Prerequisites:
+
+- deployed `dev` has `X402_PAY_TO` configured
+- [`.secrets/dev-base-sepolia-wallet.json`](../.secrets/dev-base-sepolia-wallet.json) exists locally and holds a funded Base Sepolia wallet
+- `.dev.vars` contains a valid `ADMIN_API_SECRET`
+- the wallet has enough Base Sepolia ETH for gas and USDC for the requested amount
+
+Run:
+
+```bash
+npm run smoke:billing:dev:real-chain
+```
+
+Optional overrides:
+
+- `BASE_URL`
+- `BASE_RPC_URL`
+- `WALLET_JSON_PATH`
+- `ADMIN_API_SECRET_FOR_SMOKE`
+- `CREDITS_TO_BUY`
+- `OPERATOR_EMAIL_FOR_SMOKE`
+
+This script proves:
+
+- the live quote fields are correct
+- the current `payTo` address is really reachable onchain
+- chain-backed payment proof capture works against deployed `dev`
+- manual settlement still lands in receipts, ledger, and billing account state
+
+It does not prove real facilitator verification yet.
+
 The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that
 state from the already-present schema when upgrading an older environment.
