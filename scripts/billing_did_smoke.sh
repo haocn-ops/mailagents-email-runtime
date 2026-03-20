@@ -92,7 +92,9 @@ capture_request() {
 
 header_value() {
   local name="$1"
-  awk -F': ' -v target="${name,,}" '
+  local target
+  target="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  awk -F': ' -v target="$target" '
     BEGIN { IGNORECASE = 1 }
     {
       gsub(/\r$/, "", $0)
@@ -219,7 +221,10 @@ jq -e '
 ' "$LAST_BODY" >/dev/null
 
 echo "Confirming topup settlement..."
-mapfile -t CONFIRM_HEADERS < <(append_confirm_headers)
+CONFIRM_HEADERS=()
+while IFS= read -r header; do
+  CONFIRM_HEADERS+=("$header")
+done < <(append_confirm_headers)
 capture_request "POST" "/v1/billing/payment/confirm" "{
   \"receiptId\": \"$TOPUP_RECEIPT_ID\",
   \"settlementReference\": \"smoke-topup-$TENANT_ID\"
@@ -278,7 +283,10 @@ jq -e '
 ' "$LAST_BODY" >/dev/null
 
 echo "Confirming upgrade settlement..."
-mapfile -t CONFIRM_HEADERS < <(append_confirm_headers)
+CONFIRM_HEADERS=()
+while IFS= read -r header; do
+  CONFIRM_HEADERS+=("$header")
+done < <(append_confirm_headers)
 capture_request "POST" "/v1/billing/payment/confirm" "{
   \"receiptId\": \"$UPGRADE_RECEIPT_ID\",
   \"settlementReference\": \"smoke-upgrade-$TENANT_ID\"
