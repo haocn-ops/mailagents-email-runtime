@@ -37,6 +37,8 @@ export interface Env {
   SES_SECRET_ACCESS_KEY?: string;
   SES_ACCESS_KEY?: string;
   SES_SECRET_KEY?: string;
+  SES_MOCK_SEND?: string;
+  SES_MOCK_SEND_DELAY_MS?: string;
   WEBHOOK_SHARED_SECRET?: string;
   API_SIGNING_SECRET?: string;
   SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS?: string;

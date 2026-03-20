@@ -1550,6 +1550,41 @@ router.on("GET", "/v1/debug/suppressions/:email", async (request, env, _ctx, rou
   return json(suppression);
 });
 
+router.on("POST", "/v1/debug/suppressions", async (request, env) => {
+  const routeError = requireDebugRoutesEnabled(env);
+  if (routeError) {
+    return routeError;
+  }
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const body = await readJson<{
+    email?: string;
+    reason?: string;
+    source?: string;
+  }>(request);
+
+  if (!body.email?.trim()) {
+    return badRequest("email is required");
+  }
+
+  await addSuppression(
+    env,
+    body.email.trim().toLowerCase(),
+    body.reason?.trim() || "debug_suppression",
+    body.source?.trim() || "debug",
+  );
+
+  return json({
+    ok: true,
+    email: body.email.trim().toLowerCase(),
+    reason: body.reason?.trim() || "debug_suppression",
+    source: body.source?.trim() || "debug",
+  }, { status: 201 });
+});
+
 router.on("POST", "/v1/auth/tokens", async (request, env) => {
   const routeError = requireAdminRoutesEnabled(env);
   if (routeError) {

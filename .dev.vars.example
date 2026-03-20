@@ -10,6 +10,8 @@ DEBUG_ROUTES_ENABLED=true
 # Optional for real SES-backed outbound validation
 SES_ACCESS_KEY_ID=replace-with-aws-access-key-id
 SES_SECRET_ACCESS_KEY=replace-with-aws-secret-access-key
+SES_MOCK_SEND=false
+SES_MOCK_SEND_DELAY_MS=1500
 
 # Optional for contact inbox, alias-management, and Email Routing admin flows
 CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false

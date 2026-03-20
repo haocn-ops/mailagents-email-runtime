@@ -125,6 +125,37 @@ The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that
 state from the already-present schema when upgrading an older environment.
 
+## Run the outbound credit smoke script
+
+This smoke focuses on the reserve -> capture -> release path for external sends.
+It expects the local demo seed (`t_demo`, `mbx_demo`, `agt_demo`) to be present.
+
+```bash
+chmod +x scripts/outbound_credit_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+SES_MOCK_SEND=true \
+SES_MOCK_SEND_DELAY_MS=1500 \
+./scripts/outbound_credit_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:credits:local
+npm run smoke:credits:local:auto
+```
+
+Notes:
+
+- `smoke:credits:local:auto` starts the worker with `SES_MOCK_SEND=true` and a
+  small mock delay so the script can assert the intermediate
+  `availableCredits/reservedCredits` reservation state before capture.
+- The script tops up the seeded demo tenant, enables external sending, verifies
+  one successful external send captures a reserved credit, then verifies one
+  suppressed-recipient send releases its reservation without adding a debit
+  ledger entry.
+- Run `npm run d1:seed:local` first if the demo tenant or mailbox is missing.
+
 ## Run Against Deployed `dev`
 
 The current shared `dev` environment is:

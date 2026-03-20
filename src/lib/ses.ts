@@ -28,6 +28,16 @@ export interface SesSendResult {
   messageId: string;
 }
 
+function isMockSesEnabled(env: Env): boolean {
+  return ["1", "true", "yes", "on"].includes((env.SES_MOCK_SEND ?? "").toLowerCase());
+}
+
+function getMockSesDelayMs(env: Env): number {
+  const raw = env.SES_MOCK_SEND_DELAY_MS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function requireSesCredentials(env: Env): { accessKeyId: string; secretAccessKey: string } {
   const accessKeyId = env.SES_ACCESS_KEY_ID ?? env.SES_ACCESS_KEY;
   const secretAccessKey = env.SES_SECRET_ACCESS_KEY ?? env.SES_SECRET_KEY;
@@ -48,6 +58,14 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 async function sendSesPayload(env: Env, body: string): Promise<SesSendResult> {
+  if (isMockSesEnabled(env)) {
+    const delayMs = getMockSesDelayMs(env);
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return { messageId: `mock-ses-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` };
+  }
+
   const { accessKeyId, secretAccessKey } = requireSesCredentials(env);
   const endpoint = `https://email.${env.SES_REGION}.amazonaws.com/v2/email/outbound-emails`;
 
