@@ -494,6 +494,76 @@ export async function incrementTenantAvailableCredits(env: Env, tenantId: string
   });
 }
 
+export async function reserveTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
+  const updatedAt = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tenant_billing_accounts
+     SET available_credits = available_credits - ?,
+         reserved_credits = reserved_credits + ?,
+         updated_at = ?
+     WHERE tenant_id = ?
+       AND available_credits >= ?`
+  ).bind(
+    creditsDelta,
+    creditsDelta,
+    updatedAt,
+    tenantId,
+    creditsDelta,
+  ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    return null;
+  }
+
+  return await ensureTenantBillingAccount(env, tenantId);
+}
+
+export async function releaseTenantReservedCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
+  const updatedAt = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tenant_billing_accounts
+     SET available_credits = available_credits + ?,
+         reserved_credits = reserved_credits - ?,
+         updated_at = ?
+     WHERE tenant_id = ?
+       AND reserved_credits >= ?`
+  ).bind(
+    creditsDelta,
+    creditsDelta,
+    updatedAt,
+    tenantId,
+    creditsDelta,
+  ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    return null;
+  }
+
+  return await ensureTenantBillingAccount(env, tenantId);
+}
+
+export async function captureTenantReservedCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
+  const updatedAt = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tenant_billing_accounts
+     SET reserved_credits = reserved_credits - ?,
+         updated_at = ?
+     WHERE tenant_id = ?
+       AND reserved_credits >= ?`
+  ).bind(
+    creditsDelta,
+    updatedAt,
+    tenantId,
+    creditsDelta,
+  ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    return null;
+  }
+
+  return await ensureTenantBillingAccount(env, tenantId);
+}
+
 export async function decrementTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
   const updatedAt = nowIso();
   const result = await execute(env.D1_DB.prepare(

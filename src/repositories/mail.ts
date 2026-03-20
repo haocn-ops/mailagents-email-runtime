@@ -1,5 +1,7 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
+import { getOutboundCreditRequirement } from "../lib/outbound-credits";
+import { releaseTenantReservedCredits, reserveTenantAvailableCredits } from "./billing";
 import { nowIso } from "../lib/time";
 import type { DeliveryEventType, DraftRecord, Env, IdempotencyRecord, MessageContentRecord, MessageRecord, OutboundJobRecord, TaskRecord, ThreadRecord } from "../types";
 
@@ -752,6 +754,17 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+  const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+  const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+  const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+  const creditRequirement = await getOutboundCreditRequirement(env, {
+    tenantId: draft.tenantId,
+    to,
+    cc,
+    bcc,
+    sourceMessageId: draft.sourceMessageId,
+    createdVia: draft.createdVia,
+  });
   const attachmentRefs = Array.isArray(draftPayload.attachments)
     ? draftPayload.attachments.filter((item): item is { r2Key?: unknown } => typeof item === "object" && item !== null)
     : [];
@@ -795,49 +808,56 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     }
   }
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO messages (
-       id, tenant_id, mailbox_id, thread_id, direction, provider, from_addr, to_addr,
-       subject, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    outboundMessageId,
-    draft.tenantId,
-    draft.mailboxId,
-    draft.threadId ?? null,
-    "outbound",
-    "ses",
-    fromAddress,
-    Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
-    typeof draftPayload.subject === "string" ? draftPayload.subject : "",
-    "tasked",
-    timestamp
-  ));
-
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO outbound_jobs (
-       id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
-       last_error, draft_r2_key, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    outboundJobId,
-    outboundMessageId,
-    null,
-    "queued",
-    env.SES_REGION,
-    0,
-    null,
-    null,
-    draft.draftR2Key,
-    timestamp,
-    timestamp
-  ));
-
-  await execute(env.D1_DB.prepare(
-    `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
-  ).bind("queued", timestamp, draftId));
+  if (creditRequirement.requiresCredits) {
+    const reserved = await reserveTenantAvailableCredits(env, draft.tenantId, creditRequirement.creditsRequired);
+    if (!reserved) {
+      throw new Error(`Insufficient credits for external sending. Required: ${creditRequirement.creditsRequired}`);
+    }
+  }
 
   try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO messages (
+         id, tenant_id, mailbox_id, thread_id, direction, provider, from_addr, to_addr,
+         subject, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      outboundMessageId,
+      draft.tenantId,
+      draft.mailboxId,
+      draft.threadId ?? null,
+      "outbound",
+      "ses",
+      fromAddress,
+      Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
+      typeof draftPayload.subject === "string" ? draftPayload.subject : "",
+      "tasked",
+      timestamp
+    ));
+
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO outbound_jobs (
+         id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
+         last_error, draft_r2_key, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      outboundJobId,
+      outboundMessageId,
+      null,
+      "queued",
+      env.SES_REGION,
+      0,
+      null,
+      null,
+      draft.draftR2Key,
+      timestamp,
+      timestamp
+    ));
+
+    await execute(env.D1_DB.prepare(
+      `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
+    ).bind("queued", timestamp, draftId));
+
     await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId });
   } catch (error) {
     await execute(env.D1_DB.prepare(
@@ -849,6 +869,9 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     await execute(env.D1_DB.prepare(
       `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
     ).bind(priorDraftStatus, nowIso(), draftId)).catch(() => undefined);
+    if (creditRequirement.requiresCredits) {
+      await releaseTenantReservedCredits(env, draft.tenantId, creditRequirement.creditsRequired).catch(() => undefined);
+    }
     throw error;
   }
 

@@ -8,8 +8,10 @@ import { buildOutboundUsageLedgerMetadata } from "../lib/payments/ledger-metadat
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
   appendOutboundUsageLedgerEntry,
+  captureTenantReservedCredits,
   decrementTenantAvailableCredits,
   getTypedCreditLedgerEntryByReferenceId,
+  releaseTenantReservedCredits,
 } from "../repositories/billing";
 import {
   claimTaskForExecution,
@@ -86,9 +88,12 @@ async function settleOutboundUsageDebit(env: Env, input: {
     return;
   }
 
-  const account = await decrementTenantAvailableCredits(env, input.tenantId, requirement.creditsRequired);
-  if (!account) {
-    throw new Error(`Unable to settle outbound usage debit for ${input.outboundJobId}: insufficient credits after send`);
+  const captured = await captureTenantReservedCredits(env, input.tenantId, requirement.creditsRequired);
+  if (!captured) {
+    const debited = await decrementTenantAvailableCredits(env, input.tenantId, requirement.creditsRequired);
+    if (!debited) {
+      throw new Error(`Unable to settle outbound usage debit for ${input.outboundJobId}: insufficient credits after send`);
+    }
   }
 
   const entryType = classifyOutboundUsageEntryType({
@@ -113,6 +118,31 @@ async function settleOutboundUsageDebit(env: Env, input: {
       externalDomains: requirement.externalDomains,
     }),
   });
+}
+
+async function releaseOutboundUsageReservation(env: Env, input: {
+  tenantId: string;
+  outboundJobId: string;
+  sourceMessageId?: string;
+  draftCreatedVia?: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}): Promise<void> {
+  const requirement = await getOutboundCreditRequirement(env, {
+    tenantId: input.tenantId,
+    to: input.to,
+    cc: input.cc,
+    bcc: input.bcc,
+    sourceMessageId: input.sourceMessageId,
+    createdVia: input.draftCreatedVia,
+  });
+
+  if (!requirement.requiresCredits) {
+    return;
+  }
+
+  await releaseTenantReservedCredits(env, input.tenantId, requirement.creditsRequired);
 }
 
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
@@ -286,21 +316,14 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
   for (const message of batch.messages) {
     let outboundJob = null as Awaited<ReturnType<typeof getOutboundJob>> | null;
     let draft = null as Awaited<ReturnType<typeof getDraftByR2Key>> | null;
+    let to: string[] = [];
+    let cc: string[] = [];
+    let bcc: string[] = [];
     try {
       outboundJob = await getOutboundJob(env, message.body.outboundJobId);
       if (!outboundJob) {
         throw new Error("Outbound job not found");
       }
-      if (outboundJob.status === "sent") {
-        message.ack();
-        continue;
-      }
-
-      await updateOutboundJobStatus(env, {
-        outboundJobId: outboundJob.id,
-        status: "sending",
-        lastError: null,
-      });
 
       const draftObject = await env.R2_EMAIL.get(outboundJob.draftR2Key);
       if (!draftObject) {
@@ -313,15 +336,45 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
       }
+
+      if (outboundJob.status === "sent") {
+        to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+        cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+        bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+        try {
+          await settleOutboundUsageDebit(env, {
+            tenantId: outboundMessage.tenantId,
+            messageId: outboundJob.messageId,
+            outboundJobId: outboundJob.id,
+            draftId: draft?.id,
+            draftCreatedVia: draft?.createdVia,
+            sourceMessageId: draft?.sourceMessageId,
+            to,
+            cc,
+            bcc,
+          });
+          message.ack();
+        } catch (billingError) {
+          await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+          message.retry();
+        }
+        continue;
+      }
+
+      await updateOutboundJobStatus(env, {
+        outboundJobId: outboundJob.id,
+        status: "sending",
+        lastError: null,
+      });
       const mailbox = await getMailboxById(env, outboundMessage.mailboxId);
       if (!mailbox) {
         throw new Error("Mailbox not found");
       }
 
       const from = typeof draftPayload.from === "string" ? draftPayload.from : "";
-      const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
-      const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
-      const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+      to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+      cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+      bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
       const subject = typeof draftPayload.subject === "string" ? draftPayload.subject : "";
       const text = typeof draftPayload.text === "string" ? draftPayload.text : undefined;
       const html = typeof draftPayload.html === "string" ? draftPayload.html : undefined;
@@ -407,6 +460,8 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         });
       } catch (billingError) {
         await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+        message.retry();
+        continue;
       }
 
       message.ack();
@@ -427,6 +482,17 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       }
       if (draft && exhausted) {
         await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+      }
+      if (outboundJob && exhausted && draft) {
+        await releaseOutboundUsageReservation(env, {
+          tenantId: draft.tenantId,
+          outboundJobId: outboundJob.id,
+          sourceMessageId: draft.sourceMessageId,
+          draftCreatedVia: draft.createdVia,
+          to,
+          cc,
+          bcc,
+        }).catch(() => undefined);
       }
       await enqueueDeadLetter(env, deadLetterFromError("outbound-send", message.body.outboundJobId, error));
       if (exhausted) {
