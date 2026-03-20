@@ -222,6 +222,7 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - It asserts key response fields with `jq` so obvious regressions fail fast.
 - Debug endpoints are admin-secret protected and intended only for local/dev verification.
 - The billing + DID smoke intentionally uses manual settlement via `x-admin-secret`; it is a regression harness for the current skeleton flow, not proof that a facilitator integration is live.
+- For the first real Base Sepolia + USDC payment run, follow [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) after facilitator credentials and `X402_PAY_TO` are configured.
 - For production confidence, add real integration tests around D1 state assertions and SES callback handling.
 - If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either

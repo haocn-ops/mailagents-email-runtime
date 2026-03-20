@@ -30,6 +30,7 @@ Use this set when you are running the project locally or changing runtime code:
 
 - [docs/local-dev.md](./local-dev.md) — default local setup and API walkthrough
 - [docs/testing.md](./testing.md) — local and remote smoke flows
+- [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) — first real Base Sepolia + USDC payment run
 - [docs/dev-bootstrap.md](./dev-bootstrap.md) — first real `dev` environment bootstrap
 - [docs/deployment.md](./deployment.md) — Cloudflare and SES environment wiring
 - [docs/mvp-spec.md](./mvp-spec.md) — product and architecture baseline
@@ -63,6 +64,7 @@ Use these docs when you are touching live infrastructure or production mailboxes
 - [docs/production-rollout-checklist.md](./production-rollout-checklist.md) — production rollout record and runbook
 - [docs/production-operator-bootstrap.md](./production-operator-bootstrap.md) — first safe production write path
 - [docs/testing.md](./testing.md) — current smoke coverage and verification boundaries
+- [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) — first real testnet payment runbook
 - [docs/archive/README.md](./archive/README.md) — dated rollout and verification records
 
 ## SDK And Client Work
@@ -94,6 +96,9 @@ If you are trying to:
 - validate local setup
   - [docs/local-dev.md](./local-dev.md)
   - [docs/testing.md](./testing.md)
+- prepare a real x402 payment test
+  - [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md)
+  - [docs/x402-did-architecture-plan.md](./x402-did-architecture-plan.md)
 - bootstrap or repair production
   - [docs/production-rollout-checklist.md](./production-rollout-checklist.md)
   - [docs/production-operator-bootstrap.md](./production-operator-bootstrap.md)

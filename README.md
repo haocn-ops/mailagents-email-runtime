@@ -131,6 +131,7 @@ Recommended entry points:
 - [`docs/local-dev.md`](docs/local-dev.md) for local setup, migrations, seeds, and demo API calls
 - [`docs/deployment.md`](docs/deployment.md) for Cloudflare and SES environment wiring
 - [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and current coverage guidance
+- [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md) for the first real Base Sepolia + USDC payment run
 - [`docs/archive/README.md`](docs/archive/README.md) for dated rollout and verification records
 - [`docs/runtime-metadata.md`](docs/runtime-metadata.md) and [`docs/runtime-compatibility.md`](docs/runtime-compatibility.md) for discovery and stable integration contracts
 - [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) and [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for copyable integration examples and the TypeScript helper
@@ -165,6 +166,7 @@ Operational references:
 - [`docs/deployment.md`](docs/deployment.md) — shared deployment checklist and environment wiring
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) — production rollout record and caveats
 - [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) — first safe production write path
+- [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md) — first real testnet payment runbook
 - [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) — first real `dev` environment bootstrap
 
 Template scripts:
