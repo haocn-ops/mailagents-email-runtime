@@ -9,6 +9,7 @@ WALLET_JSON_PATH="${WALLET_JSON_PATH:-$REPO_ROOT/.secrets/dev-base-sepolia-walle
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 CREDITS_TO_BUY="${CREDITS_TO_BUY:-25}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
+PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-manual}"
 
 TEMP_FILES=()
 
@@ -62,7 +63,13 @@ if [[ ! -f "$WALLET_JSON_PATH" ]]; then
   exit 1
 fi
 
-if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
+if [[ "$PAYMENT_CONFIRM_MODE" != "manual" && "$PAYMENT_CONFIRM_MODE" != "facilitator" ]]; then
+  echo "Unsupported PAYMENT_CONFIRM_MODE_FOR_SMOKE: $PAYMENT_CONFIRM_MODE" >&2
+  echo "Use 'manual' or 'facilitator'." >&2
+  exit 1
+fi
+
+if [[ "$PAYMENT_CONFIRM_MODE" == "manual" && "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
   echo "Missing admin secret. Set ADMIN_API_SECRET_FOR_SMOKE or configure ADMIN_API_SECRET in .dev.vars." >&2
   exit 1
 fi
@@ -194,13 +201,22 @@ PY
 
 CONFIRM_BODY="$(printf '{"receiptId":"%s","settlementReference":"%s"}' "$RECEIPT_ID" "$TX_HASH")"
 
-echo "Confirming receipt through manual admin settlement ..."
-curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
-  -X POST "$BASE_URL/v1/billing/payment/confirm" \
-  -H "authorization: Bearer $TOKEN" \
-  -H "x-admin-secret: $ADMIN_SECRET" \
-  -H 'content-type: application/json' \
-  --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
+if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
+  echo "Confirming receipt through manual admin settlement ..."
+  curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
+    -X POST "$BASE_URL/v1/billing/payment/confirm" \
+    -H "authorization: Bearer $TOKEN" \
+    -H "x-admin-secret: $ADMIN_SECRET" \
+    -H 'content-type: application/json' \
+    --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
+else
+  echo "Confirming receipt through facilitator-backed settlement ..."
+  curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
+    -X POST "$BASE_URL/v1/billing/payment/confirm" \
+    -H "authorization: Bearer $TOKEN" \
+    -H 'content-type: application/json' \
+    --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
+fi
 
 curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   "$BASE_URL/v1/billing/account" \

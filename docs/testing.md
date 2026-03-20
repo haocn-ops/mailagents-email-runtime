@@ -141,6 +141,7 @@ Run:
 
 ```bash
 npm run smoke:billing:dev:real-chain
+npm run smoke:billing:dev:real-chain:facilitator
 ```
 
 Optional overrides:
@@ -151,6 +152,7 @@ Optional overrides:
 - `ADMIN_API_SECRET_FOR_SMOKE`
 - `CREDITS_TO_BUY`
 - `OPERATOR_EMAIL_FOR_SMOKE`
+- `PAYMENT_CONFIRM_MODE_FOR_SMOKE`
 
 This script proves:
 
@@ -159,7 +161,13 @@ This script proves:
 - chain-backed payment proof capture works against deployed `dev`
 - manual settlement still lands in receipts, ledger, and billing account state
 
-It does not prove real facilitator verification yet.
+`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` keeps the current admin-confirm flow.
+`PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` expects deployed `dev` to have
+`X402_FACILITATOR_URL=mock://local` or a real facilitator configured.
+
+The facilitator variant proves the deployed runtime can automatically execute
+`verify -> settle` after a real onchain payment, but it still does not prove a
+third-party facilitator is live unless the environment points at a real one.
 
 The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that
