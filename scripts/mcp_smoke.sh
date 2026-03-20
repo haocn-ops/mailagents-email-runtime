@@ -7,7 +7,7 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 TENANT_ID="${TENANT_ID:-t_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
-FROM_EMAIL="${FROM_EMAIL:-agent@mail.example.com}"
+FROM_EMAIL="${FROM_EMAIL:-agent@mailagents.net}"
 TO_EMAIL="${TO_EMAIL:-user@example.com}"
 SEEDED_INBOUND_MESSAGE_ID="${SEEDED_INBOUND_MESSAGE_ID:-msg_demo_inbound}"
 

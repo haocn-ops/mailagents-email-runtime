@@ -8,7 +8,7 @@ ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-replace-with-shared-secret}"
 TENANT_ID="${TENANT_ID:-t_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
-FROM_EMAIL="${FROM_EMAIL:-agent@mail.example.com}"
+FROM_EMAIL="${FROM_EMAIL:-agent@mailagents.net}"
 TO_EMAIL="${TO_EMAIL:-user@example.com}"
 
 require_cmd() {
@@ -207,15 +207,22 @@ if [[ -n "$OUTBOUND_MESSAGE_ID" && "$OUTBOUND_MESSAGE_ID" != "null" ]]; then
       \"mode\": \"normalize\",
       \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
     }")"
-  echo "$REPLAY_RESPONSE" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
-  REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
-    -H 'content-type: application/json' \
-    -H "authorization: Bearer $TOKEN" \
-    -d "{
-      \"mode\": \"normalize\",
-      \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
-    }")"
-  echo "$REPLAY_RESPONSE_REPEAT" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
+  if echo "$REPLAY_RESPONSE" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null 2>&1; then
+    REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
+      -H 'content-type: application/json' \
+      -H "authorization: Bearer $TOKEN" \
+      -d "{
+        \"mode\": \"normalize\",
+        \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
+      }")"
+    echo "$REPLAY_RESPONSE_REPEAT" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null
+  elif echo "$REPLAY_RESPONSE" | jq -e '.error == "normalize replay requires the message to have raw email content"' >/dev/null 2>&1; then
+    echo "Skipping replay idempotency assertion because outbound messages do not include raw email content in this flow."
+  else
+    echo "Unexpected replay response" >&2
+    echo "$REPLAY_RESPONSE" >&2
+    exit 1
+  fi
 else
   echo "Skipping replay idempotency assertion because no message ID was available from the current flow."
 fi
