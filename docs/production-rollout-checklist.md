@@ -39,6 +39,7 @@ Observed current state:
 - production Worker route is attached to `api.mailagents.net/*`
 - `api.mailagents.net` responds successfully
 - `support@mailagents.net` now has a Cloudflare Email Routing rule targeting `mailagents-production`
+- public contact aliases (`hello`, `security`, `privacy`, `dmarc`) are intended to be owned by `mailagents-production`
 
 Expected defaults in this repo:
 

@@ -4,6 +4,7 @@ import { handleQueue } from "./handlers/queues";
 import { handleScheduled } from "./handlers/scheduled";
 import {
   cleanupRedundantMailboxWorkerRules,
+  ensureManagedContactAliasMailboxes,
   ensureManagedContactAliasRouting,
   shouldBootstrapContactAliasRouting,
 } from "./lib/contact-aliases";
@@ -13,7 +14,23 @@ import { handleSiteRequest } from "./routes/site";
 import type { Env } from "./types";
 
 let contactAliasRoutingBootstrapPromise: Promise<void> | null = null;
+let contactAliasMailboxBootstrapPromise: Promise<void> | null = null;
 let redundantMailboxRuleCleanupPromise: Promise<void> | null = null;
+
+function ensureContactAliasMailboxesBootstrapped(env: Env): Promise<void> {
+  if (!shouldBootstrapContactAliasRouting(env)) {
+    return Promise.resolve();
+  }
+
+  if (!contactAliasMailboxBootstrapPromise) {
+    contactAliasMailboxBootstrapPromise = ensureManagedContactAliasMailboxes(env).catch((error) => {
+      contactAliasMailboxBootstrapPromise = null;
+      throw error;
+    });
+  }
+
+  return contactAliasMailboxBootstrapPromise;
+}
 
 function ensureContactAliasRoutingBootstrapped(env: Env): Promise<void> {
   if (!shouldBootstrapContactAliasRouting(env)) {
@@ -55,12 +72,16 @@ function scheduleContactAliasMaintenance(env: Env, ctx?: ExecutionContext): void
     return;
   }
 
-  const maintenance = Promise.all([
-    ensureContactAliasRoutingBootstrapped(env),
-    ensureRedundantMailboxRulesCleaned(env),
-  ]).catch((error) => {
-    logContactAliasMaintenanceError("bootstrap", error);
-  });
+  const maintenance = ensureContactAliasMailboxesBootstrapped(env)
+    .then(async () => {
+      await Promise.all([
+        ensureContactAliasRoutingBootstrapped(env),
+        ensureRedundantMailboxRulesCleaned(env),
+      ]);
+    })
+    .catch((error) => {
+      logContactAliasMaintenanceError("bootstrap", error);
+    });
 
   if (ctx) {
     ctx.waitUntil(maintenance);
