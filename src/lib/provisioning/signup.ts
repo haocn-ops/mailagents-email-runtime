@@ -19,6 +19,7 @@ import {
   upsertAgentPolicy,
 } from "../../repositories/agents";
 import { createDraft, enqueueDraftSend } from "../../repositories/mail";
+import { upsertTenantSendPolicy } from "../../repositories/tenant-policies";
 import type { Env } from "../../types";
 import { issueSelfServeAccessToken } from "./default-access";
 import { buildWelcomeHtml, buildWelcomeText } from "./welcome";
@@ -219,9 +220,18 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     humanReviewRequired: true,
     confidenceThreshold: 0.85,
     maxAutoRepliesPerThread: 1,
-    allowedRecipientDomains: [],
+    allowedRecipientDomains: [domain],
     blockedSenderDomains: [],
     allowedTools: ["reply_email", "mark_task_done"],
+  });
+
+  await upsertTenantSendPolicy(env, {
+    tenantId,
+    pricingTier: "free",
+    outboundStatus: "internal_only",
+    internalDomainAllowlist: [domain],
+    externalSendEnabled: false,
+    reviewRequired: true,
   });
 
   const access = await issueSelfServeAccessToken({

@@ -6,6 +6,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
+import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
   buildRuntimeMetadata,
   MCP_PROTOCOL_VERSION,
@@ -761,6 +762,7 @@ async function createAndSendDraftForMcp(env: Env, input: {
   createdVia: string;
   idempotencyKey?: string;
   requestFingerprint: string;
+  policyBypassReason?: string;
 }) {
   const idempotencyKey = input.idempotencyKey?.trim();
 
@@ -784,6 +786,18 @@ async function createAndSendDraftForMcp(env: Env, input: {
       mailboxId: input.mailboxId,
       attachments: input.payload.attachments,
     });
+    if (!input.policyBypassReason) {
+      const decision = await evaluateOutboundPolicy(env, {
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        to: input.payload.to,
+        cc: input.payload.cc,
+        bcc: input.payload.bcc,
+      });
+      if (!decision.ok) {
+        throw new McpToolError(decision.code ?? "access_mailbox_denied", decision.message ?? "Outbound policy denied this send request");
+      }
+    }
   };
 
   if (!idempotencyKey) {

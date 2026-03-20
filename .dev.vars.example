@@ -17,3 +17,12 @@ CLOUDFLARE_API_TOKEN=replace-with-cloudflare-api-token
 CLOUDFLARE_ZONE_ID=replace-with-cloudflare-zone-id
 CLOUDFLARE_EMAIL_DOMAIN=mailagents.net
 CLOUDFLARE_EMAIL_WORKER=mailagents-dev
+
+# Optional for x402 facilitator-backed verification and settlement
+# Use `mock://local` to exercise the facilitator flow in local smoke tests.
+X402_FACILITATOR_URL=https://facilitator.example.com
+X402_FACILITATOR_VERIFY_PATH=/verify
+X402_FACILITATOR_SETTLE_PATH=/settle
+X402_FACILITATOR_AUTH_TOKEN=replace-with-facilitator-token
+X402_FACILITATOR_MOCK_VERIFY_RESULT=valid
+X402_FACILITATOR_MOCK_SETTLE_RESULT=success

@@ -32,6 +32,20 @@ The MCP smoke flow exercises:
 - MCP composite reply workflow success path against seeded inbound mail
 - MCP machine-readable error codes
 
+The billing + DID smoke flow exercises:
+
+- tenant-scoped bearer token minting
+- default billing account initialization
+- default tenant send policy initialization
+- hosted `did:web` binding creation
+- public DID document resolution
+- x402 `402 Payment Required` quote flow for topups
+- pending topup receipt creation
+- manual payment settlement into the credit ledger
+- x402 upgrade intent quote flow
+- `paid_review` upgrade settlement
+- admin approval transition to `paid_active`
+
 ## Prerequisites
 
 - local worker already running with `npm run dev:local`
@@ -72,6 +86,45 @@ The MCP smoke script expects the demo seed to include:
 - seeded inbound message `msg_demo_inbound`
 - seeded thread `thr_demo_inbound`
 
+## Run the billing + DID smoke script
+
+```bash
+chmod +x scripts/billing_did_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+./scripts/billing_did_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:billing:local
+npm run smoke:billing:local:auto
+npm run smoke:billing:facilitator:local:auto
+```
+
+Optional overrides:
+
+- `BASE_URL`
+- `TENANT_ID`
+- `AUTH_SCOPE_FOR_SMOKE`
+- `X402_PAYMENT_SIGNATURE_FOR_SMOKE`
+- `PAYMENT_CONFIRM_MODE_FOR_SMOKE`
+
+`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` uses the existing admin-confirm path.
+`PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` exercises facilitator-backed
+confirmation and expects the worker environment to set
+`X402_FACILITATOR_URL=mock://local` or a real facilitator base URL.
+
+For the local mock facilitator path, the fastest command is:
+
+```bash
+npm run smoke:billing:facilitator:local:auto
+```
+
+The D1 migrate scripts are now safe to rerun against an existing local or remote
+database. They record applied files in `schema_migrations` and bootstrap that
+state from the already-present schema when upgrading an older environment.
+
 ## Run Against Deployed `dev`
 
 The current shared `dev` environment is:
@@ -99,6 +152,7 @@ Before running remote smoke:
 - apply `npm run d1:migrate:remote:dev`
 - apply `npm run d1:seed:remote:dev` if the seeded inbound MCP flow is needed
 - confirm `ADMIN_API_SECRET`, `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` are configured as Worker secrets for `dev`
+- billing + DID smoke also requires migrations `0006` through `0008`, because it exercises billing accounts, DID bindings, and tenant send policies
 
 ## Historical Verification Records
 
@@ -136,6 +190,7 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 - It verifies that the local API and queue-facing lifecycle can be exercised end to end.
 - It asserts key response fields with `jq` so obvious regressions fail fast.
 - Debug endpoints are admin-secret protected and intended only for local/dev verification.
+- The billing + DID smoke intentionally uses manual settlement via `x-admin-secret`; it is a regression harness for the current skeleton flow, not proof that a facilitator integration is live.
 - For production confidence, add real integration tests around D1 state assertions and SES callback handling.
 - If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either

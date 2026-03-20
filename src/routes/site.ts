@@ -1044,6 +1044,16 @@ function renderHome(url: URL): string {
   <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
 </ul>
 
+<h2>Current Delivery Notice</h2>
+
+<p>External operator inbox delivery is currently constrained by AWS SES sandbox rules. The signup API still returns a mailbox-scoped bearer token inline, but welcome emails and public token reissue emails should be treated as verified-recipient-only until unrestricted SES production access is restored for the active account and region.</p>
+
+<ul>
+  <li><strong>Signup still works:</strong> save the inline <code>accessToken</code> from the signup response.</li>
+  <li><strong>Welcome email is not guaranteed for arbitrary external inboxes:</strong> <code>operatorEmail</code> delivery may fail unless the recipient is verified in SES.</li>
+  <li><strong>Public token reissue is acceptance-only:</strong> the API can accept the request even when external email delivery remains sandbox-limited.</li>
+</ul>
+
 <h2>Intended Use</h2>
 
 <ul>
@@ -1082,7 +1092,7 @@ content-type: application/json
 <ul>
   <li><code>mailboxAlias</code>: desired local-part under <code>mailagents.net</code></li>
   <li><code>agentName</code>: default agent display name</li>
-  <li><code>operatorEmail</code>: inbox that receives the first welcome email</li>
+  <li><code>operatorEmail</code>: operator inbox for welcome and token-reissue email; external delivery may be sandbox-limited unless the recipient is verified in SES</li>
   <li><code>productName</code>: product context used in metadata</li>
   <li><code>useCase</code>: short description of the mailbox workflow</li>
 </ul>
@@ -1113,6 +1123,7 @@ content-type: application/json
 <h2>Quick Start</h2>
 
 <p>If you want the shortest path from signup to a working agent mailbox, use this sequence.</p>
+<p>While SES remains sandbox-limited for external recipients, treat the inline signup response as the primary onboarding path and do not assume the operator welcome email will arrive for an arbitrary external inbox.</p>
 
 <ol>
   <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
@@ -1132,8 +1143,9 @@ content-type: application/json
 
 <ul>
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
-  <li><strong>Expired token:</strong> call <code>POST /public/token/reissue</code>. The API always returns a generic acceptance response and, if the mailbox exists, emails a refreshed token only to the original <code>operatorEmail</code>.</li>
+  <li><strong>Expired token:</strong> call <code>POST /public/token/reissue</code>. The API always returns a generic acceptance response and, if the mailbox exists, attempts to email a refreshed token only to the original <code>operatorEmail</code>.</li>
   <li><strong>Still-valid token:</strong> call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the rotated token inline, deliver it back to the mailbox itself, or do both without emailing the operator.</li>
+  <li><strong>Current SES constraint:</strong> public reissue email to arbitrary external operator inboxes is not guaranteed while SES remains sandbox-limited.</li>
   <li><strong>Current session safety:</strong> public reissue does not invalidate the token an agent is already using. Authenticated rotate also leaves the previous token valid for now.</li>
 </ul>
 
@@ -1243,7 +1255,8 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "mailboxAlias": "agent-demo"
   }'</code></pre>
 
-<p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered to the original <code>operatorEmail</code> from signup.</p>
+<p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered only to the original <code>operatorEmail</code> from signup.</p>
+<p>While SES remains sandbox-limited for external recipients, treat that delivery as best-effort unless the destination inbox is verified in SES.</p>
 <p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
 <h3>7. Rotate a Still-Valid Token</h3>

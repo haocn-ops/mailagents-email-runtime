@@ -21,6 +21,8 @@ import {
   SignupError,
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
+import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices } from "../lib/did-web";
+import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
   bindMailbox,
   createAgent,
@@ -81,11 +83,62 @@ import {
   hasRecentMailboxTokenReissue,
   logTokenReissueRequest,
 } from "../repositories/token-reissue";
+import {
+  appendTopupSettlementLedgerEntry,
+  createTypedTenantPaymentReceipt,
+  ensureTenantBillingAccount,
+  getTypedCreditLedgerEntryByPaymentReceiptId,
+  getTypedTenantPaymentReceiptById,
+  incrementTenantAvailableCredits,
+  listTypedTenantCreditLedger,
+  listTypedTenantPaymentReceipts,
+  upsertTenantBillingAccount,
+  updateTypedTenantPaymentReceiptStatus,
+} from "../repositories/billing";
+import {
+  getTenantDidBinding,
+  upsertTenantDidBinding,
+} from "../repositories/did-bindings";
+import {
+  ensureTenantSendPolicy,
+  upsertTenantSendPolicy,
+} from "../repositories/tenant-policies";
+import {
+  getX402FacilitatorConfig,
+  parseStoredX402VerificationResponse,
+  settleX402Payment,
+  verifyX402Payment,
+  type X402FacilitatorSettlementResponse,
+  type X402FacilitatorVerificationResponse,
+} from "../lib/payments/x402-facilitator";
+import {
+  buildTopupSettlementLedgerMetadata,
+} from "../lib/payments/ledger-metadata";
+import {
+  buildTopupReceiptMetadata,
+  buildUpgradeReceiptMetadata,
+  getReceiptPaymentPayload,
+  getReceiptPaymentRequirements,
+  type TypedPaymentReceiptRecord,
+  withReceiptConfirmation,
+} from "../lib/payments/receipt-metadata";
+import {
+  buildX402UpgradeQuote,
+  buildX402TopupQuote,
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+  parseX402PaymentProof,
+  X402_PAYMENT_REQUIRED_HEADER,
+  X402_PAYMENT_RESPONSE_HEADER,
+  X402_PAYMENT_SIGNATURE_HEADER,
+} from "../lib/payments/x402";
 import type { AccessTokenClaims, Env } from "../types";
 
 const router = new Router<Env>();
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+const PUBLIC_SELF_SERVE_ALLOW_METHODS = "POST, OPTIONS";
+const PUBLIC_SELF_SERVE_ALLOW_HEADERS = "content-type";
 
 class RouteRequestError extends Error {
   readonly status: number;
@@ -313,17 +366,23 @@ async function canAgentSendForMailbox(env: Env, input: {
 }
 
 router.on("GET", "/public/signup", async () => {
-  return methodNotAllowed(["POST"]);
+  return withPublicSelfServeCors(methodNotAllowed(["POST"]));
 });
 
 router.on("HEAD", "/public/signup", async () => {
-  return methodNotAllowed(["POST"]);
+  return withPublicSelfServeCors(methodNotAllowed(["POST"]));
+});
+
+router.on("OPTIONS", "/public/signup", async () => {
+  return publicSelfServePreflight();
 });
 
 router.on("POST", "/public/signup", async (request, env) => {
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
-    return json({ error: "content-type must be application/json" }, { status: 415 });
+    return withPublicSelfServeCors(
+      json({ error: "content-type must be application/json" }, { status: 415 })
+    );
   }
 
   let parsed: Awaited<ReturnType<typeof parseSelfServeSignup>>;
@@ -332,23 +391,39 @@ router.on("POST", "/public/signup", async (request, env) => {
     parsed = await parseSelfServeSignup(request);
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
-      return json({ error: error.message, values: {} }, { status: 400 });
+      return withPublicSelfServeCors(
+        json({ error: error.message, values: {} }, { status: 400 })
+      );
     }
     throw error;
   }
 
   if (!parsed.ok) {
-    return json({ error: parsed.error, values: parsed.values }, { status: 400 });
+    return withPublicSelfServeCors(
+      json({ error: parsed.error, values: parsed.values }, { status: 400 })
+    );
   }
 
   try {
     const result = await performSelfServeSignup(env, parsed.values);
-    return json(result, { status: 201 });
+    return withPublicSelfServeCors(json(result, { status: 201 }));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to complete self-serve signup";
     const status = error instanceof SignupError ? error.status : 502;
-    return json({ error: message, values: parsed.values }, { status });
+    return withPublicSelfServeCors(json({ error: message, values: parsed.values }, { status }));
   }
+});
+
+router.on("OPTIONS", "/public/token/reissue", async () => {
+  return publicSelfServePreflight();
+});
+
+router.on("GET", "/public/token/reissue", async () => {
+  return withPublicSelfServeCors(methodNotAllowed(["POST"]));
+});
+
+router.on("HEAD", "/public/token/reissue", async () => {
+  return withPublicSelfServeCors(methodNotAllowed(["POST"]));
 });
 
 router.on("POST", "/public/token/reissue", async (request, env) => {
@@ -359,7 +434,7 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
 
   const mailboxAddress = normalizeMailboxLookup(env, body);
   if (!mailboxAddress) {
-    return badRequest("mailboxAlias or mailboxAddress is required");
+    return withPublicSelfServeCors(badRequest("mailboxAlias or mailboxAddress is required"));
   }
 
   const requesterIpHash = await hashRequesterIp(request.headers.get("cf-connecting-ip"));
@@ -368,19 +443,19 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
 
   try {
     if (await hasRecentMailboxTokenReissue(env, mailboxAddress, mailboxCooldownSince)) {
-      return accepted({
+      return withPublicSelfServeCors(accepted({
         accepted: true,
         message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
-      });
+      }));
     }
 
     if (requesterIpHash) {
       const recentIpRequests = await countRecentIpTokenReissues(env, requesterIpHash, ipWindowSince);
       if (recentIpRequests >= getIpMaxRequests(env)) {
-        return accepted({
+        return withPublicSelfServeCors(accepted({
           accepted: true,
           message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
-        });
+        }));
       }
     }
   } catch {
@@ -400,10 +475,10 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
     }
   }
 
-  return accepted({
+  return withPublicSelfServeCors(accepted({
     accepted: true,
     message: "If the mailbox exists, a refreshed access token will be emailed to the original operator inbox.",
-  });
+  }));
 });
 
 router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
@@ -454,6 +529,587 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
     deliveryMailboxId,
     oldTokenRemainsValid: true,
   }, { status: 201 });
+});
+
+router.on("GET", "/v1/billing/account", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  return json(await ensureTenantBillingAccount(env, auth.tenantId));
+});
+
+router.on("GET", "/v1/billing/ledger", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const url = new URL(request.url);
+  const limit = parseListLimit(url.searchParams.get("limit"), 50, 200);
+  return json({ items: await listTypedTenantCreditLedger(env, auth.tenantId, limit) });
+});
+
+router.on("GET", "/v1/billing/receipts", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const url = new URL(request.url);
+  const limit = parseListLimit(url.searchParams.get("limit"), 50, 200);
+  return json({ items: await listTypedTenantPaymentReceipts(env, auth.tenantId, limit) });
+});
+
+router.on("POST", "/v1/billing/topup", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const body = await readJson<{
+    credits?: number;
+    paymentScheme?: string;
+    network?: string;
+    asset?: string;
+  }>(request);
+
+  const credits = parseTopupCredits(body.credits);
+  if (!credits) {
+    return badRequest("credits must be an integer between 1 and 100000");
+  }
+
+  await ensureTenantBillingAccount(env, auth.tenantId);
+  const didBinding = await getTenantDidBinding(env, auth.tenantId);
+  const apiBaseUrl = new URL(request.url).origin;
+  const quote = buildX402TopupQuote(env, {
+    credits,
+    tenantId: auth.tenantId,
+    tenantDid: didBinding?.did,
+    apiBaseUrl,
+  });
+
+  const paymentProof = parseX402PaymentProof(request.headers.get(X402_PAYMENT_SIGNATURE_HEADER));
+  if (!paymentProof) {
+    return x402PaymentRequiredResponse({
+      tenantId: auth.tenantId,
+      tenantDid: didBinding?.did,
+      quote,
+    });
+  }
+
+  const receipt = await createTypedTenantPaymentReceipt(env, {
+    tenantId: auth.tenantId,
+    receiptType: "topup",
+    paymentScheme: body.paymentScheme?.trim() || quote.scheme,
+    network: body.network?.trim() || quote.network,
+    asset: body.asset?.trim() || quote.asset,
+    amountAtomic: quote.amountAtomic,
+    amountDisplay: quote.amountUsd,
+    status: "pending",
+    metadata: buildTopupReceiptMetadata({
+      tenantDid: didBinding?.did,
+      creditsRequested: credits,
+      quote,
+      paymentProof,
+    }),
+  });
+
+  return accepted({
+    receipt,
+    creditsRequested: credits,
+    verificationStatus: "pending",
+    message: "Payment proof captured. Verification and credit settlement are not enabled yet on this endpoint.",
+  });
+});
+
+router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const body = await readJson<{
+    targetPricingTier?: "paid_review";
+    paymentScheme?: string;
+    network?: string;
+    asset?: string;
+  }>(request);
+
+  const targetPricingTier = body.targetPricingTier ?? "paid_review";
+  if (targetPricingTier !== "paid_review") {
+    return badRequest("targetPricingTier must currently be paid_review");
+  }
+
+  await ensureTenantBillingAccount(env, auth.tenantId);
+  const didBinding = await getTenantDidBinding(env, auth.tenantId);
+  const apiBaseUrl = new URL(request.url).origin;
+  const quote = buildX402UpgradeQuote(env, {
+    targetPricingTier,
+    tenantId: auth.tenantId,
+    tenantDid: didBinding?.did,
+    apiBaseUrl,
+  });
+
+  const paymentProof = parseX402PaymentProof(request.headers.get(X402_PAYMENT_SIGNATURE_HEADER));
+  if (!paymentProof) {
+    return x402PaymentRequiredResponse({
+      tenantId: auth.tenantId,
+      tenantDid: didBinding?.did,
+      quote,
+    });
+  }
+
+  const receipt = await createTypedTenantPaymentReceipt(env, {
+    tenantId: auth.tenantId,
+    receiptType: "upgrade",
+    paymentScheme: body.paymentScheme?.trim() || quote.scheme,
+    network: body.network?.trim() || quote.network,
+    asset: body.asset?.trim() || quote.asset,
+    amountAtomic: quote.amountAtomic,
+    amountDisplay: quote.amountUsd,
+    status: "pending",
+    metadata: buildUpgradeReceiptMetadata({
+      tenantDid: didBinding?.did,
+      targetPricingTier,
+      quote,
+      paymentProof,
+    }),
+  });
+
+  return accepted({
+    receipt,
+    targetPricingTier,
+    verificationStatus: "pending",
+    message: "Upgrade payment proof captured. Verification and plan upgrade are not yet automatic on this endpoint.",
+  });
+});
+
+router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  return json(await ensureTenantSendPolicy(env, route.params.tenantId));
+});
+
+router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  const body = await readJson<{
+    pricingTier?: "free" | "paid_review" | "paid_active" | "enterprise";
+    outboundStatus?: "internal_only" | "external_review" | "external_enabled" | "suspended";
+    internalDomainAllowlist?: string[];
+    externalSendEnabled?: boolean;
+    reviewRequired?: boolean;
+  }>(request);
+
+  if (
+    !body.pricingTier ||
+    !body.outboundStatus ||
+    body.externalSendEnabled === undefined ||
+    body.reviewRequired === undefined
+  ) {
+    return badRequest("pricingTier, outboundStatus, externalSendEnabled, and reviewRequired are required");
+  }
+
+  return json(await upsertTenantSendPolicy(env, {
+    tenantId: route.params.tenantId,
+    pricingTier: body.pricingTier,
+    outboundStatus: body.outboundStatus,
+    internalDomainAllowlist: body.internalDomainAllowlist ?? ["mailagents.net"],
+    externalSendEnabled: body.externalSendEnabled,
+    reviewRequired: body.reviewRequired,
+  }));
+});
+
+router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (request, env, _ctx, route) => {
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
+  }
+
+  const body = await readJson<{
+    decision?: "approve_external" | "reset_review" | "suspend_outbound";
+  }>(request);
+
+  if (!body.decision) {
+    return badRequest("decision is required");
+  }
+
+  const sendPolicy = await ensureTenantSendPolicy(env, route.params.tenantId);
+  const billingAccount = await ensureTenantBillingAccount(env, route.params.tenantId);
+
+  if (body.decision === "approve_external") {
+    const updatedSendPolicy = await upsertTenantSendPolicy(env, {
+      tenantId: route.params.tenantId,
+      pricingTier: "paid_active",
+      outboundStatus: "external_enabled",
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      externalSendEnabled: true,
+      reviewRequired: false,
+    });
+    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+      tenantId: route.params.tenantId,
+      status: billingAccount.status === "trial" ? "active" : billingAccount.status,
+      pricingTier: "paid_active",
+      defaultNetwork: billingAccount.defaultNetwork,
+      defaultAsset: billingAccount.defaultAsset,
+      availableCredits: billingAccount.availableCredits,
+      reservedCredits: billingAccount.reservedCredits,
+    });
+
+    return json({
+      sendPolicy: updatedSendPolicy,
+      account: updatedBillingAccount,
+      decision: body.decision,
+      message: "External sending approved for tenant.",
+    });
+  }
+
+  if (body.decision === "reset_review") {
+    const updatedSendPolicy = await upsertTenantSendPolicy(env, {
+      tenantId: route.params.tenantId,
+      pricingTier: "paid_review",
+      outboundStatus: "external_review",
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      externalSendEnabled: false,
+      reviewRequired: true,
+    });
+    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+      tenantId: route.params.tenantId,
+      status: billingAccount.status === "suspended" ? "active" : billingAccount.status,
+      pricingTier: "paid_review",
+      defaultNetwork: billingAccount.defaultNetwork,
+      defaultAsset: billingAccount.defaultAsset,
+      availableCredits: billingAccount.availableCredits,
+      reservedCredits: billingAccount.reservedCredits,
+    });
+
+    return json({
+      sendPolicy: updatedSendPolicy,
+      account: updatedBillingAccount,
+      decision: body.decision,
+      message: "Tenant returned to paid review.",
+    });
+  }
+
+  if (body.decision === "suspend_outbound") {
+    const updatedSendPolicy = await upsertTenantSendPolicy(env, {
+      tenantId: route.params.tenantId,
+      pricingTier: sendPolicy.pricingTier,
+      outboundStatus: "suspended",
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      externalSendEnabled: false,
+      reviewRequired: true,
+    });
+    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+      tenantId: route.params.tenantId,
+      status: "suspended",
+      pricingTier: billingAccount.pricingTier,
+      defaultNetwork: billingAccount.defaultNetwork,
+      defaultAsset: billingAccount.defaultAsset,
+      availableCredits: billingAccount.availableCredits,
+      reservedCredits: billingAccount.reservedCredits,
+    });
+
+    return json({
+      sendPolicy: updatedSendPolicy,
+      account: updatedBillingAccount,
+      decision: body.decision,
+      message: "Outbound sending suspended for tenant.",
+    });
+  }
+
+  return badRequest("Unsupported decision");
+});
+
+router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const body = await readJson<{
+    receiptId?: string;
+    settlementReference?: string;
+    markFailed?: boolean;
+  }>(request);
+
+  if (!body.receiptId) {
+    return badRequest("receiptId is required");
+  }
+
+  const facilitatorConfigured = Boolean(getX402FacilitatorConfig(env));
+  const adminError = requireAdminSecret(request, env);
+  if ((body.markFailed === true || !facilitatorConfigured) && adminError) {
+    return adminError;
+  }
+
+  const receipt = await getTypedTenantPaymentReceiptById(env, auth.tenantId, body.receiptId);
+  if (!receipt) {
+    return json({ error: "Payment receipt not found" }, { status: 404 });
+  }
+
+  if (body.markFailed === true) {
+    if (!receipt.metadata) {
+      return json({ error: "Payment receipt metadata is invalid or incomplete" }, { status: 409 });
+    }
+    const failedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+      tenantId: auth.tenantId,
+      receiptId: receipt.id,
+      status: "failed",
+      settlementReference: body.settlementReference,
+      metadata: withReceiptConfirmation(receipt.metadata, {
+        confirmationMode: "manual_admin",
+      }),
+    });
+    return json({
+      receipt: failedReceipt,
+      verificationStatus: "failed",
+      message: "Payment receipt marked as failed.",
+    });
+  }
+
+  const facilitatorOutcome = receipt.status === "settled" || !facilitatorConfigured
+    ? null
+    : await confirmPaymentReceiptWithFacilitator(env, receipt, body.settlementReference);
+
+  if (facilitatorOutcome?.failureResponse) {
+    return facilitatorOutcome.failureResponse;
+  }
+
+  const finalizedReceipt = facilitatorOutcome?.receipt ?? receipt;
+  const parsedMetadata = finalizedReceipt.metadata;
+
+  if (finalizedReceipt.receiptType === "upgrade") {
+    if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
+      return json({ error: "Payment receipt metadata is missing targetPricingTier" }, { status: 409 });
+    }
+    const targetPricingTier = parsedMetadata.targetPricingTier;
+
+    const existingAccount = await ensureTenantBillingAccount(env, auth.tenantId);
+    const account = await upsertTenantBillingAccount(env, {
+      tenantId: auth.tenantId,
+      status: existingAccount.status === "trial" ? "active" : existingAccount.status,
+      pricingTier: targetPricingTier,
+      defaultNetwork: finalizedReceipt.network ?? existingAccount.defaultNetwork,
+      defaultAsset: finalizedReceipt.asset ?? existingAccount.defaultAsset,
+      availableCredits: existingAccount.availableCredits,
+      reservedCredits: existingAccount.reservedCredits,
+    });
+
+    const existingSendPolicy = await ensureTenantSendPolicy(env, auth.tenantId);
+    const sendPolicy = await upsertTenantSendPolicy(env, {
+      tenantId: auth.tenantId,
+      pricingTier: targetPricingTier,
+      outboundStatus: "external_review",
+      internalDomainAllowlist: existingSendPolicy.internalDomainAllowlist,
+      externalSendEnabled: false,
+      reviewRequired: true,
+    });
+
+    const settledReceipt = finalizedReceipt.status === "settled"
+      ? finalizedReceipt
+      : await updateTypedTenantPaymentReceiptStatus(env, {
+        tenantId: auth.tenantId,
+        receiptId: finalizedReceipt.id,
+        status: "settled",
+        paymentReference: facilitatorOutcome?.paymentReference,
+        settlementReference: body.settlementReference,
+        metadata: withReceiptConfirmation(parsedMetadata, {
+          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+          sendPolicyStatus: sendPolicy.outboundStatus,
+          facilitatorVerify: facilitatorOutcome?.verifyResponse,
+          facilitatorSettle: facilitatorOutcome?.settleResponse,
+        }),
+      });
+
+    return json({
+      receipt: settledReceipt,
+      account,
+      sendPolicy,
+      verificationStatus: "settled",
+      message: "Upgrade payment settled and tenant moved to paid review.",
+    });
+  }
+
+  const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, auth.tenantId, finalizedReceipt.id);
+  if (existingLedgerEntry) {
+    const account = await ensureTenantBillingAccount(env, auth.tenantId);
+    const settledReceipt = finalizedReceipt.status === "settled"
+      ? finalizedReceipt
+      : await updateTypedTenantPaymentReceiptStatus(env, {
+        tenantId: auth.tenantId,
+        receiptId: finalizedReceipt.id,
+        status: "settled",
+        paymentReference: facilitatorOutcome?.paymentReference,
+        settlementReference: body.settlementReference,
+        metadata: parsedMetadata
+          ? withReceiptConfirmation(parsedMetadata, {
+            confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+            creditLedgerEntryId: existingLedgerEntry.id,
+            facilitatorVerify: facilitatorOutcome?.verifyResponse,
+            facilitatorSettle: facilitatorOutcome?.settleResponse,
+          })
+          : finalizedReceipt.metadata,
+      });
+    return json({
+      receipt: settledReceipt,
+      ledgerEntry: existingLedgerEntry,
+      account,
+      verificationStatus: "settled",
+      message: "Payment receipt was already settled.",
+    });
+  }
+
+  if (!parsedMetadata || parsedMetadata.receiptType !== "topup") {
+    return json({ error: "Payment receipt metadata is missing creditsRequested" }, { status: 409 });
+  }
+  const creditsRequested = parsedMetadata.creditsRequested;
+
+  const ledgerEntry = await appendTopupSettlementLedgerEntry(env, {
+    tenantId: auth.tenantId,
+    creditsDelta: creditsRequested,
+    reason: facilitatorOutcome ? "facilitator_payment_settlement" : "manual_payment_confirmation",
+    paymentReceiptId: finalizedReceipt.id,
+    referenceId: body.settlementReference ?? finalizedReceipt.settlementReference,
+    metadata: buildTopupSettlementLedgerMetadata({
+      receiptMetadata: parsedMetadata,
+      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+      facilitatorVerify: facilitatorOutcome?.verifyResponse,
+      facilitatorSettle: facilitatorOutcome?.settleResponse,
+    }),
+  });
+
+  const account = await incrementTenantAvailableCredits(env, auth.tenantId, creditsRequested);
+  const settledReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+    tenantId: auth.tenantId,
+    receiptId: finalizedReceipt.id,
+    status: "settled",
+    paymentReference: facilitatorOutcome?.paymentReference,
+    settlementReference: body.settlementReference,
+    metadata: withReceiptConfirmation(parsedMetadata, {
+      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+      creditLedgerEntryId: ledgerEntry.id,
+      facilitatorVerify: facilitatorOutcome?.verifyResponse,
+      facilitatorSettle: facilitatorOutcome?.settleResponse,
+    }),
+  });
+
+  return json({
+    receipt: settledReceipt,
+    ledgerEntry,
+    account,
+    verificationStatus: "settled",
+    message: "Payment receipt settled and credits applied.",
+  });
+});
+
+router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  const binding = await getTenantDidBinding(env, route.params.tenantId);
+  if (!binding) {
+    return json({ error: "DID binding not found" }, { status: 404 });
+  }
+
+  return json(binding);
+});
+
+router.on("POST", "/v1/tenants/:tenantId/did/hosted", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  const origin = new URL(request.url).origin;
+  const hosted = buildHostedDidWeb(origin, route.params.tenantId);
+  const service = defaultHostedDidServices(origin, hosted.did, route.params.tenantId);
+
+  return json(await upsertTenantDidBinding(env, {
+    tenantId: route.params.tenantId,
+    did: hosted.did,
+    method: "did:web",
+    documentUrl: hosted.documentUrl,
+    status: "verified",
+    service,
+    verifiedAt: new Date().toISOString(),
+  }));
+});
+
+router.on("PUT", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, []);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  const body = await readJson<{
+    did?: string;
+    method?: string;
+    documentUrl?: string;
+    status?: "pending" | "verified" | "revoked";
+    verificationMethodId?: string;
+    service?: Array<Record<string, unknown>>;
+    verifiedAt?: string;
+  }>(request);
+
+  if (!body.did || !body.method || !body.status) {
+    return badRequest("did, method, and status are required");
+  }
+
+  return json(await upsertTenantDidBinding(env, {
+    tenantId: route.params.tenantId,
+    did: body.did,
+    method: body.method,
+    documentUrl: body.documentUrl,
+    status: body.status,
+    verificationMethodId: body.verificationMethodId,
+    service: body.service ?? [],
+    verifiedAt: body.verifiedAt,
+  }));
+});
+
+router.on("GET", "/did/tenants/:tenantId/did.json", async (request, env, _ctx, route) => {
+  const binding = await getTenantDidBinding(env, route.params.tenantId);
+  if (!binding || binding.method !== "did:web") {
+    return json({ error: "DID document not found" }, { status: 404 });
+  }
+
+  return json(buildDidWebDocument(new URL(request.url).origin, binding));
 });
 
 router.on("GET", "/v2/meta/runtime", async (_request, env) => {
@@ -2103,13 +2759,19 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
 
 export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   try {
-    return await router.handle(request, env, ctx);
+    const response = await router.handle(request, env, ctx);
+    if (response && isPublicSelfServeRequest(request)) {
+      return withPublicSelfServeCors(response);
+    }
+    return response;
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
-      return badRequest(error.message);
+      const response = badRequest(error.message);
+      return isPublicSelfServeRequest(request) ? withPublicSelfServeCors(response) : response;
     }
     if (error instanceof RouteRequestError) {
-      return json({ error: error.message }, { status: error.status });
+      const response = json({ error: error.message }, { status: error.status });
+      return isPublicSelfServeRequest(request) ? withPublicSelfServeCors(response) : response;
     }
 
     throw error;
@@ -2261,6 +2923,7 @@ async function createAndSendDraft(env: Env, input: {
   createdVia: string;
   idempotencyKey?: string;
   requestFingerprint: string;
+  policyBypassReason?: string;
 }) {
   const idempotencyKey = input.idempotencyKey?.trim();
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
@@ -2290,6 +2953,18 @@ async function createAndSendDraft(env: Env, input: {
       mailboxId: input.mailboxId,
       attachments: input.payload.attachments,
     });
+    if (!input.policyBypassReason) {
+      const decision = await evaluateOutboundPolicy(env, {
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        to: input.payload.to,
+        cc: input.payload.cc,
+        bcc: input.payload.bcc,
+      });
+      if (!decision.ok) {
+        throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
+      }
+    }
   };
 
   if (!idempotencyKey) {
@@ -2535,4 +3210,239 @@ function methodNotAllowed(allowed: string[]): Response {
     { error: `method not allowed; use ${allowed.join(", ")}` },
     { status: 405, headers: { allow: allowed.join(", ") } }
   );
+}
+
+function parseListLimit(raw: string | null, fallback: number, max: number): number {
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
+}
+
+function parseTopupCredits(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return null;
+  }
+  if (value < 1 || value > 100000) {
+    return null;
+  }
+  return value;
+}
+
+function x402PaymentRequiredResponse(input: {
+  tenantId: string;
+  tenantDid?: string;
+  quote: ReturnType<typeof buildX402TopupQuote> | ReturnType<typeof buildX402UpgradeQuote>;
+}): Response {
+  const headers = new Headers();
+  headers.set(X402_PAYMENT_REQUIRED_HEADER, encodePaymentRequiredHeader(input.quote.paymentRequired));
+
+  return json({
+    error: "Payment required",
+    protocol: "x402",
+    tenantId: input.tenantId,
+    tenantDid: input.tenantDid,
+    quote: input.quote,
+  }, {
+    status: 402,
+    headers,
+  });
+}
+
+async function confirmPaymentReceiptWithFacilitator(
+  env: Env,
+  receipt: TypedPaymentReceiptRecord | null,
+  requestedSettlementReference?: string,
+): Promise<{
+  receipt: TypedPaymentReceiptRecord;
+  paymentReference?: string;
+  settlementReference?: string;
+  verifyResponse?: X402FacilitatorVerificationResponse;
+  settleResponse?: X402FacilitatorSettlementResponse;
+  failureResponse?: Response;
+} | null> {
+  if (!receipt) {
+    return null;
+  }
+
+  const parsedMetadata = receipt.metadata;
+  const paymentRequirements = getReceiptPaymentRequirements(parsedMetadata);
+  const paymentPayload = getReceiptPaymentPayload(parsedMetadata);
+  if (!paymentRequirements || !paymentPayload) {
+    return {
+      receipt,
+      failureResponse: json({
+        error: "Payment receipt is missing x402 payment proof or requirements",
+      }, { status: 409 }),
+    };
+  }
+
+  let workingReceipt = receipt;
+  let verifyResponse: X402FacilitatorVerificationResponse | undefined;
+
+  if (workingReceipt.status === "pending") {
+    const verifyResult = await verifyX402Payment(env, { paymentPayload, paymentRequirements });
+    verifyResponse = verifyResult.response;
+    if (!verifyResult.ok) {
+      const failedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+        tenantId: workingReceipt.tenantId,
+        receiptId: workingReceipt.id,
+        status: "failed",
+        paymentReference: verifyResult.paymentReference,
+        metadata: parsedMetadata
+          ? withReceiptConfirmation(parsedMetadata, {
+            confirmationMode: "facilitator",
+            facilitatorVerify: verifyResult.response,
+            facilitatorStatusCode: verifyResult.status,
+          })
+          : receipt.metadata,
+      });
+      return {
+        receipt: failedReceipt,
+        paymentReference: verifyResult.paymentReference,
+        verifyResponse,
+        failureResponse: x402PaymentFailureResponse(
+          "Payment verification failed",
+          verifyResult.response,
+          402,
+        ),
+      };
+    }
+
+    workingReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+      tenantId: workingReceipt.tenantId,
+      receiptId: workingReceipt.id,
+      status: "verified",
+      paymentReference: verifyResult.paymentReference,
+      metadata: parsedMetadata
+        ? withReceiptConfirmation(parsedMetadata, {
+          confirmationMode: "facilitator",
+          facilitatorVerify: verifyResult.response,
+          facilitatorStatusCode: verifyResult.status,
+        })
+        : workingReceipt.metadata,
+    });
+  } else {
+    verifyResponse = parseStoredX402VerificationResponse(parsedMetadata?.facilitatorVerify);
+  }
+
+  const settleResult = await settleX402Payment(env, { paymentPayload, paymentRequirements });
+  if (!settleResult.ok) {
+    const verifiedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+      tenantId: workingReceipt.tenantId,
+      receiptId: workingReceipt.id,
+      status: "verified",
+      paymentReference: workingReceipt.paymentReference,
+      settlementReference: settleResult.settlementReference ?? requestedSettlementReference,
+      metadata: parsedMetadata
+        ? withReceiptConfirmation(parsedMetadata, {
+          confirmationMode: "facilitator",
+          facilitatorVerify: verifyResponse,
+          facilitatorSettle: settleResult.response,
+          facilitatorStatusCode: settleResult.status,
+        })
+        : workingReceipt.metadata,
+    });
+    return {
+      receipt: verifiedReceipt,
+      paymentReference: verifiedReceipt.paymentReference,
+      settlementReference: settleResult.settlementReference ?? requestedSettlementReference,
+      verifyResponse,
+      settleResponse: settleResult.response,
+      failureResponse: x402PaymentFailureResponse(
+        "Payment settlement failed",
+        settleResult.response,
+        402,
+      ),
+    };
+  }
+
+  return {
+    receipt: await updateTypedTenantPaymentReceiptStatus(env, {
+      tenantId: workingReceipt.tenantId,
+      receiptId: workingReceipt.id,
+      status: "verified",
+      paymentReference: workingReceipt.paymentReference,
+      settlementReference: settleResult.settlementReference ?? requestedSettlementReference,
+      metadata: parsedMetadata
+        ? withReceiptConfirmation(parsedMetadata, {
+          confirmationMode: "facilitator",
+          facilitatorVerify: verifyResponse,
+          facilitatorSettle: settleResult.response,
+          facilitatorStatusCode: settleResult.status,
+        })
+        : workingReceipt.metadata,
+    }),
+    paymentReference: workingReceipt.paymentReference,
+    settlementReference: settleResult.settlementReference ?? requestedSettlementReference,
+    verifyResponse,
+    settleResponse: settleResult.response,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function x402PaymentFailureResponse(
+  message: string,
+  settlement: X402FacilitatorVerificationResponse | X402FacilitatorSettlementResponse | undefined,
+  status = 402,
+): Response {
+  const headers = new Headers();
+  if (settlement) {
+    headers.set(X402_PAYMENT_RESPONSE_HEADER, encodePaymentResponseHeader(settlement));
+  }
+
+  return json({
+    error: message,
+    protocol: "x402",
+    verificationStatus: "failed",
+    settlement,
+  }, {
+    status,
+    headers,
+  });
+}
+
+function publicSelfServeCorsHeaders(): Headers {
+  return new Headers({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": PUBLIC_SELF_SERVE_ALLOW_METHODS,
+    "access-control-allow-headers": PUBLIC_SELF_SERVE_ALLOW_HEADERS,
+    "access-control-max-age": "86400",
+  });
+}
+
+function withPublicSelfServeCors(response: Response): Response {
+  const headers = publicSelfServeCorsHeaders();
+  for (const [key, value] of response.headers.entries()) {
+    headers.set(key, value);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function publicSelfServePreflight(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: publicSelfServeCorsHeaders(),
+  });
+}
+
+function isPublicSelfServeRequest(request: Request): boolean {
+  const pathname = new URL(request.url).pathname;
+  return pathname === "/public/signup" || pathname === "/public/token/reissue";
 }
