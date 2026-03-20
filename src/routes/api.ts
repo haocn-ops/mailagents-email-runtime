@@ -22,6 +22,7 @@ import {
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
 import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices } from "../lib/did-web";
+import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
   bindMailbox,
@@ -288,6 +289,46 @@ async function validateDraftAttachments(env: Env, input: {
     if (owner.mailboxId !== input.mailboxId) {
       throw new RouteRequestError("Attachment does not belong to mailbox", 409);
     }
+  }
+}
+
+async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}> {
+  const draftObject = await env.R2_EMAIL.get(draftR2Key);
+  if (!draftObject) {
+    throw new RouteRequestError("Draft payload not found", 404);
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  return {
+    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
+    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
+    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
+async function validateDraftOutboundCredits(env: Env, draft: {
+  tenantId: string;
+  draftR2Key: string;
+  sourceMessageId?: string;
+  createdVia?: string;
+}): Promise<void> {
+  const recipients = await readDraftRecipients(env, draft.draftR2Key);
+  const creditCheck = await checkOutboundCreditRequirement(env, {
+    tenantId: draft.tenantId,
+    ...recipients,
+    sourceMessageId: draft.sourceMessageId,
+    createdVia: draft.createdVia,
+  });
+
+  if (!creditCheck.hasSufficientCredits) {
+    throw new RouteRequestError(
+      `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+      402,
+    );
   }
 }
 
@@ -2617,6 +2658,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
         agentId: draft.agentId,
         mailboxId: draft.mailboxId,
       });
+      await validateDraftOutboundCredits(env, draft);
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
         draftId: route.params.draftId,
@@ -2650,6 +2692,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
     agentId: draft.agentId,
     mailboxId: draft.mailboxId,
   });
+  await validateDraftOutboundCredits(env, draft);
 
   const result = await enqueueDraftSend(env, route.params.draftId);
   return accepted({
@@ -2963,6 +3006,21 @@ async function createAndSendDraft(env: Env, input: {
       });
       if (!decision.ok) {
         throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
+      }
+
+      const creditCheck = await checkOutboundCreditRequirement(env, {
+        tenantId: input.tenantId,
+        to: input.payload.to,
+        cc: input.payload.cc,
+        bcc: input.payload.bcc,
+        sourceMessageId: input.sourceMessageId,
+        createdVia: input.createdVia,
+      });
+      if (!creditCheck.hasSufficientCredits) {
+        throw new RouteRequestError(
+          `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+          402,
+        );
       }
     }
   };

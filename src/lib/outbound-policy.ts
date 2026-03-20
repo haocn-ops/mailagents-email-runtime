@@ -7,6 +7,13 @@ export interface OutboundPolicyDecision {
   code?: "access_mailbox_denied" | "external_send_not_enabled" | "recipient_domain_not_allowed";
   message?: string;
   recipientDomains?: string[];
+  externalDomains?: string[];
+}
+
+export interface OutboundRecipientClassification {
+  recipientDomains: string[];
+  internalDomains: string[];
+  externalDomains: string[];
 }
 
 function normalizeDomain(input: string): string | null {
@@ -27,6 +34,25 @@ function collectRecipientDomains(input: { to: string[]; cc: string[]; bcc: strin
   ));
 }
 
+export async function classifyOutboundRecipients(env: Env, input: {
+  tenantId: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}): Promise<OutboundRecipientClassification> {
+  const recipientDomains = collectRecipientDomains(input);
+  const tenantPolicy = await ensureTenantSendPolicy(env, input.tenantId);
+  const internalAllowlist = new Set(tenantPolicy.internalDomainAllowlist);
+  const internalDomains = recipientDomains.filter((domain) => internalAllowlist.has(domain));
+  const externalDomains = recipientDomains.filter((domain) => !internalAllowlist.has(domain));
+
+  return {
+    recipientDomains,
+    internalDomains,
+    externalDomains,
+  };
+}
+
 export async function evaluateOutboundPolicy(env: Env, input: {
   tenantId: string;
   agentId: string;
@@ -34,12 +60,12 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   cc: string[];
   bcc: string[];
 }): Promise<OutboundPolicyDecision> {
-  const recipientDomains = collectRecipientDomains(input);
+  const { recipientDomains, externalDomains } = await classifyOutboundRecipients(env, input);
   if (recipientDomains.length === 0) {
     return {
       ok: false,
       code: "recipient_domain_not_allowed",
-      message: "At least one valid recipient domain is required",
+        message: "At least one valid recipient domain is required",
     };
   }
 
@@ -52,9 +78,6 @@ export async function evaluateOutboundPolicy(env: Env, input: {
     };
   }
 
-  const internalAllowlist = new Set(tenantPolicy.internalDomainAllowlist);
-  const externalDomains = recipientDomains.filter((domain) => !internalAllowlist.has(domain));
-
   if (!tenantPolicy.externalSendEnabled || tenantPolicy.outboundStatus !== "external_enabled") {
     if (externalDomains.length > 0) {
       return {
@@ -62,6 +85,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
         code: "external_send_not_enabled",
         message: `External sending is not enabled for this tenant. Disallowed domains: ${externalDomains.join(", ")}`,
         recipientDomains,
+        externalDomains,
       };
     }
   }
@@ -76,6 +100,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
         code: "recipient_domain_not_allowed",
         message: `Recipient domains are not allowed for this agent: ${disallowed.join(", ")}`,
         recipientDomains,
+        externalDomains,
       };
     }
   }
@@ -83,5 +108,6 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   return {
     ok: true,
     recipientDomains,
+    externalDomains,
   };
 }

@@ -256,6 +256,12 @@ export const MCP_ERROR_CODE_CATALOG = [
     description: "The tool call arguments failed validation or were malformed.",
   },
   {
+    code: "insufficient_credits",
+    category: "billing",
+    retryable: false,
+    description: "The tenant does not have enough credits to send to external recipients.",
+  },
+  {
     code: "resource_agent_not_found",
     category: "resource",
     retryable: false,

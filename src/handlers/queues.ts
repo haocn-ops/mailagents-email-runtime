@@ -1,9 +1,16 @@
 import { parseRawEmail } from "../lib/email-parser";
 import { buildRawMimeMessage } from "../lib/mime";
+import { classifyOutboundUsageEntryType, getOutboundCreditRequirement } from "../lib/outbound-credits";
 import { enqueueDeadLetter } from "../lib/queue";
 import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
+import { buildOutboundUsageLedgerMetadata } from "../lib/payments/ledger-metadata";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
+import {
+  appendOutboundUsageLedgerEntry,
+  decrementTenantAvailableCredits,
+  getTypedCreditLedgerEntryByReferenceId,
+} from "../repositories/billing";
 import {
   claimTaskForExecution,
   getDraftByR2Key,
@@ -48,6 +55,64 @@ async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<
   }
 
   return suppressed;
+}
+
+async function settleOutboundUsageDebit(env: Env, input: {
+  tenantId: string;
+  messageId: string;
+  outboundJobId: string;
+  draftId?: string;
+  draftCreatedVia?: string;
+  sourceMessageId?: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}): Promise<void> {
+  const existing = await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.outboundJobId);
+  if (existing) {
+    return;
+  }
+
+  const requirement = await getOutboundCreditRequirement(env, {
+    tenantId: input.tenantId,
+    to: input.to,
+    cc: input.cc,
+    bcc: input.bcc,
+    sourceMessageId: input.sourceMessageId,
+    createdVia: input.draftCreatedVia,
+  });
+
+  if (!requirement.requiresCredits) {
+    return;
+  }
+
+  const account = await decrementTenantAvailableCredits(env, input.tenantId, requirement.creditsRequired);
+  if (!account) {
+    throw new Error(`Unable to settle outbound usage debit for ${input.outboundJobId}: insufficient credits after send`);
+  }
+
+  const entryType = classifyOutboundUsageEntryType({
+    sourceMessageId: input.sourceMessageId,
+    createdVia: input.draftCreatedVia,
+  });
+
+  await appendOutboundUsageLedgerEntry(env, {
+    tenantId: input.tenantId,
+    entryType,
+    creditsDelta: -requirement.creditsRequired,
+    reason: "outbound_send_settlement",
+    referenceId: input.outboundJobId,
+    metadata: buildOutboundUsageLedgerMetadata({
+      entryType,
+      creditsCharged: requirement.creditsRequired,
+      messageId: input.messageId,
+      outboundJobId: input.outboundJobId,
+      draftId: input.draftId,
+      draftCreatedVia: input.draftCreatedVia,
+      recipientDomains: requirement.recipientDomains,
+      externalDomains: requirement.externalDomains,
+    }),
+  });
 }
 
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
@@ -226,6 +291,10 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (!outboundJob) {
         throw new Error("Outbound job not found");
       }
+      if (outboundJob.status === "sent") {
+        message.ack();
+        continue;
+      }
 
       await updateOutboundJobStatus(env, {
         outboundJobId: outboundJob.id,
@@ -322,6 +391,22 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
 
       if (draft) {
         await markDraftStatus(env, draft.id, "sent");
+      }
+
+      try {
+        await settleOutboundUsageDebit(env, {
+          tenantId: outboundMessage.tenantId,
+          messageId: outboundJob.messageId,
+          outboundJobId: outboundJob.id,
+          draftId: draft?.id,
+          draftCreatedVia: draft?.createdVia,
+          sourceMessageId: draft?.sourceMessageId,
+          to,
+          cc,
+          bcc,
+        });
+      } catch (billingError) {
+        await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
       }
 
       message.ack();

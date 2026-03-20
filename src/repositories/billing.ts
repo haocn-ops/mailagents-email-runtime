@@ -2,6 +2,7 @@ import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import {
   parseTypedCreditLedgerEntry,
+  type OutboundUsageLedgerMetadata,
   type TopupSettlementLedgerMetadata,
   type TypedCreditLedgerEntryRecord,
 } from "../lib/payments/ledger-metadata";
@@ -293,6 +294,30 @@ export async function getTypedCreditLedgerEntryByPaymentReceiptId(
   return entry ? parseTypedCreditLedgerEntry(entry) ?? null : null;
 }
 
+export async function getCreditLedgerEntryByReferenceId(env: Env, tenantId: string, referenceId: string): Promise<CreditLedgerEntryRecord | null> {
+  const row = await firstRow<CreditLedgerRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+              reference_id, metadata_json, created_at
+       FROM tenant_credit_ledger
+       WHERE tenant_id = ? AND reference_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(tenantId, referenceId)
+  );
+
+  return row ? mapCreditLedgerRow(row) : null;
+}
+
+export async function getTypedCreditLedgerEntryByReferenceId(
+  env: Env,
+  tenantId: string,
+  referenceId: string,
+): Promise<TypedCreditLedgerEntryRecord | null> {
+  const entry = await getCreditLedgerEntryByReferenceId(env, tenantId, referenceId);
+  return entry ? parseTypedCreditLedgerEntry(entry) ?? null : null;
+}
+
 export async function createTenantPaymentReceipt(env: Env, input: {
   tenantId: string;
   receiptType: PaymentReceiptType;
@@ -469,6 +494,28 @@ export async function incrementTenantAvailableCredits(env: Env, tenantId: string
   });
 }
 
+export async function decrementTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
+  const updatedAt = nowIso();
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tenant_billing_accounts
+     SET available_credits = available_credits - ?,
+         updated_at = ?
+     WHERE tenant_id = ?
+       AND available_credits >= ?`
+  ).bind(
+    creditsDelta,
+    updatedAt,
+    tenantId,
+    creditsDelta,
+  ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    return null;
+  }
+
+  return await ensureTenantBillingAccount(env, tenantId);
+}
+
 export async function appendTenantCreditLedgerEntry<TMetadata extends object | undefined = Record<string, unknown> | undefined>(env: Env, input: {
   tenantId: string;
   entryType: CreditLedgerEntryType;
@@ -529,6 +576,29 @@ export async function appendTopupSettlementLedgerEntry(env: Env, input: {
   const typed = parseTypedCreditLedgerEntry(entry);
   if (!typed) {
     throw new Error("Failed to append typed topup settlement ledger entry");
+  }
+  return typed;
+}
+
+export async function appendOutboundUsageLedgerEntry(env: Env, input: {
+  tenantId: string;
+  entryType: "debit_send" | "debit_reply";
+  creditsDelta: number;
+  reason: string;
+  referenceId: string;
+  metadata: OutboundUsageLedgerMetadata;
+}): Promise<TypedCreditLedgerEntryRecord> {
+  const entry = await appendTenantCreditLedgerEntry(env, {
+    tenantId: input.tenantId,
+    entryType: input.entryType,
+    creditsDelta: input.creditsDelta,
+    reason: input.reason,
+    referenceId: input.referenceId,
+    metadata: input.metadata,
+  });
+  const typed = parseTypedCreditLedgerEntry(entry);
+  if (!typed) {
+    throw new Error("Failed to append typed outbound usage ledger entry");
   }
   return typed;
 }

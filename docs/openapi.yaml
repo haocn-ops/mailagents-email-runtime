@@ -1884,6 +1884,7 @@ components:
     CreditLedgerEntryMetadata:
       oneOf:
         - $ref: '#/components/schemas/TopupSettlementLedgerMetadata'
+        - $ref: '#/components/schemas/OutboundUsageLedgerMetadata'
     TopupSettlementLedgerMetadata:
       type: object
       required: [entryType, receiptType, confirmationMode, creditsRequested]
@@ -1903,6 +1904,38 @@ components:
           $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
         facilitatorSettle:
           $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    OutboundUsageLedgerMetadata:
+      type: object
+      required:
+        [entryType, usageType, chargeStage, creditsCharged, messageId, outboundJobId, recipientDomains, externalDomains]
+      properties:
+        entryType:
+          type: string
+          enum: [debit_send, debit_reply]
+        usageType:
+          type: string
+          enum: [send, reply]
+        chargeStage:
+          type: string
+          enum: [post_send]
+        creditsCharged:
+          type: integer
+        messageId:
+          type: string
+        outboundJobId:
+          type: string
+        draftId:
+          type: string
+        draftCreatedVia:
+          type: string
+        recipientDomains:
+          type: array
+          items:
+            type: string
+        externalDomains:
+          type: array
+          items:
+            type: string
     PaymentReceipt:
       type: object
       required:

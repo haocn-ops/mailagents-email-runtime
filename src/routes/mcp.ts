@@ -6,6 +6,7 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
+import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
   buildRuntimeMetadata,
@@ -224,6 +225,46 @@ async function validateDraftAttachments(env: Env, input: {
     if (owner.mailboxId !== input.mailboxId) {
       throw new McpToolError("invalid_arguments", "Attachment does not belong to mailbox");
     }
+  }
+}
+
+async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}> {
+  const draftObject = await env.R2_EMAIL.get(draftR2Key);
+  if (!draftObject) {
+    throw new McpToolError("resource_draft_not_found", "Draft payload not found");
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  return {
+    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
+    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
+    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
+async function validateDraftOutboundCredits(env: Env, draft: {
+  tenantId: string;
+  draftR2Key: string;
+  sourceMessageId?: string;
+  createdVia?: string;
+}): Promise<void> {
+  const recipients = await readDraftRecipients(env, draft.draftR2Key);
+  const creditCheck = await checkOutboundCreditRequirement(env, {
+    tenantId: draft.tenantId,
+    ...recipients,
+    sourceMessageId: draft.sourceMessageId,
+    createdVia: draft.createdVia,
+  });
+
+  if (!creditCheck.hasSufficientCredits) {
+    throw new McpToolError(
+      "insufficient_credits",
+      `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+    );
   }
 }
 
@@ -796,6 +837,21 @@ async function createAndSendDraftForMcp(env: Env, input: {
       });
       if (!decision.ok) {
         throw new McpToolError(decision.code ?? "access_mailbox_denied", decision.message ?? "Outbound policy denied this send request");
+      }
+
+      const creditCheck = await checkOutboundCreditRequirement(env, {
+        tenantId: input.tenantId,
+        to: input.payload.to,
+        cc: input.payload.cc,
+        bcc: input.payload.bcc,
+        sourceMessageId: input.sourceMessageId,
+        createdVia: input.createdVia,
+      });
+      if (!creditCheck.hasSufficientCredits) {
+        throw new McpToolError(
+          "insufficient_credits",
+          `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+        );
       }
     }
   };
@@ -1672,6 +1728,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           mailboxId: draft.mailboxId,
         });
         await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+        await validateDraftOutboundCredits(env, draft);
         const result = await enqueueDraftSend(env, draftId);
         const response = {
           draftId,
@@ -1700,6 +1757,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       mailboxId: draft.mailboxId,
     });
     await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateDraftOutboundCredits(env, draft);
 
     const result = await enqueueDraftSend(env, draftId);
     return {
