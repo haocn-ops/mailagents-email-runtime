@@ -173,6 +173,7 @@ Template scripts:
 
 - [`scripts/bootstrap_dev_resources.sh`](scripts/bootstrap_dev_resources.sh)
 - [`scripts/bootstrap_worker_secrets.sh`](scripts/bootstrap_worker_secrets.sh)
+- [`scripts/bootstrap_x402_payment.sh`](scripts/bootstrap_x402_payment.sh)
 - [`scripts/backfill_message_subjects.mjs`](scripts/backfill_message_subjects.mjs)
 
 ## Deploy

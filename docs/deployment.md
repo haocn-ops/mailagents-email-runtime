@@ -167,6 +167,13 @@ bash scripts/bootstrap_worker_secrets.sh staging
 bash scripts/bootstrap_worker_secrets.sh production
 ```
 
+For x402-specific payment setup:
+
+```bash
+bash scripts/bootstrap_x402_payment.sh dev
+bash scripts/bootstrap_x402_payment.sh production
+```
+
 Important split:
 
 - `wrangler.toml [vars]` / `[env.*.vars]`
