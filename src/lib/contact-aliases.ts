@@ -1,5 +1,5 @@
 import { deleteEmailRoutingRule, listEmailRoutingRules, upsertWorkerRule } from "./cloudflare-email";
-import { ensureMailbox } from "../repositories/agents";
+import { ensureMailbox, getMailboxByAddress, MailboxConflictError } from "../repositories/agents";
 import type { Env } from "../types";
 
 export const CONTACT_ALIAS_LOCALPARTS = ["hello", "security", "privacy", "dmarc"] as const;
@@ -28,10 +28,29 @@ export function isManagedContactAliasAddress(env: Env, address: string): boolean
 }
 
 export async function ensureManagedContactAliasMailbox(env: Env, address: string) {
-  return await ensureMailbox(env, {
-    tenantId: CONTACT_ALIAS_TENANT_ID,
-    address,
-  });
+  try {
+    return await ensureMailbox(env, {
+      tenantId: CONTACT_ALIAS_TENANT_ID,
+      address,
+    });
+  } catch (error) {
+    if (!(error instanceof MailboxConflictError)) {
+      throw error;
+    }
+
+    const existing = await getMailboxByAddress(env, address);
+    if (!existing) {
+      throw error;
+    }
+
+    return {
+      id: existing.id,
+      tenantId: existing.tenant_id,
+      address: existing.address,
+      status: existing.status,
+      createdAt: existing.created_at,
+    };
+  }
 }
 
 export async function ensureManagedContactAliasMailboxes(env: Env): Promise<void> {
