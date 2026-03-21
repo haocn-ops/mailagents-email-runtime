@@ -33,6 +33,13 @@ prepare_env_overlay() {
   local passthrough_vars=(
     SES_MOCK_SEND
     SES_MOCK_SEND_DELAY_MS
+    OUTBOUND_SEND_IN_DOUBT_GRACE_SECONDS
+    X402_PAY_TO
+    X402_DEFAULT_SCHEME
+    X402_DEFAULT_NETWORK_ID
+    X402_DEFAULT_ASSET
+    X402_PRICE_PER_CREDIT_USD
+    X402_UPGRADE_PRICE_USD
     X402_FACILITATOR_URL
     X402_FACILITATOR_VERIFY_PATH
     X402_FACILITATOR_SETTLE_PATH
@@ -88,6 +95,11 @@ trap cleanup EXIT
 prepare_env_overlay
 
 cd "$REPO_ROOT"
+echo "Preparing local D1 schema for smoke run ..."
+npm run d1:migrate:local
+echo "Seeding local D1 demo data for smoke run ..."
+npm run d1:seed:local
+
 if server_is_ready; then
   echo "Reusing existing local worker at $BASE_URL"
 else

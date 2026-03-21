@@ -7,7 +7,8 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 TENANT_ID="${TENANT_ID:-t_billing_smoke_$(date +%s)}"
 AUTH_SCOPE="${AUTH_SCOPE_FOR_SMOKE:-task:read}"
-PAYMENT_SIGNATURE="${X402_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLXNtb2tlIn0=}"
+TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLXNtb2tlLXRvcHVwIn0=}"
+UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLXNtb2tlLXVwZ3JhZGUifQ==}"
 PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-manual}"
 
 TEMP_FILES=()
@@ -176,9 +177,12 @@ capture_request "POST" "/v1/tenants/$TENANT_ID/did/hosted" "" "authorization: Be
 assert_status "200"
 DID="$(jq -r '.did' "$LAST_BODY")"
 DOCUMENT_URL="$(jq -r '.documentUrl' "$LAST_BODY")"
-jq -e --arg tenant "$TENANT_ID" '
+EXPECTED_DID_HOST="$(printf '%s' "$BASE_URL" | jq -sRr 'split("/") | .[2] | @uri')"
+jq -e --arg tenant "$TENANT_ID" --arg did_host "$EXPECTED_DID_HOST" --arg base_url "$BASE_URL" '
   .tenantId == $tenant and
+  .did == ("did:web:" + $did_host + ":did:tenants:" + $tenant) and
   .method == "did:web" and
+  .documentUrl == (($base_url | sub("/$"; "")) + "/did/tenants/" + $tenant + "/did.json") and
   .status == "verified" and
   (.service | length) >= 3
 ' "$LAST_BODY" >/dev/null
@@ -190,6 +194,48 @@ jq -e --arg did "$DID" '
   .id == $did and
   (.service | length) >= 3
 ' "$LAST_BODY" >/dev/null
+
+echo "Verifying tenant cannot self-mark DID as verified..."
+capture_request "PUT" "/v1/tenants/$TENANT_ID/did" '{
+  "did": "did:web:malicious.example",
+  "method": "did:web",
+  "documentUrl": "https://malicious.example/.well-known/did.json",
+  "status": "verified"
+}' "authorization: Bearer $TOKEN"
+assert_status "403"
+jq -e '.error == "Tenants cannot self-mark DID bindings as verified"' "$LAST_BODY" >/dev/null
+
+echo "Verifying tenant cannot set platform-managed DID verification fields..."
+capture_request "PUT" "/v1/tenants/$TENANT_ID/did" '{
+  "did": "did:web:pending.example",
+  "method": "did:web",
+  "documentUrl": "https://pending.example/.well-known/did.json",
+  "status": "pending",
+  "verificationMethodId": "did:web:pending.example#key-1",
+  "verifiedAt": "2025-01-01T00:00:00.000Z",
+  "service": []
+}' "authorization: Bearer $TOKEN"
+assert_status "403"
+jq -e '.error == "verificationMethodId and verifiedAt are managed by the platform"' "$LAST_BODY" >/dev/null
+
+echo "Verifying pending DID bindings are not published publicly..."
+capture_request "PUT" "/v1/tenants/$TENANT_ID/did" '{
+  "did": "did:web:pending.example",
+  "method": "did:web",
+  "documentUrl": "https://pending.example/.well-known/did.json",
+  "status": "pending",
+  "service": []
+}' "authorization: Bearer $TOKEN"
+assert_status "200"
+capture_request "GET" "/did/tenants/$TENANT_ID/did.json" ""
+assert_status "404"
+jq -e '.error == "DID document not found"' "$LAST_BODY" >/dev/null
+
+echo "Restoring hosted did:web binding..."
+capture_request "POST" "/v1/tenants/$TENANT_ID/did/hosted" "" "authorization: Bearer $TOKEN"
+assert_status "200"
+DID="$(jq -r '.did' "$LAST_BODY")"
+DOCUMENT_URL="$(jq -r '.documentUrl' "$LAST_BODY")"
 
 echo "Requesting x402 topup quote..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' "authorization: Bearer $TOKEN"
@@ -204,19 +250,30 @@ jq -e --arg tenant "$TENANT_ID" '
   .protocol == "x402" and
   .tenantId == $tenant and
   .quote.credits == 25 and
-  .quote.paymentRequired.extra.credits == 25
+  .quote.paymentRequirements.extra.credits == 25
 ' "$LAST_BODY" >/dev/null
 
 echo "Submitting topup proof..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
   "authorization: Bearer $TOKEN" \
-  "payment-signature: $PAYMENT_SIGNATURE"
+  "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
 assert_status "202"
 TOPUP_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 jq -e '
   .receipt.receiptType == "topup" and
   .receipt.status == "pending" and
   .creditsRequested == 25 and
+  .verificationStatus == "pending"
+' "$LAST_BODY" >/dev/null
+
+echo "Replaying the same topup proof returns the same receipt..."
+capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
+  "authorization: Bearer $TOKEN" \
+  "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
+assert_status "202"
+jq -e --arg receipt "$TOPUP_RECEIPT_ID" '
+  .receipt.id == $receipt and
+  .receipt.receiptType == "topup" and
   .verificationStatus == "pending"
 ' "$LAST_BODY" >/dev/null
 
@@ -272,13 +329,24 @@ jq -e '
 echo "Submitting upgrade proof..."
 capture_request "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' \
   "authorization: Bearer $TOKEN" \
-  "payment-signature: $PAYMENT_SIGNATURE"
+  "payment-signature: $UPGRADE_PAYMENT_SIGNATURE"
 assert_status "202"
 UPGRADE_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 jq -e '
   .receipt.receiptType == "upgrade" and
   .receipt.status == "pending" and
   .targetPricingTier == "paid_review" and
+  .verificationStatus == "pending"
+' "$LAST_BODY" >/dev/null
+
+echo "Replaying the same upgrade proof returns the same receipt..."
+capture_request "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' \
+  "authorization: Bearer $TOKEN" \
+  "payment-signature: $UPGRADE_PAYMENT_SIGNATURE"
+assert_status "202"
+jq -e --arg receipt "$UPGRADE_RECEIPT_ID" '
+  .receipt.id == $receipt and
+  .receipt.receiptType == "upgrade" and
   .verificationStatus == "pending"
 ' "$LAST_BODY" >/dev/null
 

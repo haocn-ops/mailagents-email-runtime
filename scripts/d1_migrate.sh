@@ -15,6 +15,8 @@ MIGRATIONS=(
   "0006_billing_base.sql"
   "0007_tenant_did_bindings.sql"
   "0008_tenant_send_policies.sql"
+  "0009_billing_idempotency_guards.sql"
+  "0010_payment_proof_fingerprint.sql"
 )
 
 case "$TARGET" in
@@ -115,6 +117,16 @@ bootstrap_migration_if_needed() {
       ;;
     0008_tenant_send_policies.sql)
       has_results "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenant_send_policies'" && return 0
+      ;;
+    0009_billing_idempotency_guards.sql)
+      has_results "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tenant_credit_ledger_payment_receipt_unique'" &&
+        has_results "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tenant_credit_ledger_reference_unique'" &&
+        return 0
+      ;;
+    0010_payment_proof_fingerprint.sql)
+      has_results "SELECT name FROM pragma_table_info('tenant_payment_receipts') WHERE name = 'payment_proof_fingerprint'" &&
+        has_results "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tenant_payment_receipts_payment_proof_fingerprint_unique'" &&
+        return 0
       ;;
   esac
 

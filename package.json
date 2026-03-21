@@ -41,6 +41,8 @@
     "smoke:billing:dev:real-chain:upgrade": "bash ./scripts/dev_real_chain_upgrade_smoke.sh",
     "smoke:credits:local": "bash ./scripts/outbound_credit_smoke.sh",
     "smoke:credits:local:auto": "SES_MOCK_SEND=true SES_MOCK_SEND_DELAY_MS=1500 bash ./scripts/run_local_smoke_with_worker.sh ./scripts/outbound_credit_smoke.sh",
+    "smoke:uncertain:local": "bash ./scripts/outbound_uncertain_resolution_smoke.sh",
+    "smoke:uncertain:local:auto": "bash ./scripts/run_local_smoke_with_worker.sh ./scripts/outbound_uncertain_resolution_smoke.sh",
     "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh",
     "smoke:mcp:local:auto": "bash ./scripts/run_local_smoke_with_worker.sh ./scripts/mcp_smoke.sh",
     "smoke:production:readonly": "bash ./scripts/production_readonly_smoke.sh",

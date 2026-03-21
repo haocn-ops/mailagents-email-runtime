@@ -8,12 +8,16 @@ function buildOrigin(baseUrl: string): URL {
   return new URL(baseUrl);
 }
 
+function formatDidWebHost(host: string): string {
+  return encodeURIComponent(host);
+}
+
 export function buildHostedDidWeb(baseUrl: string, tenantId: string): {
   did: string;
   documentUrl: string;
 } {
   const origin = buildOrigin(baseUrl);
-  const host = origin.host;
+  const host = formatDidWebHost(origin.host);
   const did = `did:web:${host}:did:tenants:${tenantId}`;
   const documentUrl = `${trimTrailingSlash(origin.origin)}/did/tenants/${tenantId}/did.json`;
   return { did, documentUrl };
@@ -60,4 +64,13 @@ export function buildDidWebDocument(baseUrl: string, binding: DidBindingRecord):
   }
 
   return document;
+}
+
+export function isPublishedHostedDidBinding(baseUrl: string, binding: DidBindingRecord): boolean {
+  if (binding.method !== "did:web" || binding.status !== "verified") {
+    return false;
+  }
+
+  const hosted = buildHostedDidWeb(baseUrl, binding.tenantId);
+  return binding.did === hosted.did && binding.documentUrl === hosted.documentUrl;
 }

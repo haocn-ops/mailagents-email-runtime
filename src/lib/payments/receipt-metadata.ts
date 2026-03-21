@@ -61,6 +61,28 @@ function asInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) ? value : undefined;
 }
 
+function toHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function normalizeProofValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeProofValue);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, normalizeProofValue(entry)])
+    );
+  }
+
+  return value;
+}
+
 function asOutboundStatus(value: unknown): TenantOutboundStatus | undefined {
   return value === "internal_only" || value === "external_review" || value === "external_enabled" || value === "suspended"
     ? value
@@ -171,6 +193,14 @@ export function buildUpgradeReceiptMetadata(input: {
       parsed: input.paymentProof.parsed,
     },
   };
+}
+
+export async function fingerprintPaymentProof(paymentProof: ParsedX402PaymentProof): Promise<string> {
+  const source = paymentProof.parsed
+    ? JSON.stringify(normalizeProofValue(paymentProof.parsed))
+    : paymentProof.raw;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return toHex(digest);
 }
 
 export function parsePaymentReceiptMetadata(

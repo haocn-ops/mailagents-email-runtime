@@ -8,6 +8,7 @@ import {
   ensureManagedContactAliasRouting,
   shouldBootstrapContactAliasRouting,
 } from "./lib/contact-aliases";
+import { withSecurityHeaders, redirectToHttps } from "./lib/transport-security";
 import { handleApiRequest } from "./routes/api";
 import { handleMcpRequest } from "./routes/mcp";
 import { handleSiteRequest } from "./routes/site";
@@ -92,18 +93,23 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     scheduleContactAliasMaintenance(env, ctx);
 
+    const httpsRedirect = redirectToHttps(request);
+    if (httpsRedirect) {
+      return httpsRedirect;
+    }
+
     const mcpResponse = await handleMcpRequest(request, env, ctx);
     if (mcpResponse) {
-      return mcpResponse;
+      return withSecurityHeaders(mcpResponse, request);
     }
 
     const siteResponse = await handleSiteRequest(request, env, ctx);
     if (siteResponse) {
-      return siteResponse;
+      return withSecurityHeaders(siteResponse, request);
     }
 
     const response = await handleApiRequest(request, env, ctx);
-    return response ?? notFound();
+    return withSecurityHeaders(response ?? notFound(), request);
   },
 
   async email(message: Parameters<typeof handleEmail>[0], env: Env): Promise<void> {

@@ -10,6 +10,7 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
+import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { badRequest, InvalidJsonBodyError, json, readJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildRuntimeMetadata } from "../lib/runtime-metadata";
@@ -114,6 +115,24 @@ async function validateAdminSendReferences(env: Env, input: {
       throw new SiteRequestError("Source message does not belong to thread", 409);
     }
   }
+}
+
+async function readDraftRecipientsForAdmin(env: Env, draftR2Key: string): Promise<{
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}> {
+  const object = await env.R2_EMAIL.get(draftR2Key);
+  if (!object) {
+    return { to: [], cc: [], bcc: [] };
+  }
+
+  const payload = await object.json<Record<string, unknown>>();
+  return {
+    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
+    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
+    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+  };
 }
 
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
@@ -449,8 +468,14 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     }
     const message = await getMessage(env, job.messageId);
     const previousMessageStatus = message?.status;
-    if (message?.providerMessageId) {
+    const deliveryEvents = message ? await listDeliveryEventsByMessageId(env, message.id) : [];
+    if (message?.providerMessageId || message?.sentAt || deliveryEvents.length > 0) {
       return json({ error: "Outbound jobs with provider delivery events cannot be retried from the queue state" }, { status: 409 });
+    }
+    if (job.lastError === "send_attempt_uncertain_manual_review_required") {
+      return json({
+        error: "Outbound jobs with uncertain prior send attempts require manual verification before any retry",
+      }, { status: 409 });
     }
     if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
@@ -491,6 +516,82 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to retry outbound job" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", async (request, env, _ctx, route) => {
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
+  }
+
+  const body = await readJson<{ resolution?: string }>(request);
+  if (body.resolution !== "sent" && body.resolution !== "not_sent") {
+    return badRequest("resolution must be sent or not_sent");
+  }
+
+  try {
+    const job = await getOutboundJob(env, route.params.outboundJobId);
+    if (!job) {
+      return json({ error: "Outbound job not found" }, { status: 404 });
+    }
+    if (job.lastError !== "send_attempt_uncertain_manual_review_required") {
+      return json({ error: "Outbound job does not require manual send resolution" }, { status: 409 });
+    }
+
+    const message = await getMessage(env, job.messageId);
+    if (!message) {
+      return json({ error: "Outbound message not found" }, { status: 409 });
+    }
+    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    if (!draft) {
+      return json({ error: "Outbound draft not found" }, { status: 409 });
+    }
+    const recipients = await readDraftRecipientsForAdmin(env, job.draftR2Key);
+    const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
+
+    if (body.resolution === "not_sent" && (message.providerMessageId || message.sentAt || deliveryEvents.length > 0)) {
+      return json({ error: "Outbound job already has delivery evidence and cannot be resolved as not_sent" }, { status: 409 });
+    }
+
+    if (body.resolution === "sent") {
+      await settleOutboundUsageDebit(env, {
+        tenantId: draft.tenantId,
+        messageId: job.messageId,
+        outboundJobId: job.id,
+        draftId: draft.id,
+        draftCreatedVia: draft.createdVia,
+        sourceMessageId: draft.sourceMessageId,
+        ...recipients,
+      });
+      await updateOutboundJobStatus(env, {
+        outboundJobId: job.id,
+        status: "sent",
+        lastError: null,
+        nextRetryAt: null,
+      });
+      await updateMessageStatus(env, job.messageId, "replied");
+      await markDraftStatus(env, draft.id, "sent");
+      return json({ ok: true, outboundJobId: job.id, status: "sent", billingResolution: "settled" });
+    }
+
+    await releaseOutboundUsageReservation(env, {
+      tenantId: draft.tenantId,
+      outboundJobId: job.id,
+      sourceMessageId: draft.sourceMessageId,
+      draftCreatedVia: draft.createdVia,
+      ...recipients,
+    });
+    await updateOutboundJobStatus(env, {
+      outboundJobId: job.id,
+      status: "failed",
+      lastError: "manual_send_not_sent_confirmed",
+      nextRetryAt: null,
+    });
+    await updateMessageStatus(env, job.messageId, "failed");
+    await markDraftStatus(env, draft.id, "failed");
+    return json({ ok: true, outboundJobId: job.id, status: "failed", billingResolution: "released" });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to resolve outbound job manually" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/drafts", async (request, env) => {
@@ -2540,9 +2641,15 @@ function renderAdmin(url: URL): string {
               '<p>Message: ' + esc(job.messageId) + '</p>' +
               '<p>Updated: ' + esc(job.updatedAt) + '</p>' +
               '<p>' + esc(job.lastError || 'No error') + '</p>' +
-              '<p style="margin-top:12px;">' + (job.status === 'failed'
-                ? '<button data-job="' + esc(job.id) + '" class="button secondary retry-job" type="button">Retry Job</button>'
-                : '') + '</p>' +
+              '<p style="margin-top:12px;">' +
+                (job.status === 'failed' && job.lastError !== 'send_attempt_uncertain_manual_review_required'
+                  ? '<button data-job="' + esc(job.id) + '" class="button secondary retry-job" type="button">Retry Job</button>'
+                  : '') +
+                (job.lastError === 'send_attempt_uncertain_manual_review_required'
+                  ? '<button data-job="' + esc(job.id) + '" class="button secondary resolve-job-sent" type="button" style="margin-right:8px;">Confirm Sent</button>' +
+                    '<button data-job="' + esc(job.id) + '" class="button secondary resolve-job-not-sent" type="button">Confirm Not Sent</button>'
+                  : '') +
+              '</p>' +
             '</div>'
           ).join('')
         : 'No outbound jobs found.';
@@ -2557,6 +2664,44 @@ function renderAdmin(url: URL): string {
             await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
             await loadOutboundJobs();
             outboxDetail.textContent = 'Retried outbound job ' + id + '.';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+
+      document.querySelectorAll('.resolve-job-sent').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.getAttribute('data-job');
+          if (!id) {
+            return;
+          }
+          try {
+            await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/manual-resolution', {
+              method: 'POST',
+              body: JSON.stringify({ resolution: 'sent' }),
+            });
+            await loadOutboundJobs();
+            outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as sent.';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+
+      document.querySelectorAll('.resolve-job-not-sent').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.getAttribute('data-job');
+          if (!id) {
+            return;
+          }
+          try {
+            await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/manual-resolution', {
+              method: 'POST',
+              body: JSON.stringify({ resolution: 'not_sent' }),
+            });
+            await loadOutboundJobs();
+            outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as not sent.';
           } catch (error) {
             outboxDetail.textContent = error.message;
           }

@@ -5,12 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
+WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-}"
 TENANT_ID="${TENANT_ID:-t_demo}"
 AGENT_ID="${AGENT_ID:-agt_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 SUCCESS_TO_EMAIL="${SUCCESS_TO_EMAIL:-credit-success-$(date +%s)@example.com}"
 BLOCKED_TO_EMAIL="${BLOCKED_TO_EMAIL:-credit-blocked-$(date +%s)@example.com}"
-PAYMENT_SIGNATURE="${X402_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLWNyZWRpdC1zbW9rZSJ9}"
+RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
+PAYMENT_SIGNATURE="${X402_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-credit-smoke-%s"}' "$RUN_ID" | base64 | tr -d '\n')}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -37,12 +39,13 @@ load_local_secrets() {
     return
   fi
 
-  if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
+  if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" || -z "$WEBHOOK_SECRET" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$dev_vars"
     set +a
     ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-${ADMIN_API_SECRET:-$ADMIN_SECRET}}"
+    WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-${WEBHOOK_SHARED_SECRET:-$WEBHOOK_SECRET}}"
   fi
 }
 
@@ -149,6 +152,12 @@ capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $TOKEN"
 assert_status "200"
 jq -e --arg mailbox "$MAILBOX_ID" '.id == $mailbox and .status == "active"' "$LAST_BODY" >/dev/null
 
+echo "Capturing starting billing balance..."
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+assert_status "200"
+STARTING_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
+STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
+
 echo "Top up demo tenant credits..."
 capture_request "POST" "/v1/billing/topup" '{"credits":5}' \
   "authorization: Bearer $TOKEN" \
@@ -158,10 +167,15 @@ TOPUP_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 
 capture_request "POST" "/v1/billing/payment/confirm" "{
   \"receiptId\": \"$TOPUP_RECEIPT_ID\",
-  \"settlementReference\": \"smoke-credit-topup-$TENANT_ID\"
+  \"settlementReference\": \"smoke-credit-topup-$TENANT_ID-$RUN_ID\"
 }" "authorization: Bearer $TOKEN" "x-admin-secret: $ADMIN_SECRET"
 assert_status "200"
-jq -e '.account.availableCredits >= 5 and .account.reservedCredits == 0' "$LAST_BODY" >/dev/null
+TOPUP_AVAILABLE_CREDITS="$(jq -r '.account.availableCredits' "$LAST_BODY")"
+TOPUP_RESERVED_CREDITS="$(jq -r '.account.reservedCredits' "$LAST_BODY")"
+jq -e --argjson start_available "$STARTING_AVAILABLE_CREDITS" --argjson start_reserved "$STARTING_RESERVED_CREDITS" '
+  .account.availableCredits == ($start_available + 5) and
+  .account.reservedCredits == $start_reserved
+' "$LAST_BODY" >/dev/null
 
 echo "Enabling external sending for the demo tenant..."
 capture_request "PUT" "/v1/tenants/$TENANT_ID/send-policy" '{
@@ -170,7 +184,7 @@ capture_request "PUT" "/v1/tenants/$TENANT_ID/send-policy" '{
   "internalDomainAllowlist": ["mailagents.net"],
   "externalSendEnabled": true,
   "reviewRequired": false
-}' "authorization: Bearer $TOKEN"
+}' "x-admin-secret: $ADMIN_SECRET"
 assert_status "200"
 jq -e '.pricingTier == "paid_active" and .outboundStatus == "external_enabled" and .externalSendEnabled == true' "$LAST_BODY" >/dev/null
 
@@ -182,22 +196,36 @@ capture_request "POST" "/v1/mailboxes/self/send" "{
 }" "authorization: Bearer $TOKEN"
 assert_status "202"
 SUCCESS_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
+SUCCESS_DRAFT_ID="$(jq -r '.draft.id' "$LAST_BODY")"
 
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-jq -e '
-  .availableCredits == 4 and
-  .reservedCredits == 1
+jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
+  .availableCredits == ($topup_available - 1) and
+  .reservedCredits == ($topup_reserved + 1)
 ' "$LAST_BODY" >/dev/null
 
 echo "Waiting for successful send capture..."
 wait_for_job_status "$SUCCESS_OUTBOUND_JOB_ID" "sent"
 
+capture_request "GET" "/v1/debug/outbound-jobs/$SUCCESS_OUTBOUND_JOB_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+SUCCESS_MESSAGE_ID="$(jq -r '.messageId' "$LAST_BODY")"
+jq -e '.status == "sent"' "$LAST_BODY" >/dev/null
+
+capture_request "GET" "/v1/debug/messages/$SUCCESS_MESSAGE_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+SUCCESS_PROVIDER_MESSAGE_ID="$(jq -r '.message.providerMessageId' "$LAST_BODY")"
+jq -e '
+  .message.status == "replied" and
+  (.message.providerMessageId | type) == "string"
+' "$LAST_BODY" >/dev/null
+
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-jq -e '
-  .availableCredits == 4 and
-  .reservedCredits == 0
+jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
+  .availableCredits == ($topup_available - 1) and
+  .reservedCredits == $topup_reserved
 ' "$LAST_BODY" >/dev/null
 
 capture_request "GET" "/v1/billing/ledger?limit=10" "" "authorization: Bearer $TOKEN"
@@ -206,6 +234,70 @@ jq -e --arg outbound "$SUCCESS_OUTBOUND_JOB_ID" '
   (.items | map(select(.entryType == "debit_send" and .referenceId == $outbound)) | length) == 1 and
   (.items | map(select(.entryType == "debit_send" and .referenceId == $outbound))[0].creditsDelta) == -1
 ' "$LAST_BODY" >/dev/null
+
+echo "Posting SES bounce webhook for the successful send..."
+WEBHOOK_PAYLOAD="$(mktemp -t mailagents-outbound-webhook.XXXXXX.json)"
+TEMP_FILES+=("$WEBHOOK_PAYLOAD")
+jq -n \
+  --arg provider "$SUCCESS_PROVIDER_MESSAGE_ID" \
+  --arg message "$SUCCESS_MESSAGE_ID" \
+  --arg outbound "$SUCCESS_OUTBOUND_JOB_ID" \
+  --arg recipient "$SUCCESS_TO_EMAIL" '
+  {
+    "detail-type": "SES Email Event",
+    "source": "aws.ses",
+    "detail": {
+      "eventType": "Bounce",
+      "mail": {
+        "messageId": $provider,
+        "tags": {
+          "message_id": [$message],
+          "outbound_job_id": [$outbound]
+        }
+      },
+      "bounce": {
+        "bounceType": "Permanent",
+        "bouncedRecipients": [
+          {
+            "emailAddress": $recipient
+          }
+        ]
+      }
+    }
+  }
+' > "$WEBHOOK_PAYLOAD"
+
+WEBHOOK_HEADERS=()
+if [[ -n "$WEBHOOK_SECRET" ]]; then
+  WEBHOOK_HEADERS+=("x-webhook-shared-secret: $WEBHOOK_SECRET")
+fi
+capture_request "POST" "/v1/webhooks/ses" "$(cat "$WEBHOOK_PAYLOAD")" "${WEBHOOK_HEADERS[@]}"
+assert_status "202"
+jq -e '
+  .provider == "ses" and
+  .received == true and
+  .eventType == "bounce"
+' "$LAST_BODY" >/dev/null
+
+capture_request "GET" "/v1/debug/messages/$SUCCESS_MESSAGE_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+jq -e '
+  .message.status == "failed" and
+  (.deliveryEvents | map(select(.eventType == "bounce")) | length) >= 1
+' "$LAST_BODY" >/dev/null
+
+capture_request "GET" "/v1/debug/drafts/$SUCCESS_DRAFT_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+jq -e '.draft.status == "failed"' "$LAST_BODY" >/dev/null
+
+capture_request "GET" "/v1/debug/outbound-jobs/$SUCCESS_OUTBOUND_JOB_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+jq -e '.status == "failed" and .lastError == "Permanent"' "$LAST_BODY" >/dev/null
+
+echo "Verifying sent jobs with provider identifiers cannot be retried..."
+capture_request "POST" "/admin/api/outbound-jobs/$SUCCESS_OUTBOUND_JOB_ID/retry" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "409"
+jq -e '.error == "Outbound jobs with provider delivery events cannot be retried from the queue state"' "$LAST_BODY" >/dev/null
 
 echo "Creating a suppression to verify reservation release on failure..."
 capture_request "POST" "/v1/debug/suppressions" "{
@@ -228,9 +320,9 @@ wait_for_job_status "$BLOCKED_OUTBOUND_JOB_ID" "failed"
 
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-jq -e '
-  .availableCredits == 4 and
-  .reservedCredits == 0
+jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
+  .availableCredits == ($topup_available - 1) and
+  .reservedCredits == $topup_reserved
 ' "$LAST_BODY" >/dev/null
 
 capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"

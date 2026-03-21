@@ -1,17 +1,11 @@
 import { parseRawEmail } from "../lib/email-parser";
 import { buildRawMimeMessage } from "../lib/mime";
-import { classifyOutboundUsageEntryType, getOutboundCreditRequirement } from "../lib/outbound-credits";
+import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { enqueueDeadLetter } from "../lib/queue";
 import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
-import { buildOutboundUsageLedgerMetadata } from "../lib/payments/ledger-metadata";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
-  appendOutboundUsageLedgerEntry,
-  captureTenantReservedCredits,
-  decrementTenantAvailableCredits,
-  getTypedCreditLedgerEntryByReferenceId,
-  releaseTenantReservedCredits,
 } from "../repositories/billing";
 import {
   claimTaskForExecution,
@@ -23,6 +17,7 @@ import {
   getSuppression,
   getTaskBySourceMessageId,
   insertAttachments,
+  listDeliveryEventsByMessageId,
   markDraftStatus,
   markMessageSent,
   updateMessageStatus,
@@ -36,10 +31,31 @@ import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJ
 class OutboundPolicyError extends Error {}
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
+type TerminalDeliveryOutcome = "sent" | "failed" | null;
+
 function getOutboundSendMaxRetries(env: Env): number {
   const raw = env.OUTBOUND_SEND_MAX_RETRIES;
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
+}
+
+function getOutboundSendInDoubtGraceMs(env: Env): number {
+  const raw = env.OUTBOUND_SEND_IN_DOUBT_GRACE_SECONDS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 120;
+  return seconds * 1000;
+}
+
+function getTerminalDeliveryOutcome(events: Array<{ eventType: string }>): TerminalDeliveryOutcome {
+  if (events.some((event) => event.eventType === "delivery")) {
+    return "sent";
+  }
+
+  if (events.some((event) => event.eventType === "bounce" || event.eventType === "complaint" || event.eventType === "reject")) {
+    return "failed";
+  }
+
+  return null;
 }
 
 function normalizeRecipientAddress(value: string): string {
@@ -57,92 +73,6 @@ async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<
   }
 
   return suppressed;
-}
-
-async function settleOutboundUsageDebit(env: Env, input: {
-  tenantId: string;
-  messageId: string;
-  outboundJobId: string;
-  draftId?: string;
-  draftCreatedVia?: string;
-  sourceMessageId?: string;
-  to: string[];
-  cc: string[];
-  bcc: string[];
-}): Promise<void> {
-  const existing = await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.outboundJobId);
-  if (existing) {
-    return;
-  }
-
-  const requirement = await getOutboundCreditRequirement(env, {
-    tenantId: input.tenantId,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    sourceMessageId: input.sourceMessageId,
-    createdVia: input.draftCreatedVia,
-  });
-
-  if (!requirement.requiresCredits) {
-    return;
-  }
-
-  const captured = await captureTenantReservedCredits(env, input.tenantId, requirement.creditsRequired);
-  if (!captured) {
-    const debited = await decrementTenantAvailableCredits(env, input.tenantId, requirement.creditsRequired);
-    if (!debited) {
-      throw new Error(`Unable to settle outbound usage debit for ${input.outboundJobId}: insufficient credits after send`);
-    }
-  }
-
-  const entryType = classifyOutboundUsageEntryType({
-    sourceMessageId: input.sourceMessageId,
-    createdVia: input.draftCreatedVia,
-  });
-
-  await appendOutboundUsageLedgerEntry(env, {
-    tenantId: input.tenantId,
-    entryType,
-    creditsDelta: -requirement.creditsRequired,
-    reason: "outbound_send_settlement",
-    referenceId: input.outboundJobId,
-    metadata: buildOutboundUsageLedgerMetadata({
-      entryType,
-      creditsCharged: requirement.creditsRequired,
-      messageId: input.messageId,
-      outboundJobId: input.outboundJobId,
-      draftId: input.draftId,
-      draftCreatedVia: input.draftCreatedVia,
-      recipientDomains: requirement.recipientDomains,
-      externalDomains: requirement.externalDomains,
-    }),
-  });
-}
-
-async function releaseOutboundUsageReservation(env: Env, input: {
-  tenantId: string;
-  outboundJobId: string;
-  sourceMessageId?: string;
-  draftCreatedVia?: string;
-  to: string[];
-  cc: string[];
-  bcc: string[];
-}): Promise<void> {
-  const requirement = await getOutboundCreditRequirement(env, {
-    tenantId: input.tenantId,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    sourceMessageId: input.sourceMessageId,
-    createdVia: input.draftCreatedVia,
-  });
-
-  if (!requirement.requiresCredits) {
-    return;
-  }
-
-  await releaseTenantReservedCredits(env, input.tenantId, requirement.creditsRequired);
 }
 
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
@@ -336,6 +266,8 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
       }
+      const deliveryEvents = await listDeliveryEventsByMessageId(env, outboundMessage.id);
+      const deliveryOutcome = getTerminalDeliveryOutcome(deliveryEvents);
 
       if (outboundJob.status === "sent") {
         to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
@@ -358,6 +290,108 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
           await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
           message.retry();
         }
+        continue;
+      }
+
+      if (
+        outboundJob.status === "sending"
+        && (
+          outboundMessage.providerMessageId
+          || outboundMessage.sentAt
+          || outboundMessage.status === "replied"
+          || deliveryOutcome === "sent"
+        )
+      ) {
+        to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+        cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+        bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "sent",
+          lastError: null,
+          nextRetryAt: null,
+        });
+
+        if (draft) {
+          await markDraftStatus(env, draft.id, "sent");
+        }
+
+        try {
+          await settleOutboundUsageDebit(env, {
+            tenantId: outboundMessage.tenantId,
+            messageId: outboundJob.messageId,
+            outboundJobId: outboundJob.id,
+            draftId: draft?.id,
+            draftCreatedVia: draft?.createdVia,
+            sourceMessageId: draft?.sourceMessageId,
+            to,
+            cc,
+            bcc,
+          });
+          message.ack();
+        } catch (billingError) {
+          await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+          message.retry();
+        }
+        continue;
+      }
+
+      if (
+        outboundJob.status === "sending"
+        && (outboundMessage.status === "failed" || deliveryOutcome === "failed")
+      ) {
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "failed",
+          lastError: deliveryOutcome === "failed" ? "provider_delivery_failed" : "send_failed",
+          nextRetryAt: null,
+        });
+        if (draft) {
+          await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+          to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+          cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+          bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+          await releaseOutboundUsageReservation(env, {
+            tenantId: draft.tenantId,
+            outboundJobId: outboundJob.id,
+            sourceMessageId: draft.sourceMessageId,
+            draftCreatedVia: draft.createdVia,
+            to,
+            cc,
+            bcc,
+          }).catch(() => undefined);
+        }
+        message.ack();
+        continue;
+      }
+
+      if (outboundJob.status === "sending") {
+        const sendingAgeMs = Date.now() - Date.parse(outboundJob.updatedAt);
+        if (Number.isFinite(sendingAgeMs) && sendingAgeMs < getOutboundSendInDoubtGraceMs(env)) {
+          message.retry();
+          continue;
+        }
+
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "failed",
+          lastError: "send_attempt_uncertain_manual_review_required",
+          nextRetryAt: null,
+        });
+        await updateMessageStatus(env, outboundJob.messageId, "failed").catch(() => undefined);
+        if (draft) {
+          await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+        }
+        await enqueueDeadLetter(
+          env,
+          deadLetterFromError(
+            "outbound-send",
+            outboundJob.id,
+            new Error("send_attempt_uncertain_manual_review_required")
+          )
+        );
+        message.ack();
         continue;
       }
 

@@ -21,7 +21,8 @@ import {
   SignupError,
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
-import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices } from "../lib/did-web";
+import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPublishedHostedDidBinding } from "../lib/did-web";
+import { settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
@@ -56,6 +57,7 @@ import {
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
+  getDraftByR2Key,
   getAttachmentOwnerByR2Key,
   getMessage,
   getMessageByProviderMessageId,
@@ -69,6 +71,7 @@ import {
   insertDeliveryEvent,
   listTasks,
   listDeliveryEventsByMessageId,
+  markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
   addSuppression,
@@ -89,11 +92,12 @@ import {
   createTypedTenantPaymentReceipt,
   ensureTenantBillingAccount,
   getTypedCreditLedgerEntryByPaymentReceiptId,
+  getTypedPaymentReceiptByProofFingerprint,
   getTypedTenantPaymentReceiptById,
-  incrementTenantAvailableCredits,
   listTypedTenantCreditLedger,
   listTypedTenantPaymentReceipts,
-  upsertTenantBillingAccount,
+  reconcileTenantAvailableCredits,
+  updateTenantBillingAccountProfile,
   updateTypedTenantPaymentReceiptStatus,
 } from "../repositories/billing";
 import {
@@ -118,6 +122,7 @@ import {
 import {
   buildTopupReceiptMetadata,
   buildUpgradeReceiptMetadata,
+  fingerprintPaymentProof,
   getReceiptPaymentPayload,
   getReceiptPaymentRequirements,
   type TypedPaymentReceiptRecord,
@@ -138,6 +143,27 @@ import type { AccessTokenClaims, Env } from "../types";
 const router = new Router<Env>();
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+
+async function findPaymentReceiptReplay(
+  env: Env,
+  tenantId: string,
+  paymentProofFingerprint: string,
+): Promise<Response | null> {
+  const existingReceipt = await getTypedPaymentReceiptByProofFingerprint(env, paymentProofFingerprint);
+  if (!existingReceipt) {
+    return null;
+  }
+
+  if (existingReceipt.tenantId !== tenantId) {
+    return badRequest("payment proof has already been submitted");
+  }
+
+  return accepted({
+    receipt: existingReceipt,
+    verificationStatus: existingReceipt.status,
+    message: "Payment proof already captured. Reusing the existing receipt.",
+  });
+}
 const PUBLIC_SELF_SERVE_ALLOW_METHODS = "POST, OPTIONS";
 const PUBLIC_SELF_SERVE_ALLOW_HEADERS = "content-type";
 
@@ -329,6 +355,23 @@ async function validateDraftOutboundCredits(env: Env, draft: {
       `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
       402,
     );
+  }
+}
+
+async function validateDraftOutboundPolicy(env: Env, draft: {
+  tenantId: string;
+  agentId: string;
+  draftR2Key: string;
+}): Promise<void> {
+  const recipients = await readDraftRecipients(env, draft.draftR2Key);
+  const decision = await evaluateOutboundPolicy(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    ...recipients,
+  });
+
+  if (!decision.ok) {
+    throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
   }
 }
 
@@ -640,22 +683,38 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
     });
   }
 
-  const receipt = await createTypedTenantPaymentReceipt(env, {
-    tenantId: auth.tenantId,
-    receiptType: "topup",
-    paymentScheme: body.paymentScheme?.trim() || quote.scheme,
-    network: body.network?.trim() || quote.network,
-    asset: body.asset?.trim() || quote.asset,
-    amountAtomic: quote.amountAtomic,
-    amountDisplay: quote.amountUsd,
-    status: "pending",
-    metadata: buildTopupReceiptMetadata({
-      tenantDid: didBinding?.did,
-      creditsRequested: credits,
-      quote,
-      paymentProof,
-    }),
-  });
+  const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
+  const replayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+  if (replayResponse) {
+    return replayResponse;
+  }
+
+  let receipt: TypedPaymentReceiptRecord;
+  try {
+    receipt = await createTypedTenantPaymentReceipt(env, {
+      tenantId: auth.tenantId,
+      receiptType: "topup",
+      paymentScheme: body.paymentScheme?.trim() || quote.scheme,
+      network: body.network?.trim() || quote.network,
+      asset: body.asset?.trim() || quote.asset,
+      amountAtomic: quote.amountAtomic,
+      amountDisplay: quote.amountUsd,
+      paymentProofFingerprint,
+      status: "pending",
+      metadata: buildTopupReceiptMetadata({
+        tenantDid: didBinding?.did,
+        creditsRequested: credits,
+        quote,
+        paymentProof,
+      }),
+    });
+  } catch (error) {
+    const retryReplayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+    if (retryReplayResponse) {
+      return retryReplayResponse;
+    }
+    throw error;
+  }
 
   return accepted({
     receipt,
@@ -702,22 +761,38 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
     });
   }
 
-  const receipt = await createTypedTenantPaymentReceipt(env, {
-    tenantId: auth.tenantId,
-    receiptType: "upgrade",
-    paymentScheme: body.paymentScheme?.trim() || quote.scheme,
-    network: body.network?.trim() || quote.network,
-    asset: body.asset?.trim() || quote.asset,
-    amountAtomic: quote.amountAtomic,
-    amountDisplay: quote.amountUsd,
-    status: "pending",
-    metadata: buildUpgradeReceiptMetadata({
-      tenantDid: didBinding?.did,
-      targetPricingTier,
-      quote,
-      paymentProof,
-    }),
-  });
+  const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
+  const replayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+  if (replayResponse) {
+    return replayResponse;
+  }
+
+  let receipt: TypedPaymentReceiptRecord;
+  try {
+    receipt = await createTypedTenantPaymentReceipt(env, {
+      tenantId: auth.tenantId,
+      receiptType: "upgrade",
+      paymentScheme: body.paymentScheme?.trim() || quote.scheme,
+      network: body.network?.trim() || quote.network,
+      asset: body.asset?.trim() || quote.asset,
+      amountAtomic: quote.amountAtomic,
+      amountDisplay: quote.amountUsd,
+      paymentProofFingerprint,
+      status: "pending",
+      metadata: buildUpgradeReceiptMetadata({
+        tenantDid: didBinding?.did,
+        targetPricingTier,
+        quote,
+        paymentProof,
+      }),
+    });
+  } catch (error) {
+    const retryReplayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+    if (retryReplayResponse) {
+      return retryReplayResponse;
+    }
+    throw error;
+  }
 
   return accepted({
     receipt,
@@ -742,14 +817,9 @@ router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
 });
 
 router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx, route) => {
-  const auth = await requireAuth(request, env, []);
-  if (auth instanceof Response) {
-    return auth;
-  }
-
-  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
-  if (tenantError) {
-    return tenantError;
+  const adminError = requireAdminSecret(request, env);
+  if (adminError) {
+    return adminError;
   }
 
   const body = await readJson<{
@@ -805,14 +875,10 @@ router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (re
       externalSendEnabled: true,
       reviewRequired: false,
     });
-    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+    const updatedBillingAccount = await updateTenantBillingAccountProfile(env, {
       tenantId: route.params.tenantId,
-      status: billingAccount.status === "trial" ? "active" : billingAccount.status,
+      status: billingAccount.status === "trial" ? "active" : undefined,
       pricingTier: "paid_active",
-      defaultNetwork: billingAccount.defaultNetwork,
-      defaultAsset: billingAccount.defaultAsset,
-      availableCredits: billingAccount.availableCredits,
-      reservedCredits: billingAccount.reservedCredits,
     });
 
     return json({
@@ -832,14 +898,10 @@ router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (re
       externalSendEnabled: false,
       reviewRequired: true,
     });
-    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+    const updatedBillingAccount = await updateTenantBillingAccountProfile(env, {
       tenantId: route.params.tenantId,
-      status: billingAccount.status === "suspended" ? "active" : billingAccount.status,
+      status: billingAccount.status === "suspended" ? "active" : undefined,
       pricingTier: "paid_review",
-      defaultNetwork: billingAccount.defaultNetwork,
-      defaultAsset: billingAccount.defaultAsset,
-      availableCredits: billingAccount.availableCredits,
-      reservedCredits: billingAccount.reservedCredits,
     });
 
     return json({
@@ -859,14 +921,9 @@ router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (re
       externalSendEnabled: false,
       reviewRequired: true,
     });
-    const updatedBillingAccount = await upsertTenantBillingAccount(env, {
+    const updatedBillingAccount = await updateTenantBillingAccountProfile(env, {
       tenantId: route.params.tenantId,
       status: "suspended",
-      pricingTier: billingAccount.pricingTier,
-      defaultNetwork: billingAccount.defaultNetwork,
-      defaultAsset: billingAccount.defaultAsset,
-      availableCredits: billingAccount.availableCredits,
-      reservedCredits: billingAccount.reservedCredits,
     });
 
     return json({
@@ -908,6 +965,16 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   }
 
   if (body.markFailed === true) {
+    if (receipt.status === "settled") {
+      return json({ error: "Settled payment receipts cannot be marked as failed" }, { status: 409 });
+    }
+    if (receipt.status === "failed") {
+      return json({
+        receipt,
+        verificationStatus: "failed",
+        message: "Payment receipt is already failed.",
+      });
+    }
     if (!receipt.metadata) {
       return json({ error: "Payment receipt metadata is invalid or incomplete" }, { status: 409 });
     }
@@ -925,6 +992,10 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
       verificationStatus: "failed",
       message: "Payment receipt marked as failed.",
     });
+  }
+
+  if (receipt.status === "failed") {
+    return json({ error: "Failed payment receipts cannot be confirmed" }, { status: 409 });
   }
 
   const facilitatorOutcome = receipt.status === "settled" || !facilitatorConfigured
@@ -945,14 +1016,12 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     const targetPricingTier = parsedMetadata.targetPricingTier;
 
     const existingAccount = await ensureTenantBillingAccount(env, auth.tenantId);
-    const account = await upsertTenantBillingAccount(env, {
+    const account = await updateTenantBillingAccountProfile(env, {
       tenantId: auth.tenantId,
-      status: existingAccount.status === "trial" ? "active" : existingAccount.status,
+      status: existingAccount.status === "trial" ? "active" : undefined,
       pricingTier: targetPricingTier,
-      defaultNetwork: finalizedReceipt.network ?? existingAccount.defaultNetwork,
-      defaultAsset: finalizedReceipt.asset ?? existingAccount.defaultAsset,
-      availableCredits: existingAccount.availableCredits,
-      reservedCredits: existingAccount.reservedCredits,
+      defaultNetwork: finalizedReceipt.network ?? undefined,
+      defaultAsset: finalizedReceipt.asset ?? undefined,
     });
 
     const existingSendPolicy = await ensureTenantSendPolicy(env, auth.tenantId);
@@ -992,7 +1061,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
 
   const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, auth.tenantId, finalizedReceipt.id);
   if (existingLedgerEntry) {
-    const account = await ensureTenantBillingAccount(env, auth.tenantId);
+    const account = await reconcileTenantAvailableCredits(env, auth.tenantId);
     const settledReceipt = finalizedReceipt.status === "settled"
       ? finalizedReceipt
       : await updateTypedTenantPaymentReceiptStatus(env, {
@@ -1038,7 +1107,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     }),
   });
 
-  const account = await incrementTenantAvailableCredits(env, auth.tenantId, creditsRequested);
+  const account = await reconcileTenantAvailableCredits(env, auth.tenantId);
   const settledReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
     tenantId: auth.tenantId,
     receiptId: finalizedReceipt.id,
@@ -1132,21 +1201,27 @@ router.on("PUT", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) 
     return badRequest("did, method, and status are required");
   }
 
+  if (body.status === "verified") {
+    return json({ error: "Tenants cannot self-mark DID bindings as verified" }, { status: 403 });
+  }
+
+  if (body.verificationMethodId || body.verifiedAt) {
+    return json({ error: "verificationMethodId and verifiedAt are managed by the platform" }, { status: 403 });
+  }
+
   return json(await upsertTenantDidBinding(env, {
     tenantId: route.params.tenantId,
     did: body.did,
     method: body.method,
     documentUrl: body.documentUrl,
     status: body.status,
-    verificationMethodId: body.verificationMethodId,
     service: body.service ?? [],
-    verifiedAt: body.verifiedAt,
   }));
 });
 
 router.on("GET", "/did/tenants/:tenantId/did.json", async (request, env, _ctx, route) => {
   const binding = await getTenantDidBinding(env, route.params.tenantId);
-  if (!binding || binding.method !== "did:web") {
+  if (!binding || !isPublishedHostedDidBinding(new URL(request.url).origin, binding)) {
     return json({ error: "DID document not found" }, { status: 404 });
   }
 
@@ -2693,6 +2768,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
         agentId: draft.agentId,
         mailboxId: draft.mailboxId,
       });
+      await validateDraftOutboundPolicy(env, draft);
       await validateDraftOutboundCredits(env, draft);
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
@@ -2727,6 +2803,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
     agentId: draft.agentId,
     mailboxId: draft.mailboxId,
   });
+  await validateDraftOutboundPolicy(env, draft);
   await validateDraftOutboundCredits(env, draft);
 
   const result = await enqueueDraftSend(env, route.params.draftId);
@@ -2805,6 +2882,19 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;
+      const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+      if (draft) {
+        const recipients = await readDraftRecipients(env, outboundJob.draftR2Key);
+        await settleOutboundUsageDebit(env, {
+          tenantId: draft.tenantId,
+          messageId: outboundJob.messageId,
+          outboundJobId: outboundJob.id,
+          draftId: draft.id,
+          draftCreatedVia: draft.createdVia,
+          sourceMessageId: draft.sourceMessageId,
+          ...recipients,
+        });
+      }
       if (normalized.eventType === "delivery") {
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
@@ -2819,6 +2909,10 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
           lastError: deliveryError,
           nextRetryAt: null,
         });
+      }
+
+      if (draft) {
+        await markDraftStatus(env, draft.id, normalized.eventType === "delivery" ? "sent" : "failed");
       }
     }
   }
@@ -3001,7 +3095,6 @@ async function createAndSendDraft(env: Env, input: {
   createdVia: string;
   idempotencyKey?: string;
   requestFingerprint: string;
-  policyBypassReason?: string;
 }) {
   const idempotencyKey = input.idempotencyKey?.trim();
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
@@ -3031,32 +3124,30 @@ async function createAndSendDraft(env: Env, input: {
       mailboxId: input.mailboxId,
       attachments: input.payload.attachments,
     });
-    if (!input.policyBypassReason) {
-      const decision = await evaluateOutboundPolicy(env, {
-        tenantId: input.tenantId,
-        agentId: input.agentId,
-        to: input.payload.to,
-        cc: input.payload.cc,
-        bcc: input.payload.bcc,
-      });
-      if (!decision.ok) {
-        throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
-      }
+    const decision = await evaluateOutboundPolicy(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      to: input.payload.to,
+      cc: input.payload.cc,
+      bcc: input.payload.bcc,
+    });
+    if (!decision.ok) {
+      throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
+    }
 
-      const creditCheck = await checkOutboundCreditRequirement(env, {
-        tenantId: input.tenantId,
-        to: input.payload.to,
-        cc: input.payload.cc,
-        bcc: input.payload.bcc,
-        sourceMessageId: input.sourceMessageId,
-        createdVia: input.createdVia,
-      });
-      if (!creditCheck.hasSufficientCredits) {
-        throw new RouteRequestError(
-          `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
-          402,
-        );
-      }
+    const creditCheck = await checkOutboundCreditRequirement(env, {
+      tenantId: input.tenantId,
+      to: input.payload.to,
+      cc: input.payload.cc,
+      bcc: input.payload.bcc,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+    });
+    if (!creditCheck.hasSufficientCredits) {
+      throw new RouteRequestError(
+        `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+        402,
+      );
     }
   };
 
@@ -3378,6 +3469,15 @@ async function confirmPaymentReceiptWithFacilitator(
 
   let workingReceipt = receipt;
   let verifyResponse: X402FacilitatorVerificationResponse | undefined;
+
+  if (workingReceipt.status === "failed") {
+    return {
+      receipt: workingReceipt,
+      failureResponse: json({
+        error: "Failed payment receipts cannot be settled",
+      }, { status: 409 }),
+    };
+  }
 
   if (workingReceipt.status === "pending") {
     const verifyResult = await verifyX402Payment(env, { paymentPayload, paymentRequirements });

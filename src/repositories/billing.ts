@@ -60,6 +60,7 @@ interface PaymentReceiptRow {
   amount_display: string | null;
   payment_reference: string | null;
   settlement_reference: string | null;
+  payment_proof_fingerprint: string | null;
   status: PaymentReceiptStatus;
   metadata_json: string | null;
   created_at: string;
@@ -165,38 +166,39 @@ export async function ensureTenantBillingAccount(env: Env, tenantId: string): Pr
   return requireRow(created, "Failed to create tenant billing account");
 }
 
-export async function upsertTenantBillingAccount(env: Env, input: {
+export async function updateTenantBillingAccountProfile(env: Env, input: {
   tenantId: string;
-  status: TenantBillingStatus;
-  pricingTier: PricingTier;
+  status?: TenantBillingStatus;
+  pricingTier?: PricingTier;
   defaultNetwork?: string;
   defaultAsset?: string;
-  availableCredits: number;
-  reservedCredits: number;
 }): Promise<BillingAccountRecord> {
-  const updatedAt = nowIso();
+  await ensureTenantBillingAccount(env, input.tenantId);
+
+  const hasStatus = input.status !== undefined;
+  const hasPricingTier = input.pricingTier !== undefined;
+  const hasDefaultNetwork = input.defaultNetwork !== undefined;
+  const hasDefaultAsset = input.defaultAsset !== undefined;
+
   await execute(env.D1_DB.prepare(
-    `INSERT INTO tenant_billing_accounts (
-       tenant_id, status, pricing_tier, default_network, default_asset,
-       available_credits, reserved_credits, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tenant_id) DO UPDATE SET
-       status = excluded.status,
-       pricing_tier = excluded.pricing_tier,
-       default_network = excluded.default_network,
-       default_asset = excluded.default_asset,
-       available_credits = excluded.available_credits,
-       reserved_credits = excluded.reserved_credits,
-       updated_at = excluded.updated_at`
+    `UPDATE tenant_billing_accounts
+     SET status = CASE WHEN ? THEN ? ELSE status END,
+         pricing_tier = CASE WHEN ? THEN ? ELSE pricing_tier END,
+         default_network = CASE WHEN ? THEN ? ELSE default_network END,
+         default_asset = CASE WHEN ? THEN ? ELSE default_asset END,
+         updated_at = ?
+     WHERE tenant_id = ?`
   ).bind(
-    input.tenantId,
-    input.status,
-    input.pricingTier,
+    hasStatus ? 1 : 0,
+    input.status ?? null,
+    hasPricingTier ? 1 : 0,
+    input.pricingTier ?? null,
+    hasDefaultNetwork ? 1 : 0,
     input.defaultNetwork ?? null,
+    hasDefaultAsset ? 1 : 0,
     input.defaultAsset ?? null,
-    input.availableCredits,
-    input.reservedCredits,
-    updatedAt,
+    nowIso(),
+    input.tenantId,
   ));
 
   return await ensureTenantBillingAccount(env, input.tenantId);
@@ -228,7 +230,7 @@ export async function listTenantPaymentReceipts(env: Env, tenantId: string, limi
   const rows = await allRows<PaymentReceiptRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-              amount_display, payment_reference, settlement_reference, status,
+              amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
               metadata_json, created_at, updated_at
        FROM tenant_payment_receipts
        WHERE tenant_id = ?
@@ -251,7 +253,7 @@ export async function getTenantPaymentReceiptById(env: Env, tenantId: string, re
   const row = await firstRow<PaymentReceiptRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-              amount_display, payment_reference, settlement_reference, status,
+              amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
               metadata_json, created_at, updated_at
        FROM tenant_payment_receipts
        WHERE tenant_id = ? AND id = ?`
@@ -267,6 +269,26 @@ export async function getTypedTenantPaymentReceiptById(
   receiptId: string,
 ): Promise<TypedPaymentReceiptRecord | null> {
   const receipt = await getTenantPaymentReceiptById(env, tenantId, receiptId);
+  return receipt ? parseTypedPaymentReceipt(receipt) ?? null : null;
+}
+
+export async function getTypedPaymentReceiptByProofFingerprint(
+  env: Env,
+  paymentProofFingerprint: string,
+): Promise<TypedPaymentReceiptRecord | null> {
+  const row = await firstRow<PaymentReceiptRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
+              amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
+              metadata_json, created_at, updated_at
+       FROM tenant_payment_receipts
+       WHERE payment_proof_fingerprint = ?
+       ORDER BY created_at DESC
+       LIMIT 1`
+    ).bind(paymentProofFingerprint)
+  );
+
+  const receipt = row ? mapPaymentReceiptRow(row) : null;
   return receipt ? parseTypedPaymentReceipt(receipt) ?? null : null;
 }
 
@@ -329,6 +351,7 @@ export async function createTenantPaymentReceipt(env: Env, input: {
   amountDisplay?: string;
   paymentReference?: string;
   settlementReference?: string;
+  paymentProofFingerprint?: string;
   metadata?: object;
 }): Promise<PaymentReceiptRecord> {
   const id = createId("prc");
@@ -336,9 +359,9 @@ export async function createTenantPaymentReceipt(env: Env, input: {
   await execute(env.D1_DB.prepare(
     `INSERT INTO tenant_payment_receipts (
        id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-       amount_display, payment_reference, settlement_reference, status,
+       amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
        metadata_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     id,
     input.tenantId,
@@ -350,6 +373,7 @@ export async function createTenantPaymentReceipt(env: Env, input: {
     input.amountDisplay ?? null,
     input.paymentReference ?? null,
     input.settlementReference ?? null,
+    input.paymentProofFingerprint ?? null,
     input.status,
     input.metadata ? JSON.stringify(input.metadata) : null,
     timestamp,
@@ -359,7 +383,7 @@ export async function createTenantPaymentReceipt(env: Env, input: {
   const row = await firstRow<PaymentReceiptRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-              amount_display, payment_reference, settlement_reference, status,
+              amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
               metadata_json, created_at, updated_at
        FROM tenant_payment_receipts
        WHERE id = ?`
@@ -380,6 +404,7 @@ export async function createTypedTenantPaymentReceipt(env: Env, input: {
   amountDisplay?: string;
   paymentReference?: string;
   settlementReference?: string;
+  paymentProofFingerprint?: string;
   metadata: Extract<PaymentReceiptMetadata, { receiptType: "topup" }>;
 }): Promise<TopupPaymentReceiptRecord>;
 export async function createTypedTenantPaymentReceipt(env: Env, input: {
@@ -393,6 +418,7 @@ export async function createTypedTenantPaymentReceipt(env: Env, input: {
   amountDisplay?: string;
   paymentReference?: string;
   settlementReference?: string;
+  paymentProofFingerprint?: string;
   metadata: Extract<PaymentReceiptMetadata, { receiptType: "upgrade" }>;
 }): Promise<UpgradePaymentReceiptRecord>;
 export async function createTypedTenantPaymentReceipt(env: Env, input: {
@@ -406,6 +432,7 @@ export async function createTypedTenantPaymentReceipt(env: Env, input: {
   amountDisplay?: string;
   paymentReference?: string;
   settlementReference?: string;
+  paymentProofFingerprint?: string;
   metadata: PaymentReceiptMetadata;
 }): Promise<TypedPaymentReceiptRecord> {
   const receipt = await createTenantPaymentReceipt(env, input);
@@ -455,7 +482,7 @@ export async function updateTenantPaymentReceiptStatus(env: Env, input: {
   const row = await firstRow<PaymentReceiptRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-              amount_display, payment_reference, settlement_reference, status,
+              amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
               metadata_json, created_at, updated_at
        FROM tenant_payment_receipts
        WHERE tenant_id = ? AND id = ?`
@@ -481,17 +508,27 @@ export async function updateTypedTenantPaymentReceiptStatus(env: Env, input: {
   return typed;
 }
 
-export async function incrementTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord> {
-  const account = await ensureTenantBillingAccount(env, tenantId);
-  return await upsertTenantBillingAccount(env, {
+export async function reconcileTenantAvailableCredits(env: Env, tenantId: string): Promise<BillingAccountRecord> {
+  await ensureTenantBillingAccount(env, tenantId);
+  const row = await firstRow<{ total_credits: number | null }>(
+    env.D1_DB.prepare(
+      `SELECT COALESCE(SUM(credits_delta), 0) AS total_credits
+       FROM tenant_credit_ledger
+       WHERE tenant_id = ?`
+    ).bind(tenantId)
+  );
+  const totalCredits = Number(row?.total_credits ?? 0);
+  await execute(env.D1_DB.prepare(
+    `UPDATE tenant_billing_accounts
+     SET available_credits = ? - reserved_credits,
+         updated_at = ?
+     WHERE tenant_id = ?`
+  ).bind(
+    totalCredits,
+    nowIso(),
     tenantId,
-    status: account.status,
-    pricingTier: account.pricingTier,
-    defaultNetwork: account.defaultNetwork,
-    defaultAsset: account.defaultAsset,
-    availableCredits: account.availableCredits + creditsDelta,
-    reservedCredits: account.reservedCredits,
-  });
+  ));
+  return await ensureTenantBillingAccount(env, tenantId);
 }
 
 export async function reserveTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
@@ -634,20 +671,31 @@ export async function appendTopupSettlementLedgerEntry(env: Env, input: {
   referenceId?: string;
   metadata: TopupSettlementLedgerMetadata;
 }): Promise<TypedCreditLedgerEntryRecord> {
-  const entry = await appendTenantCreditLedgerEntry(env, {
-    tenantId: input.tenantId,
-    entryType: "topup",
-    creditsDelta: input.creditsDelta,
-    reason: input.reason,
-    paymentReceiptId: input.paymentReceiptId,
-    referenceId: input.referenceId,
-    metadata: input.metadata,
-  });
-  const typed = parseTypedCreditLedgerEntry(entry);
-  if (!typed) {
+  const id = createId("led");
+  const createdAt = nowIso();
+  await execute(env.D1_DB.prepare(
+    `INSERT OR IGNORE INTO tenant_credit_ledger (
+       id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+       reference_id, metadata_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    "topup",
+    input.creditsDelta,
+    input.reason,
+    input.paymentReceiptId ?? null,
+    input.referenceId ?? null,
+    JSON.stringify(input.metadata),
+    createdAt,
+  ));
+  const entry = input.paymentReceiptId
+    ? await getTypedCreditLedgerEntryByPaymentReceiptId(env, input.tenantId, input.paymentReceiptId)
+    : await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId ?? "");
+  if (!entry) {
     throw new Error("Failed to append typed topup settlement ledger entry");
   }
-  return typed;
+  return entry;
 }
 
 export async function appendOutboundUsageLedgerEntry(env: Env, input: {
@@ -658,17 +706,27 @@ export async function appendOutboundUsageLedgerEntry(env: Env, input: {
   referenceId: string;
   metadata: OutboundUsageLedgerMetadata;
 }): Promise<TypedCreditLedgerEntryRecord> {
-  const entry = await appendTenantCreditLedgerEntry(env, {
-    tenantId: input.tenantId,
-    entryType: input.entryType,
-    creditsDelta: input.creditsDelta,
-    reason: input.reason,
-    referenceId: input.referenceId,
-    metadata: input.metadata,
-  });
-  const typed = parseTypedCreditLedgerEntry(entry);
-  if (!typed) {
+  const id = createId("led");
+  const createdAt = nowIso();
+  await execute(env.D1_DB.prepare(
+    `INSERT OR IGNORE INTO tenant_credit_ledger (
+       id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+       reference_id, metadata_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    input.entryType,
+    input.creditsDelta,
+    input.reason,
+    null,
+    input.referenceId,
+    JSON.stringify(input.metadata),
+    createdAt,
+  ));
+  const entry = await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId);
+  if (!entry) {
     throw new Error("Failed to append typed outbound usage ledger entry");
   }
-  return typed;
+  return entry;
 }
