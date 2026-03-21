@@ -343,4 +343,16 @@ print(json.dumps({
   "latestLedgerEntry": ledger["items"][0] if ledger.get("items") else None,
   "latestReceipt": receipts["items"][0] if receipts.get("items") else None,
 }, indent=2))
+
+assert pending["receipt"]["receiptType"] == "topup", pending
+assert pending["receipt"]["status"] == "pending", pending
+assert confirm.get("verificationStatus") == "settled", confirm
+assert confirm.get("receipt", {}).get("status") == "settled", confirm
+assert account["availableCredits"] == 25, account
+assert ledger.get("items"), ledger
+assert ledger["items"][0]["entryType"] == "topup", ledger["items"][0]
+assert ledger["items"][0]["creditsDelta"] == 25, ledger["items"][0]
+assert receipts.get("items"), receipts
+assert receipts["items"][0]["status"] == "settled", receipts["items"][0]
+print("Real-chain topup smoke completed successfully.")
 PY

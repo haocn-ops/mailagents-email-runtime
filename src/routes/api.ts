@@ -955,7 +955,10 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
 
   const facilitatorConfigured = Boolean(getX402FacilitatorConfig(env));
   const adminError = requireAdminSecret(request, env);
-  if ((body.markFailed === true || !facilitatorConfigured) && adminError) {
+  const manualConfirmationRequested = body.markFailed === true
+    || !facilitatorConfigured
+    || (!adminError && typeof body.settlementReference === "string" && body.settlementReference.trim().length > 0);
+  if (manualConfirmationRequested && adminError) {
     return adminError;
   }
 
@@ -998,7 +1001,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     return json({ error: "Failed payment receipts cannot be confirmed" }, { status: 409 });
   }
 
-  const facilitatorOutcome = receipt.status === "settled" || !facilitatorConfigured
+  const facilitatorOutcome = receipt.status === "settled" || !facilitatorConfigured || manualConfirmationRequested
     ? null
     : await confirmPaymentReceiptWithFacilitator(env, receipt, body.settlementReference);
 
