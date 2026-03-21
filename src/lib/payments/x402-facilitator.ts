@@ -1,5 +1,11 @@
 import type { Env } from "../../types";
-import type { X402PaymentRequirement } from "./x402";
+import {
+  getX402RequirementAmount,
+  getX402RequirementResource,
+  type X402PaymentPayload,
+  type X402PaymentRequirement,
+  X402_VERSION,
+} from "./x402";
 
 const DEFAULT_VERIFY_PATH = "/verify";
 const DEFAULT_SETTLE_PATH = "/settle";
@@ -203,7 +209,7 @@ function mockReference(prefix: string): string {
 }
 
 function buildMockVerifyResult(env: Env, input: {
-  paymentPayload: Record<string, unknown> | string;
+  paymentPayload: X402PaymentPayload | Record<string, unknown> | string;
   paymentRequirements: X402PaymentRequirement;
 }): X402FacilitatorVerificationResult {
   if (!mockDecision(env.X402_FACILITATOR_MOCK_VERIFY_RESULT, "valid")) {
@@ -239,14 +245,14 @@ function buildMockVerifyResult(env: Env, input: {
       scheme: input.paymentRequirements.scheme,
       network: input.paymentRequirements.network,
       asset: input.paymentRequirements.asset,
-      resource: input.paymentRequirements.resource,
+      resource: getX402RequirementResource(input.paymentRequirements),
       paymentReference,
       raw: {
         isValid: true,
         scheme: input.paymentRequirements.scheme,
         network: input.paymentRequirements.network,
         asset: input.paymentRequirements.asset,
-        resource: input.paymentRequirements.resource,
+        resource: getX402RequirementResource(input.paymentRequirements),
         paymentPayload: typeof input.paymentPayload === "string" ? input.paymentPayload : "object",
         paymentReference,
       },
@@ -291,7 +297,7 @@ function buildMockSettleResult(env: Env, input: {
       scheme: input.paymentRequirements.scheme,
       network: input.paymentRequirements.network,
       asset: input.paymentRequirements.asset,
-      amount: input.paymentRequirements.maxAmountRequired,
+      amount: getX402RequirementAmount(input.paymentRequirements),
       settlementReference,
       transactionHash,
       raw: {
@@ -299,7 +305,7 @@ function buildMockSettleResult(env: Env, input: {
         scheme: input.paymentRequirements.scheme,
         network: input.paymentRequirements.network,
         asset: input.paymentRequirements.asset,
-        amount: input.paymentRequirements.maxAmountRequired,
+        amount: getX402RequirementAmount(input.paymentRequirements),
         transactionHash,
         settlementReference,
       },
@@ -374,7 +380,7 @@ function normalizeVerificationResponse(
       scheme,
       network,
       asset: asString(input.data?.asset) ?? input.paymentRequirements.asset,
-      resource: asString(input.data?.resource) ?? input.paymentRequirements.resource,
+      resource: asString(input.data?.resource) ?? getX402RequirementResource(input.paymentRequirements),
       paymentReference,
       raw: input.data,
     },
@@ -429,7 +435,7 @@ function normalizeSettlementResponse(
       scheme,
       network,
       asset: asString(input.data?.asset) ?? input.paymentRequirements.asset,
-      amount: asString(input.data?.amount) ?? input.paymentRequirements.maxAmountRequired,
+      amount: asString(input.data?.amount) ?? getX402RequirementAmount(input.paymentRequirements),
       transactionHash: extractReference(input.data, ["transactionHash", "txHash", "signature"]),
       settlementReference,
       raw: input.data,
@@ -526,7 +532,7 @@ export function getX402FacilitatorConfig(env: Env): X402FacilitatorConfig | null
 export async function verifyX402Payment(
   env: Env,
   input: {
-    paymentPayload: Record<string, unknown> | string;
+    paymentPayload: X402PaymentPayload | Record<string, unknown> | string;
     paymentRequirements: X402PaymentRequirement;
   },
 ): Promise<X402FacilitatorVerificationResult> {
@@ -540,6 +546,7 @@ export async function verifyX402Payment(
   }
 
   const raw = await postToFacilitator(config.verifyUrl, config, {
+    x402Version: X402_VERSION,
     paymentPayload: input.paymentPayload,
     paymentRequirements: input.paymentRequirements,
   });
@@ -552,7 +559,7 @@ export async function verifyX402Payment(
 export async function settleX402Payment(
   env: Env,
   input: {
-    paymentPayload: Record<string, unknown> | string;
+    paymentPayload: X402PaymentPayload | Record<string, unknown> | string;
     paymentRequirements: X402PaymentRequirement;
   },
 ): Promise<X402FacilitatorSettlementResult> {
@@ -566,6 +573,7 @@ export async function settleX402Payment(
   }
 
   const raw = await postToFacilitator(config.settleUrl, config, {
+    x402Version: X402_VERSION,
     paymentPayload: input.paymentPayload,
     paymentRequirements: input.paymentRequirements,
   });

@@ -142,6 +142,7 @@ Run:
 ```bash
 npm run smoke:billing:dev:real-chain
 npm run smoke:billing:dev:real-chain:facilitator
+npm run smoke:billing:dev:real-chain:upgrade
 ```
 
 Optional overrides:
@@ -168,6 +169,43 @@ This script proves:
 The facilitator variant proves the deployed runtime can automatically execute
 `verify -> settle` after a real onchain payment, but it still does not prove a
 third-party facilitator is live unless the environment points at a real one.
+
+## Run the dev real-chain upgrade smoke
+
+This flow exercises the paid upgrade path with the same live `dev` deployment:
+
+- it requests a live `402` upgrade quote from deployed `dev`
+- it builds a real x402 v2 `exact/eip3009` payment payload against Base Sepolia USDC
+- it submits that payload to `POST /v1/billing/upgrade-intent`
+- it confirms the pending receipt through facilitator-backed settlement
+- it verifies the tenant lands in `paid_review / external_review`
+
+Prerequisites:
+
+- deployed `dev` has `X402_PAY_TO` configured
+- deployed `dev` points `X402_FACILITATOR_URL` at a working facilitator
+- [`.secrets/dev-base-sepolia-wallet.json`](../.secrets/dev-base-sepolia-wallet.json) exists locally and holds a funded Base Sepolia wallet
+- the wallet has enough Base Sepolia ETH for gas and USDC for the quoted amount
+
+Run:
+
+```bash
+npm run smoke:billing:dev:real-chain:upgrade
+```
+
+Optional overrides:
+
+- `BASE_URL`
+- `WALLET_JSON_PATH`
+- `ETHERS_PATH`
+- `OPERATOR_EMAIL_FOR_SMOKE`
+
+This script proves:
+
+- low-value upgrade quotes display correctly, including sub-cent prices like `0.001`
+- the facilitator-backed `upgrade-intent` flow accepts a real signed x402 payload
+- successful settlement moves the tenant into `paid_review`
+- successful settlement moves send policy into `external_review` without enabling external sends yet
 
 The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that

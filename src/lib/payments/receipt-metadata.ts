@@ -5,7 +5,9 @@ import type {
 } from "./x402-facilitator";
 import type {
   ParsedX402PaymentProof,
+  X402PaymentPayload,
   X402PaymentRequirement,
+  X402PaymentRequired,
   X402TopupQuote,
   X402UpgradeQuote,
 } from "./x402";
@@ -86,6 +88,8 @@ function parseStoredPaymentProof(value: unknown): StoredX402PaymentProof | undef
 
 function isTopupQuote(value: unknown): value is X402TopupQuote {
   const record = asRecord(value);
+  const hasModernRequirements = asRecord(record?.paymentRequirements) && asRecord(record?.paymentRequired);
+  const hasLegacyRequirements = asRecord(record?.paymentRequired);
   return Boolean(
     record &&
     typeof record.scheme === "string" &&
@@ -95,12 +99,15 @@ function isTopupQuote(value: unknown): value is X402TopupQuote {
     typeof record.amountUsd === "string" &&
     typeof record.amountAtomic === "string" &&
     typeof record.description === "string" &&
-    asRecord(record.paymentRequired)
+    (typeof record.assetSymbol === "string" || typeof record.assetSymbol === "undefined") &&
+    (hasModernRequirements || hasLegacyRequirements)
   );
 }
 
 function isUpgradeQuote(value: unknown): value is X402UpgradeQuote {
   const record = asRecord(value);
+  const hasModernRequirements = asRecord(record?.paymentRequirements) && asRecord(record?.paymentRequired);
+  const hasLegacyRequirements = asRecord(record?.paymentRequired);
   return Boolean(
     record &&
     typeof record.scheme === "string" &&
@@ -110,7 +117,8 @@ function isUpgradeQuote(value: unknown): value is X402UpgradeQuote {
     typeof record.amountUsd === "string" &&
     typeof record.amountAtomic === "string" &&
     typeof record.description === "string" &&
-    asRecord(record.paymentRequired)
+    (typeof record.assetSymbol === "string" || typeof record.assetSymbol === "undefined") &&
+    (hasModernRequirements || hasLegacyRequirements)
   );
 }
 
@@ -238,19 +246,51 @@ export function parseTypedPaymentReceipt(
 }
 
 export function getReceiptPaymentRequirements(metadata: PaymentReceiptMetadata | undefined): X402PaymentRequirement | null {
+  if (!metadata) {
+    return null;
+  }
+
+  return metadata.quote.paymentRequirements
+    ?? getPaymentRequirementsFromRequired(metadata.quote.paymentRequired)
+    ?? null;
+}
+
+export function getReceiptPaymentRequired(metadata: PaymentReceiptMetadata | undefined): X402PaymentRequired | null {
   return metadata?.quote.paymentRequired ?? null;
 }
 
-export function getReceiptPaymentPayload(metadata: PaymentReceiptMetadata | undefined): Record<string, unknown> | string | null {
+export function getReceiptPaymentPayload(metadata: PaymentReceiptMetadata | undefined): X402PaymentPayload | Record<string, unknown> | string | null {
   if (!metadata) {
     return null;
   }
 
   if (metadata.paymentProof.parsed) {
-    return metadata.paymentProof.parsed;
+    return metadata.paymentProof.parsed as X402PaymentPayload | Record<string, unknown>;
   }
 
   return metadata.paymentProof.raw ?? null;
+}
+
+function getPaymentRequirementsFromRequired(value: unknown): X402PaymentRequirement | null {
+  const record = asRecord(value);
+  if (!record || !Array.isArray(record.accepts) || record.accepts.length === 0) {
+    return null;
+  }
+
+  const accepted = asRecord(record.accepts[0]);
+  if (
+    !accepted
+    || typeof accepted.scheme !== "string"
+    || typeof accepted.network !== "string"
+    || typeof accepted.asset !== "string"
+    || typeof accepted.amount !== "string"
+    || typeof accepted.payTo !== "string"
+    || typeof accepted.maxTimeoutSeconds !== "number"
+  ) {
+    return null;
+  }
+
+  return accepted as unknown as X402PaymentRequirement;
 }
 
 export function withReceiptConfirmation(
