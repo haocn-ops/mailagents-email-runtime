@@ -7,8 +7,9 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 TENANT_ID="${TENANT_ID:-t_billing_smoke_$(date +%s)}"
 AUTH_SCOPE="${AUTH_SCOPE_FOR_SMOKE:-task:read}"
-TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLXNtb2tlLXRvcHVwIn0=}"
-UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-eyJ0eCI6ImxvY2FsLXNtb2tlLXVwZ3JhZGUifQ==}"
+RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
+TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-topup-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
+UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-upgrade-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
 PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-manual}"
 
 TEMP_FILES=()
@@ -362,24 +363,12 @@ capture_request "POST" "/v1/billing/payment/confirm" "{
 assert_status "200"
 jq -e '
   .receipt.status == "settled" and
-  .account.pricingTier == "paid_review" and
-  .sendPolicy.pricingTier == "paid_review" and
-  .sendPolicy.outboundStatus == "external_review" and
-  .sendPolicy.externalSendEnabled == false and
-  .verificationStatus == "settled"
-' "$LAST_BODY" >/dev/null
-
-echo "Approving external sending..."
-capture_request "POST" "/v1/tenants/$TENANT_ID/send-policy/review-decision" '{
-  "decision": "approve_external"
-}' "x-admin-secret: $ADMIN_SECRET"
-assert_status "200"
-jq -e '
-  .decision == "approve_external" and
+  .account.pricingTier == "paid_active" and
   .sendPolicy.pricingTier == "paid_active" and
   .sendPolicy.outboundStatus == "external_enabled" and
   .sendPolicy.externalSendEnabled == true and
-  .account.pricingTier == "paid_active"
+  .sendPolicy.reviewRequired == false and
+  .verificationStatus == "settled"
 ' "$LAST_BODY" >/dev/null
 
 echo "Re-checking final billing account and send policy..."

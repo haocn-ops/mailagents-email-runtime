@@ -242,4 +242,17 @@ print(json.dumps({
   },
   "latestReceipt": receipts["items"][0] if receipts.get("items") else None,
 }, indent=2))
+
+assert quote["quote"]["targetPricingTier"] == "paid_review", quote
+assert pending["receipt"]["receiptType"] == "upgrade", pending
+assert pending["receipt"]["status"] == "pending", pending
+assert confirm.get("verificationStatus") == "settled", confirm
+assert confirm.get("receipt", {}).get("status") == "settled", confirm
+assert account["pricingTier"] == "paid_active", account
+assert policy["pricingTier"] == "paid_active", policy
+assert policy["outboundStatus"] == "external_enabled", policy
+assert policy["externalSendEnabled"] is True, policy
+assert policy["reviewRequired"] is False, policy
+assert receipts["items"][0]["status"] == "settled", receipts
+print("Real-chain upgrade smoke completed successfully.")
 PY

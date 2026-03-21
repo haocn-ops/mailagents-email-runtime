@@ -1014,12 +1014,13 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
       return json({ error: "Payment receipt metadata is missing targetPricingTier" }, { status: 409 });
     }
     const targetPricingTier = parsedMetadata.targetPricingTier;
+    const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
 
     const existingAccount = await ensureTenantBillingAccount(env, auth.tenantId);
     const account = await updateTenantBillingAccountProfile(env, {
       tenantId: auth.tenantId,
       status: existingAccount.status === "trial" ? "active" : undefined,
-      pricingTier: targetPricingTier,
+      pricingTier: approvedPricingTier,
       defaultNetwork: finalizedReceipt.network ?? undefined,
       defaultAsset: finalizedReceipt.asset ?? undefined,
     });
@@ -1027,11 +1028,11 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     const existingSendPolicy = await ensureTenantSendPolicy(env, auth.tenantId);
     const sendPolicy = await upsertTenantSendPolicy(env, {
       tenantId: auth.tenantId,
-      pricingTier: targetPricingTier,
-      outboundStatus: "external_review",
+      pricingTier: approvedPricingTier,
+      outboundStatus: "external_enabled",
       internalDomainAllowlist: existingSendPolicy.internalDomainAllowlist,
-      externalSendEnabled: false,
-      reviewRequired: true,
+      externalSendEnabled: true,
+      reviewRequired: false,
     });
 
     const settledReceipt = finalizedReceipt.status === "settled"
@@ -1055,7 +1056,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
       account,
       sendPolicy,
       verificationStatus: "settled",
-      message: "Upgrade payment settled and tenant moved to paid review.",
+      message: "Upgrade payment settled and external sending approved automatically.",
     });
   }
 
