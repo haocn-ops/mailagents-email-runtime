@@ -158,6 +158,16 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     humanReviewRequired: true,
   },
   {
+    name: "cancel_draft",
+    description: "Cancel a draft that has not been queued or sent yet.",
+    requiredScopes: ["draft:create"],
+    category: "draft_control",
+    recommendedForMailboxAgents: true,
+    riskLevel: "write",
+    sideEffecting: true,
+    humanReviewRequired: false,
+  },
+  {
     name: "send_email",
     description: "Create and send a mailbox-scoped outbound email in one MCP call.",
     requiredScopes: ["draft:create", "draft:send"],

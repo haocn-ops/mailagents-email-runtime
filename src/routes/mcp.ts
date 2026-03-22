@@ -41,6 +41,7 @@ import {
   getThread,
   listMessages,
   listTasks,
+  markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
 } from "../repositories/mail";
@@ -511,6 +512,17 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
       properties: {
         draftId: { type: "string" },
         idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "cancel_draft")!,
+    inputSchema: {
+      type: "object",
+      required: ["draftId"],
+      properties: {
+        draftId: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -1830,6 +1842,42 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       draftId,
       outboundJobId: result.outboundJobId,
       status: result.status,
+    };
+  }
+
+  if (toolName === "cancel_draft") {
+    const auth = await requireClaimsStrict(request, env, ["draft:create"]);
+
+    const draftId = requireString(args.draftId, "draftId");
+    const draft = await getDraft(env, draftId);
+    if (!draft) {
+      throw new McpToolError("resource_draft_not_found", "Draft not found");
+    }
+    const tenantError = enforceTenantAccess(auth, draft.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const agentError = enforceAgentAccess(auth, draft.agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+
+    if (draft.status === "queued" || draft.status === "sent") {
+      throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be cancelled`);
+    }
+
+    if (draft.status !== "cancelled") {
+      await markDraftStatus(env, draft.id, "cancelled");
+    }
+
+    return {
+      ok: true,
+      id: draft.id,
+      status: "cancelled",
     };
   }
 

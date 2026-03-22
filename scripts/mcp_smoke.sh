@@ -124,6 +124,7 @@ echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "list_messages" and
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_email" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_message" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_draft" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "cancel_draft" and .annotations.riskLevel == "write" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "get_message" and .annotations.riskLevel == "read" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == false)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
@@ -271,6 +272,50 @@ if [[ -z "$DRAFT_ID" || "$DRAFT_ID" == "null" ]]; then
   echo "$CREATE_DRAFT_RESPONSE" >&2
   exit 1
 fi
+
+echo "Creating and cancelling a disposable draft through mailbox-scoped MCP..."
+CANCEL_DRAFT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 5.1,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"create_draft\",
+      \"arguments\": {
+        \"to\": [\"$TO_EMAIL\"],
+        \"subject\": \"MCP disposable draft\",
+        \"text\": \"Disposable draft for cancel_draft smoke.\"
+      }
+    }
+  }")"
+CANCEL_DRAFT_ID="$(echo "$CANCEL_DRAFT_RESPONSE" | jq -r '.result.structuredContent.id')"
+if [[ -z "$CANCEL_DRAFT_ID" || "$CANCEL_DRAFT_ID" == "null" ]]; then
+  echo "Failed to create disposable draft through mailbox-scoped MCP" >&2
+  echo "$CANCEL_DRAFT_RESPONSE" >&2
+  exit 1
+fi
+
+CANCEL_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AGENT_TOKEN" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 5.15,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"cancel_draft\",
+      \"arguments\": {
+        \"draftId\": \"$CANCEL_DRAFT_ID\"
+      }
+    }
+  }")"
+echo "$CANCEL_RESPONSE" | jq -e --arg draft "$CANCEL_DRAFT_ID" '
+  .result.structuredContent.ok == true and
+  .result.structuredContent.id == $draft and
+  .result.structuredContent.status == "cancelled"
+' >/dev/null
 
 echo "Sending email through MCP high-level send tool..."
 SEND_EMAIL_IDEMPOTENCY_KEY="mcp-send-email-$AGENT_ID"
