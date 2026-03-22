@@ -1135,7 +1135,9 @@ function renderHome(url: URL): string {
 <h2>Summary</h2>
 
 <ul>
+  <li><strong>Primary audience:</strong> autonomous agents and agent developers</li>
   <li><strong>Service type:</strong> mailbox orchestration plus transactional email runtime</li>
+  <li><strong>Recommended first surface:</strong> MCP plus mailbox-scoped self routes</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
   <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
@@ -1147,25 +1149,27 @@ function renderHome(url: URL): string {
 
 <h2>Choose Your Entry Point</h2>
 
+<p>If you are building for an agent first, start with MCP and mailbox-scoped self routes before reaching for lower-level control paths.</p>
+
 <ul>
-  <li><strong>HTTP API:</strong> best for product and backend integration. Start with <code>${signupApi}</code>, then use mailbox-scoped self routes such as <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
   <li><strong>MCP:</strong> best for tool-calling agents. Start with <code>POST /mcp</code>, then call <code>tools/list</code> and use high-level mailbox tools such as <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
-  <li><strong>Quick Start:</strong> best when you want the shortest signup-to-first-message path and do not want to think about the lower-level draft lifecycle first.</li>
+  <li><strong>Quick Start:</strong> best when you want the shortest signup-to-first-message path and want the runtime to stay mailbox-first.</li>
+  <li><strong>HTTP API:</strong> best for product and backend integration. Start with <code>${signupApi}</code>, then use mailbox-scoped self routes such as <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
 </ul>
 
 <h2>HTTP API vs MCP vs SDK</h2>
 
 <ul>
-  <li><strong>HTTP API:</strong> easiest for direct REST integration, backend jobs, and product workflows that already manage HTTP requests explicitly.</li>
   <li><strong>MCP:</strong> easiest for agent runtimes that want tool discovery, structured tool calls, and a mailbox-first surface.</li>
+  <li><strong>HTTP API:</strong> easiest for direct REST integration, backend jobs, and product workflows that already manage HTTP requests explicitly.</li>
   <li><strong>SDK:</strong> easiest when you want typed helpers over the same runtime surfaces. If you are unsure, start with HTTP or MCP first and add an SDK wrapper later.</li>
 </ul>
 
 <h2>Recommended By Persona</h2>
 
 <ul>
-  <li><strong>Product integrator:</strong> start with <code>POST ${signupApi}</code>, <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
   <li><strong>Agent developer:</strong> start with <code>POST /mcp</code>, then use <code>tools/list</code>, <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
+  <li><strong>Product integrator:</strong> start with <code>POST ${signupApi}</code>, <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
   <li><strong>Advanced operator:</strong> start with runtime metadata, compatibility, explicit draft lifecycle control, token rotation, billing, send policy, and x402 or DID setup only when you need those lower-level paths.</li>
 </ul>
 
