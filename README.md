@@ -7,7 +7,7 @@ An email-first AI agent runtime built on:
 - Cloudflare Queues
 - Cloudflare R2
 - Cloudflare D1
-- Amazon SES
+- Amazon SES or Resend
 
 ## Current Status
 
@@ -25,7 +25,7 @@ Implemented runtime capabilities:
 - inbound email normalization with parsed content, thread state, attachments, and task creation
 - SES delivery event ingestion with persisted lifecycle records
 - tenant-scoped signed bearer-token auth for agent, task, mail, and draft operations
-- outbound SES sending, including `Raw` MIME for replies and attachments
+- outbound provider switching between SES and Resend, while preserving the same queue-backed send flow
 - mailbox-specific routing for inbound handling and replay jobs
 - versioned agent registry with mailbox deployments and deployment-aware execution traces
 - site, admin dashboard, contact inbox, and alias-management routes in the main Worker when the related bindings are configured
@@ -41,6 +41,13 @@ Current SES limitation as of 2026-03-18:
 - internal mailbox routing and internal operator verification flows can still work within the current setup
 - for SES-backed outbound validation, only send to verified identities or verified test recipients
 - successful runtime delivery to `support@mailagents.net` or other verified inboxes does not imply unrestricted outbound sending to arbitrary external customer addresses
+
+Preferred migration path away from SES sandbox:
+
+- set `OUTBOUND_PROVIDER=resend`
+- verify the sending domain in Resend
+- install `RESEND_API_KEY` as a Worker secret
+- keep the existing Cloudflare inbound routing, draft lifecycle, queue, and admin dashboard unchanged
 
 ## Agent Quick Start
 

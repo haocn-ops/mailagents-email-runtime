@@ -1,3 +1,4 @@
+import { getOutboundProvider } from "./outbound-provider";
 import type { Env } from "../types";
 
 export const RUNTIME_SERVER_INFO = {
@@ -470,6 +471,14 @@ export const COMPATIBILITY_CONTRACT_SCHEMA = {
       },
       additionalProperties: false,
     },
+    delivery: {
+      type: "object",
+      required: ["outboundProvider"],
+      properties: {
+        outboundProvider: { type: "string", enum: ["ses", "resend"] },
+      },
+      additionalProperties: false,
+    },
   },
   additionalProperties: false,
 } as const;
@@ -524,6 +533,9 @@ export function buildRuntimeMetadata(env: Env) {
     routes: {
       adminEnabled: isEnabled(env.ADMIN_ROUTES_ENABLED),
       debugEnabled: isEnabled(env.DEBUG_ROUTES_ENABLED),
+    },
+    delivery: {
+      outboundProvider: getOutboundProvider(env),
     },
   };
 }
@@ -594,5 +606,6 @@ export function buildCompatibilityContract(env: Env) {
     workflows: runtime.workflows,
     errors: MCP_ERROR_CODE_CATALOG,
     routes: runtime.routes,
+    delivery: runtime.delivery,
   };
 }

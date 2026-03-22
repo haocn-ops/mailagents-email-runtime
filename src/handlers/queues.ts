@@ -1,8 +1,7 @@
 import { parseRawEmail } from "../lib/email-parser";
-import { buildRawMimeMessage } from "../lib/mime";
+import { sendOutboundDraft } from "../lib/outbound-provider";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { enqueueDeadLetter } from "../lib/queue";
-import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
 import {
@@ -432,36 +431,20 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         { Name: "mailbox_id", Value: outboundMessage.mailboxId },
       ];
 
-      const shouldUseRaw = Boolean(inReplyTo || references.length > 0 || attachmentRefs.length > 0);
-
-      const sendResult = shouldUseRaw
-        ? await sendRawDraft(env, {
-            from,
-            to,
-            cc,
-            bcc,
-            subject,
-            text,
-            html,
-            inReplyTo,
-            references,
-            attachmentRefs,
-            replyToAddresses: [mailbox.address],
-            configurationSetName: env.SES_CONFIGURATION_SET,
-            emailTags,
-          })
-        : await sendSesSimpleEmail(env, {
-            from,
-            to,
-            cc,
-            bcc,
-            subject,
-            text,
-            html,
-            replyToAddresses: [mailbox.address],
-            configurationSetName: env.SES_CONFIGURATION_SET,
-            emailTags,
-          });
+      const sendResult = await sendOutboundDraft(env, {
+        from,
+        to,
+        cc,
+        bcc,
+        subject,
+        text,
+        html,
+        inReplyTo,
+        references,
+        attachmentRefs,
+        replyToAddresses: [mailbox.address],
+        emailTags,
+      });
 
       await markMessageSent(env, {
         messageId: outboundJob.messageId,
@@ -536,65 +519,6 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       }
     }
   }
-}
-
-async function sendRawDraft(env: Env, input: {
-  from: string;
-  to: string[];
-  cc: string[];
-  bcc: string[];
-  subject: string;
-  text?: string;
-  html?: string;
-  inReplyTo?: string;
-  references: string[];
-  attachmentRefs: Array<{ filename?: unknown; contentType?: unknown; r2Key?: unknown }>;
-  replyToAddresses: string[];
-  configurationSetName: string;
-  emailTags: Array<{ Name: string; Value: string }>;
-}) {
-  const attachments = [];
-  for (const ref of input.attachmentRefs) {
-    const r2Key = typeof ref.r2Key === "string" ? ref.r2Key : "";
-    if (!r2Key) {
-      continue;
-    }
-
-    const object = await env.R2_EMAIL.get(r2Key);
-    if (!object) {
-      throw new Error(`Attachment not found in R2: ${r2Key}`);
-    }
-
-    attachments.push({
-      filename: typeof ref.filename === "string" ? ref.filename : r2Key.split("/").pop() ?? "attachment.bin",
-      contentType: typeof ref.contentType === "string" ? ref.contentType : object.httpMetadata?.contentType ?? "application/octet-stream",
-      content: new Uint8Array(await object.arrayBuffer()),
-    });
-  }
-
-  const rawData = buildRawMimeMessage({
-    from: input.from,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    replyTo: input.replyToAddresses,
-    subject: input.subject,
-    text: input.text,
-    html: input.html,
-    inReplyTo: input.inReplyTo,
-    references: input.references,
-    attachments,
-  });
-
-  return await sendSesRawEmail(env, {
-    from: input.from,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    rawData,
-    configurationSetName: input.configurationSetName,
-    emailTags: input.emailTags,
-  });
 }
 
 function deadLetterFromError(source: string, refId: string, error: unknown): DeadLetterJob {

@@ -51,6 +51,8 @@ max_batch_size = 10
 max_batch_timeout = 5
 
 [vars]
+OUTBOUND_PROVIDER = "ses"
+RESEND_API_BASE_URL = "https://api.resend.com"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "local.mailagents.test"
 SES_CONFIGURATION_SET = "mailagents-local"
@@ -116,6 +118,8 @@ max_batch_size = 10
 max_batch_timeout = 5
 
 [env.dev.vars]
+OUTBOUND_PROVIDER = "ses"
+RESEND_API_BASE_URL = "https://api.resend.com"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-dev"
@@ -185,6 +189,8 @@ max_batch_size = 10
 max_batch_timeout = 5
 
 [env.staging.vars]
+OUTBOUND_PROVIDER = "ses"
+RESEND_API_BASE_URL = "https://api.resend.com"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "staging.mail.example.com"
 SES_CONFIGURATION_SET = "mailagents-staging"
@@ -254,6 +260,8 @@ max_batch_size = 10
 max_batch_timeout = 5
 
 [env.production.vars]
+OUTBOUND_PROVIDER = "resend"
+RESEND_API_BASE_URL = "https://api.resend.com"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-production"

@@ -1179,7 +1179,7 @@ function renderHome(url: URL): string {
 
 <h2>Availability And Constraints</h2>
 
-<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until external SES delivery capacity and credit-backed outbound policy are both available for the active tenant and region.</p>
+<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
 
 <ul>
   <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
@@ -1225,7 +1225,7 @@ content-type: application/json
 <ul>
   <li><code>mailboxAlias</code>: desired local-part under <code>mailagents.net</code></li>
   <li><code>agentName</code>: default agent display name</li>
-  <li><code>operatorEmail</code>: operator inbox for welcome and token-reissue email; external delivery may be sandbox-limited unless the recipient is verified in SES</li>
+  <li><code>operatorEmail</code>: operator inbox for welcome and token-reissue email; external delivery may still require verified-recipient setup while the active outbound provider remains constrained</li>
   <li><code>productName</code>: product context used in metadata</li>
   <li><code>useCase</code>: short description of the mailbox workflow</li>
 </ul>
@@ -1279,7 +1279,7 @@ content-type: application/json
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
   <li><strong>Expired token:</strong> call <code>POST /public/token/reissue</code>. The API always returns a generic acceptance response and, if the mailbox exists, attempts to email a refreshed token only to the original <code>operatorEmail</code>.</li>
   <li><strong>Still-valid token:</strong> call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the rotated token inline, deliver it back to the mailbox itself, or do both without emailing the operator.</li>
-  <li><strong>Current SES constraint:</strong> public reissue email to arbitrary external operator inboxes is not guaranteed while SES remains sandbox-limited.</li>
+  <li><strong>Current external delivery constraint:</strong> public reissue email to arbitrary external operator inboxes is not guaranteed until the active outbound provider is fully enabled for external delivery.</li>
   <li><strong>Current session safety:</strong> public reissue does not invalidate the token an agent is already using. Authenticated rotate also leaves the previous token valid for now.</li>
 </ul>
 
@@ -1433,7 +1433,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   }'</code></pre>
 
 <p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered only to the original <code>operatorEmail</code> from signup.</p>
-<p>While SES remains sandbox-limited for external recipients, treat that delivery as best-effort unless the destination inbox is verified in SES.</p>
+<p>While external outbound delivery remains limited for arbitrary external recipients, treat that path as best-effort unless the destination inbox is on a verified validation path for the active provider.</p>
 <p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
 <h3>12. Rotate A Still-Valid Token</h3>

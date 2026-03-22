@@ -7,11 +7,18 @@ ADMIN_API_SECRET=replace-with-admin-api-secret
 ADMIN_ROUTES_ENABLED=true
 DEBUG_ROUTES_ENABLED=true
 
+# Optional outbound provider selection
+OUTBOUND_PROVIDER=ses
+
 # Optional for real SES-backed outbound validation
 SES_ACCESS_KEY_ID=replace-with-aws-access-key-id
 SES_SECRET_ACCESS_KEY=replace-with-aws-secret-access-key
 SES_MOCK_SEND=false
 SES_MOCK_SEND_DELAY_MS=1500
+
+# Optional for real Resend-backed outbound validation
+RESEND_API_KEY=replace-with-resend-api-key
+RESEND_API_BASE_URL=https://api.resend.com
 
 # Optional for contact inbox, alias-management, and Email Routing admin flows
 CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false

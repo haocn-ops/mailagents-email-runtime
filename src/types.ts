@@ -14,6 +14,7 @@ export type PaymentReceiptType = "topup" | "upgrade" | "refund" | "adjustment";
 export type PaymentReceiptStatus = "pending" | "verified" | "settled" | "failed" | "refunded";
 export type DidBindingStatus = "pending" | "verified" | "revoked";
 export type TenantOutboundStatus = "internal_only" | "external_review" | "external_enabled" | "suspended";
+export type OutboundProvider = "ses" | "resend";
 
 export interface MailboxRecord {
   id: string;
@@ -39,6 +40,9 @@ export interface Env {
   SES_SECRET_KEY?: string;
   SES_MOCK_SEND?: string;
   SES_MOCK_SEND_DELAY_MS?: string;
+  OUTBOUND_PROVIDER?: string;
+  RESEND_API_KEY?: string;
+  RESEND_API_BASE_URL?: string;
   WEBHOOK_SHARED_SECRET?: string;
   API_SIGNING_SECRET?: string;
   SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS?: string;
@@ -233,7 +237,7 @@ export interface MessageRecord {
   mailboxId: string;
   threadId?: string;
   direction: "inbound" | "outbound";
-  provider: "cloudflare" | "ses";
+  provider: "cloudflare" | OutboundProvider;
   internetMessageId?: string;
   providerMessageId?: string;
   fromAddr: string;

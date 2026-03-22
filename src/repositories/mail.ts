@@ -1,6 +1,7 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { getOutboundCreditRequirement } from "../lib/outbound-credits";
+import { getOutboundProvider } from "../lib/outbound-provider";
 import { releaseTenantReservedCredits, reserveTenantAvailableCredits } from "./billing";
 import { nowIso } from "../lib/time";
 import type { DeliveryEventType, DraftRecord, Env, IdempotencyRecord, MessageContentRecord, MessageRecord, OutboundJobRecord, TaskRecord, ThreadRecord } from "../types";
@@ -827,7 +828,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
       draft.mailboxId,
       draft.threadId ?? null,
       "outbound",
-      "ses",
+      getOutboundProvider(env),
       fromAddress,
       Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
       typeof draftPayload.subject === "string" ? draftPayload.subject : "",

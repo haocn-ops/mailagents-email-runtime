@@ -9,11 +9,14 @@ cat <<EOF
 # Run these commands manually and paste the secret values when prompted.
 #
 # Required secrets:
-wrangler secret put SES_ACCESS_KEY_ID --env ${ENVIRONMENT}
-wrangler secret put SES_SECRET_ACCESS_KEY --env ${ENVIRONMENT}
 wrangler secret put WEBHOOK_SHARED_SECRET --env ${ENVIRONMENT}
 wrangler secret put API_SIGNING_SECRET --env ${ENVIRONMENT}
 wrangler secret put ADMIN_API_SECRET --env ${ENVIRONMENT}
+#
+# Optional outbound provider secrets:
+wrangler secret put RESEND_API_KEY --env ${ENVIRONMENT}
+wrangler secret put SES_ACCESS_KEY_ID --env ${ENVIRONMENT}
+wrangler secret put SES_SECRET_ACCESS_KEY --env ${ENVIRONMENT}
 #
 # Optional secret for contact-alias admin and Cloudflare Email Routing automation:
 wrangler secret put CLOUDFLARE_API_TOKEN --env ${ENVIRONMENT}
@@ -25,6 +28,8 @@ wrangler secret put X402_PAY_TO --env ${ENVIRONMENT}
 # - Use unique WEBHOOK_SHARED_SECRET per environment
 # - Use unique API_SIGNING_SECRET per environment
 # - Use unique ADMIN_API_SECRET per environment
+# - Use RESEND_API_KEY when OUTBOUND_PROVIDER=resend
+# - Use SES credentials when OUTBOUND_PROVIDER=ses
 # - Only set CLOUDFLARE_API_TOKEN on environments that should manage Email Routing
 # - Set X402_FACILITATOR_AUTH_TOKEN only when using a real facilitator
 # - Set X402_PAY_TO to the settlement recipient expected by your facilitator
@@ -35,6 +40,8 @@ wrangler secret put X402_PAY_TO --env ${ENVIRONMENT}
 # - production: ADMIN_ROUTES_ENABLED=false, DEBUG_ROUTES_ENABLED=false
 #
 # Runtime site/admin vars to confirm in wrangler.toml:
+# - OUTBOUND_PROVIDER
+# - RESEND_API_BASE_URL
 # - CLOUDFLARE_ZONE_ID
 # - CLOUDFLARE_EMAIL_DOMAIN
 # - CLOUDFLARE_EMAIL_WORKER

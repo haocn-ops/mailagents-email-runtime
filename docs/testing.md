@@ -235,7 +235,8 @@ Notes:
 
 - `smoke:credits:local:auto` starts the worker with `SES_MOCK_SEND=true` and a
   small mock delay so the script can assert the intermediate
-  `availableCredits/reservedCredits` reservation state before capture.
+  `availableCredits/reservedCredits` reservation state before capture. The flag is
+  currently reused as the generic outbound mock toggle even when `OUTBOUND_PROVIDER=resend`.
 - The script tops up the seeded demo tenant, enables external sending, verifies
   one successful external send captures a reserved credit, then verifies one
   suppressed-recipient send releases its reservation without adding a debit
@@ -303,13 +304,13 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks/ses \
 
 ## Notes
 
-- The smoke script does not guarantee SES actually delivered an outbound message.
+- The smoke script does not guarantee the configured outbound provider actually delivered an outbound message.
 - It verifies that the local API and queue-facing lifecycle can be exercised end to end.
 - It asserts key response fields with `jq` so obvious regressions fail fast.
 - Debug endpoints are admin-secret protected and intended only for local/dev verification.
 - The billing + DID smoke intentionally uses manual settlement via `x-admin-secret`; it is a regression harness for the current skeleton flow, not proof that a facilitator integration is live.
 - For the first real Base Sepolia + USDC payment run, follow [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) after facilitator credentials and `X402_PAY_TO` are configured.
-- For production confidence, add real integration tests around D1 state assertions and SES callback handling.
+- For production confidence, add real integration tests around D1 state assertions and provider callback handling.
 - If SES is still sandbox-limited, external outbound smoke coverage must be scoped to verified recipient addresses.
 - In deployed `dev`, the negative MCP mailbox-binding check can legitimately return either
   `resource_mailbox_not_found` or `access_mailbox_denied`, depending on token mailbox scope.
