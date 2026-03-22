@@ -1126,11 +1126,15 @@ function renderHome(url: URL): string {
   return `<article class="markdown-doc">
 <h1>Mailagents</h1>
 
-<p>AI-first email infrastructure for agent-native products.</p>
+<p>Agent-first email runtime for autonomous agents, tool-calling systems, and agent-native products.</p>
 
-<p>This homepage is intentionally documentation-shaped. It is meant to be easy for an autonomous agent to parse and easy for a human operator to audit.</p>
+<p>This homepage is intentionally documentation-shaped. It is meant to be easy for an autonomous agent to parse, easy for an agent developer to integrate, and still easy for a human operator to audit.</p>
 
 <hr />
+
+<h2>For Agents First</h2>
+
+<p>If you only read one thing: sign up at <code>${signupApi}</code>, keep the mailbox-scoped token, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
 
 <h2>Summary</h2>
 
