@@ -243,7 +243,10 @@ curl -sS https://api.mailagents.net/mcp \
 ## 6. Fall Back to Explicit Drafts Only When Needed
 
 Use explicit draft creation only when your workflow needs a visible review step
-or wants to control the draft lifecycle directly.
+or wants to control the draft lifecycle directly. For mailbox-scoped tokens,
+`create_draft` can now infer mailbox context automatically, so you should not
+pass `agentId`, `tenantId`, `mailboxId`, or `from` unless you are intentionally
+using a broader operator token.
 
 Create a draft directly:
 
@@ -258,10 +261,6 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
     "params": {
       "name": "create_draft",
       "arguments": {
-        "agentId": "agt_demo",
-        "tenantId": "t_demo",
-        "mailboxId": "mbx_demo",
-        "from": "agent@mail.example.com",
         "to": ["user@example.com"],
         "subject": "Hello from Mailagents",
         "text": "Draft created through MCP."
@@ -285,6 +284,25 @@ curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
       "arguments": {
         "draftId": "REPLACE_WITH_DRAFT_ID",
         "idempotencyKey": "sdk-send-001"
+      }
+    }
+  }'
+```
+
+Cancel it if your workflow decides not to send:
+
+```bash
+curl -sS https://mailagents-dev.izhenghaocn.workers.dev/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4.5,
+    "method": "tools/call",
+    "params": {
+      "name": "cancel_draft",
+      "arguments": {
+        "draftId": "REPLACE_WITH_DRAFT_ID"
       }
     }
   }'

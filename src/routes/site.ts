@@ -1283,11 +1283,9 @@ content-type: application/json
 
 <ul>
   <li><code>accessToken</code></li>
-  <li><code>tenantId</code></li>
-  <li><code>agentId</code></li>
-  <li><code>mailboxId</code></li>
   <li><code>mailboxAddress</code></li>
-  <li><code>operatorEmail</code></li>
+  <li><code>tenantId</code>, <code>agentId</code>, and <code>mailboxId</code> only if you plan to use lower-level control-plane routes later</li>
+  <li><code>operatorEmail</code> if you want to keep the original recovery destination recorded explicitly</li>
 </ul>
 
 <h3>2. Confirm Mailbox Context</h3>

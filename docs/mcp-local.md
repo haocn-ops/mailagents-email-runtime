@@ -144,10 +144,6 @@ curl -sS http://127.0.0.1:8787/mcp \
     "params": {
       "name": "create_draft",
       "arguments": {
-        "agentId": "agt_demo",
-        "tenantId": "t_demo",
-        "mailboxId": "mbx_demo",
-        "from": "agent@mail.example.com",
         "to": ["user@example.com"],
         "subject": "Hello from MCP",
         "text": "Draft created through the Mailagents MCP endpoint."
@@ -155,6 +151,11 @@ curl -sS http://127.0.0.1:8787/mcp \
     }
   }'
 ```
+
+For mailbox-scoped tokens, this is the recommended draft path. The runtime can
+infer `agentId`, `tenantId`, `mailboxId`, and `from` from the bearer token.
+Only pass them explicitly when you are using a broader operator token and want
+to override the defaults on purpose.
 
 Advanced example: send a draft idempotently
 
@@ -171,6 +172,25 @@ curl -sS http://127.0.0.1:8787/mcp \
       "arguments": {
         "draftId": "REPLACE_WITH_DRAFT_ID",
         "idempotencyKey": "mcp-send-001"
+      }
+    }
+  }'
+```
+
+Advanced example: cancel a draft before send
+
+```bash
+curl -sS http://127.0.0.1:8787/mcp \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 5.25,
+    "method": "tools/call",
+    "params": {
+      "name": "cancel_draft",
+      "arguments": {
+        "draftId": "REPLACE_WITH_DRAFT_ID"
       }
     }
   }'
