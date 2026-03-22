@@ -248,3 +248,123 @@ The key product move is:
 
 That is the fastest path to making Mailagents feel simpler without weakening
 the runtime guarantees that already work.
+
+## 2026-03-22 Retest Follow-Ups
+
+On 2026-03-22, a second round of black-box and SDK-style retest feedback came
+through `hello@mailagents.net` from a tracking mailbox. The key signal changed:
+
+- the biggest pain is no longer core capability gaps
+- the next gains are mostly homepage clarity, docs clarity, and recommended-path
+  shaping
+
+The mailbox-scoped MCP visibility gap for draft cancel was raised again in that
+email, and has since been fixed in the runtime:
+
+- `cancel_draft` is now exposed in mailbox-scoped MCP `tools/list`
+- mailbox-scoped tokens can call `cancel_draft`
+- production was revalidated live after deployment
+
+So the remaining work from the 2026-03-22 retest is mostly product-surface and
+docs work.
+
+### Updated Priority
+
+1. High: make the top-level product entry points explicit on the homepage
+2. High: add a short HTTP API vs MCP vs SDK comparison block
+3. High: make Quick Start prefer mailbox-scoped high-level routes first
+4. Medium: update examples to match inferred-context `create_draft`
+5. Medium: turn the delivery notice into a productized availability/status block
+6. Medium: add persona-based recommended paths
+7. Medium: strengthen troubleshooting around delivery limits and status semantics
+8. Done: expose `cancel_draft` consistently in mailbox-scoped MCP visibility
+
+### Recommended Homepage Changes
+
+The homepage should make the first product choice obvious before the user reads
+any deeper examples.
+
+Recommended top-level blocks:
+
+- `HTTP API` for backend or product integration
+- `MCP` for tool-calling and agent frameworks
+- `Quick Start` for the shortest mailbox-scoped onboarding path
+
+Recommended outcome:
+
+- a user should know within one screen which path is for them
+- the homepage should no longer assume the reader already understands the
+  difference between HTTP, MCP, and SDK surfaces
+
+### Recommended Quick Start Changes
+
+The Quick Start should prefer the highest-level stable mailbox-scoped paths
+first, and only position explicit draft lifecycle control as the advanced path.
+
+Recommended first-path sequence:
+
+1. `POST /public/signup`
+2. `GET /v1/mailboxes/self`
+3. `GET /v1/mailboxes/self/messages`
+4. `POST /v1/messages/send`
+5. `POST /v1/messages/{messageId}/reply`
+
+Advanced path:
+
+- `create_draft`
+- `get_draft`
+- `send_draft`
+- `cancel_draft`
+
+### Recommended Docs Changes
+
+The docs should be more opinionated about who each surface is for.
+
+Recommended persona split:
+
+- `Product integrator`
+  - use HTTP API and self routes first
+- `Agent developer`
+  - use MCP first, especially `list_messages`, `send_email`,
+    `reply_to_message`, and now `cancel_draft`
+- `Advanced operator`
+  - use explicit draft lifecycle, policy routes, replay flows, and lower-level
+    diagnostics
+
+Recommended comparison block content:
+
+- `HTTP API`
+  - easiest for backend integration and direct REST calls
+- `MCP`
+  - easiest for agent runtimes and tool-calling models
+- `SDK`
+  - easiest when you want a typed wrapper over one of the above
+
+### Recommended Troubleshooting Changes
+
+The current troubleshooting guidance should better separate these failure
+classes:
+
+- external delivery path constraints
+- replied status timing vs body readability timing
+- token recovery choices
+  - inline token from signup
+  - welcome email delivery
+  - public reissue
+  - rotate / refresh
+
+Recommended principle:
+
+- avoid one generic "delivery notice"
+- instead show what is available, what is constrained, and which fallback path
+  is still usable
+
+### Recommended Implementation Order For The Next Docs/Surface Pass
+
+1. update homepage top-level entry points
+2. add HTTP API vs MCP vs SDK comparison block
+3. rewrite Quick Start around mailbox-scoped self routes and high-level send/reply
+4. refresh examples that still show the older explicit-parameter `create_draft`
+   flow
+5. replace the delivery notice with a productized availability/status block
+6. strengthen troubleshooting and persona-specific recommendations

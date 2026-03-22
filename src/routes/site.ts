@@ -1145,14 +1145,30 @@ function renderHome(url: URL): string {
   <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
 </ul>
 
-<h2>Current Delivery Notice</h2>
-
-<p>External operator inbox delivery is currently constrained by a mix of AWS SES environment limits and outbound credit enforcement. The signup API still returns a mailbox-scoped bearer token inline, but welcome emails and public token reissue emails should be treated as best-effort until both external delivery capacity and credit-backed sending are available for the active tenant and region.</p>
+<h2>Choose Your Entry Point</h2>
 
 <ul>
-  <li><strong>Signup still works:</strong> save the inline <code>accessToken</code> from the signup response.</li>
-  <li><strong>Welcome email is not guaranteed for arbitrary external inboxes:</strong> <code>operatorEmail</code> delivery may fail because of current SES delivery limits or insufficient outbound credits.</li>
-  <li><strong>Public token reissue is acceptance-only:</strong> the API can accept the request even when external email delivery remains blocked by SES constraints or outbound credit policy.</li>
+  <li><strong>HTTP API:</strong> best for product and backend integration. Start with <code>${signupApi}</code>, then use mailbox-scoped self routes such as <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
+  <li><strong>MCP:</strong> best for tool-calling agents. Start with <code>POST /mcp</code>, then call <code>tools/list</code> and use high-level mailbox tools such as <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
+  <li><strong>Quick Start:</strong> best when you want the shortest signup-to-first-message path and do not want to think about the lower-level draft lifecycle first.</li>
+</ul>
+
+<h2>HTTP API vs MCP vs SDK</h2>
+
+<ul>
+  <li><strong>HTTP API:</strong> easiest for direct REST integration, backend jobs, and product workflows that already manage HTTP requests explicitly.</li>
+  <li><strong>MCP:</strong> easiest for agent runtimes that want tool discovery, structured tool calls, and a mailbox-first surface.</li>
+  <li><strong>SDK:</strong> easiest when you want typed helpers over the same runtime surfaces. If you are unsure, start with HTTP or MCP first and add an SDK wrapper later.</li>
+</ul>
+
+<h2>Availability And Constraints</h2>
+
+<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until external SES delivery capacity and credit-backed outbound policy are both available for the active tenant and region.</p>
+
+<ul>
+  <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
+  <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
+  <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
 </ul>
 
 <h2>Intended Use</h2>
@@ -1224,15 +1240,16 @@ content-type: application/json
 <h2>Quick Start</h2>
 
 <p>If you want the shortest path from signup to a working agent mailbox, use this sequence.</p>
-<p>While SES remains sandbox-limited for external recipients, treat the inline signup response as the primary onboarding path and do not assume the operator welcome email will arrive for an arbitrary external inbox.</p>
+<p>This path intentionally prefers mailbox-scoped self routes and high-level send/reply routes first. Treat explicit draft lifecycle control as the advanced path.</p>
 
 <ol>
-  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
+  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code> and <code>mailboxAddress</code>.</li>
   <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
-  <li>Discover runtime tools with <code>POST /mcp</code> and method <code>tools/list</code>.</li>
-  <li>Read inbound mail with <code>list_messages</code> or the mailbox self routes.</li>
-  <li>Send outbound mail with <code>send_email</code>.</li>
-  <li>Reply on-thread with <code>reply_to_message</code>.</li>
+  <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
+  <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
+  <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
+  <li>Reply on-thread with <code>POST /v1/messages/{messageId}/reply</code>.</li>
+  <li>Use <code>POST /mcp</code> and <code>tools/list</code> when you want the MCP tool surface instead of direct HTTP.</li>
 </ol>
 
 <p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
@@ -1273,7 +1290,43 @@ content-type: application/json
   <li><code>operatorEmail</code></li>
 </ul>
 
-<h3>2. Discover Available Tools</h3>
+<h3>2. Confirm Mailbox Context</h3>
+
+<pre><code>curl -sS https://api.mailagents.net/v1/mailboxes/self \
+  -H "authorization: Bearer $TOKEN" | jq</code></pre>
+
+<p>This is the fastest way to confirm which mailbox the current token is bound to before reading or sending mail.</p>
+
+<h3>3. Read Mailbox Messages</h3>
+
+<pre><code>curl -sS https://api.mailagents.net/v1/mailboxes/self/messages \
+  -H "authorization: Bearer $TOKEN" | jq</code></pre>
+
+<p>Mailbox-scoped tokens can use the self routes directly. This is the recommended first read path for product or backend integrations.</p>
+
+<h3>4. Send a New Email With The HTTP API</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/messages/send \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "to": ["recipient@example.com"],
+    "subject": "Hello from Mailagents",
+    "text": "Sent through the mailbox-scoped HTTP send route.",
+    "idempotencyKey": "send-demo-001"
+  }' | jq</code></pre>
+
+<h3>5. Reply To An Inbound Message With The HTTP API</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/messages/REPLACE_WITH_MESSAGE_ID/reply \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "text": "Thanks for your message.",
+    "idempotencyKey": "reply-demo-001"
+  }' | jq</code></pre>
+
+<h3>6. Discover MCP Tools</h3>
 
 <pre><code>curl -sS ${runtimeMetadata} | jq
 
@@ -1287,7 +1340,9 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "params": {}
   }' | jq</code></pre>
 
-<h3>3. Read Mailbox Messages</h3>
+<p>Use MCP when you want the runtime to show its mailbox-scoped tool surface directly, including <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</p>
+
+<h3>7. Read Mailbox Messages With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1305,9 +1360,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }'</code></pre>
 
-<p>Mailbox-scoped tokens can also use the HTTP self routes directly, for example <code>GET /v1/mailboxes/self/messages</code>.</p>
-
-<h3>4. Send a New Email</h3>
+<h3>8. Send A New Email With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1327,7 +1380,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }' | jq</code></pre>
 
-<h3>5. Reply to an Inbound Message</h3>
+<h3>9. Reply To An Inbound Message With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1346,9 +1399,18 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }' | jq</code></pre>
 
-<p>Use <code>tools/list</code> to discover the full MCP surface. The default mailbox-scoped token is expected to use <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code> as the primary workflow path.</p>
+<h3>10. Advanced Draft Control</h3>
 
-<h3>6. Reissue an Expired Token</h3>
+<p>When you need explicit lifecycle control, use the draft path as the advanced workflow:</p>
+
+<ul>
+  <li><code>create_draft</code> or <code>POST /v1/agents/{agentId}/drafts</code></li>
+  <li><code>get_draft</code> or <code>GET /v1/drafts/{draftId}</code></li>
+  <li><code>send_draft</code> or <code>POST /v1/drafts/{draftId}/send</code></li>
+  <li><code>cancel_draft</code> or <code>DELETE /v1/drafts/{draftId}</code></li>
+</ul>
+
+<h3>11. Reissue An Expired Token</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/public/token/reissue \
   -H 'content-type: application/json' \
@@ -1360,7 +1422,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
 <p>While SES remains sandbox-limited for external recipients, treat that delivery as best-effort unless the destination inbox is verified in SES.</p>
 <p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
-<h3>7. Rotate a Still-Valid Token</h3>
+<h3>12. Rotate A Still-Valid Token</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/v1/auth/token/rotate \
   -H 'content-type: application/json' \
