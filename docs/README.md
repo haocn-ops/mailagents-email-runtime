@@ -12,6 +12,24 @@ If you only want the minimum reading order:
 3. [docs/local-dev.md](./local-dev.md) for local setup
 4. [docs/deployment.md](./deployment.md) for remote environments
 
+## Recommended By Persona
+
+If you are a:
+
+- product integrator
+  - [docs/llms-agent-guide.md](./llms-agent-guide.md)
+  - [docs/agent-sdk-examples.md](./agent-sdk-examples.md)
+  - [docs/openapi.yaml](./openapi.yaml)
+- agent developer
+  - [docs/mcp-local.md](./mcp-local.md)
+  - [docs/agent-sdk-examples.md](./agent-sdk-examples.md)
+  - [docs/runtime-metadata.md](./runtime-metadata.md)
+- advanced operator
+  - [docs/deployment.md](./deployment.md)
+  - [docs/testing.md](./testing.md)
+  - [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md)
+  - [docs/production-rollout-checklist.md](./production-rollout-checklist.md)
+
 ## External Agent Integrators
 
 Use this set when you are building an agent, SDK, or orchestration layer

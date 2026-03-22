@@ -125,6 +125,12 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 
 See [`docs/README.md`](docs/README.md) for the full documentation map by reader type and task.
 
+Recommended by persona:
+
+- product integrator: [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/openapi.yaml`](docs/openapi.yaml)
+- agent developer: [`docs/mcp-local.md`](docs/mcp-local.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/runtime-metadata.md`](docs/runtime-metadata.md)
+- advanced operator: [`docs/deployment.md`](docs/deployment.md), [`docs/testing.md`](docs/testing.md), [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md)
+
 Recommended entry points:
 
 - [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for the fastest agent-integrator overview

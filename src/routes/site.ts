@@ -1161,6 +1161,14 @@ function renderHome(url: URL): string {
   <li><strong>SDK:</strong> easiest when you want typed helpers over the same runtime surfaces. If you are unsure, start with HTTP or MCP first and add an SDK wrapper later.</li>
 </ul>
 
+<h2>Recommended By Persona</h2>
+
+<ul>
+  <li><strong>Product integrator:</strong> start with <code>POST ${signupApi}</code>, <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
+  <li><strong>Agent developer:</strong> start with <code>POST /mcp</code>, then use <code>tools/list</code>, <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
+  <li><strong>Advanced operator:</strong> start with runtime metadata, compatibility, explicit draft lifecycle control, token rotation, billing, send policy, and x402 or DID setup only when you need those lower-level paths.</li>
+</ul>
+
 <h2>Availability And Constraints</h2>
 
 <p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until external SES delivery capacity and credit-backed outbound policy are both available for the active tenant and region.</p>
