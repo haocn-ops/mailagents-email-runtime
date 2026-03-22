@@ -49,6 +49,8 @@ import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 type JsonRpcId = string | number | null;
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+const MCP_ALLOW_METHODS = "POST, OPTIONS";
+const MCP_ALLOW_HEADERS = "authorization, content-type";
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -470,7 +472,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "create_draft")!,
     inputSchema: {
       type: "object",
-      required: ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
+      required: ["to", "subject"],
       properties: {
         agentId: { type: "string" },
         tenantId: { type: "string" },
@@ -722,6 +724,20 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
       details,
     },
   };
+}
+
+function withMcpCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-methods", MCP_ALLOW_METHODS);
+  headers.set("access-control-allow-headers", MCP_ALLOW_HEADERS);
+  headers.set("access-control-max-age", "86400");
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 async function validateBindingResources(
@@ -1649,10 +1665,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
   if (toolName === "create_draft") {
     const auth = await requireClaimsStrict(request, env, ["draft:create"]);
 
-    const agentId = requireString(args.agentId, "agentId");
-    const tenantId = requireString(args.tenantId, "tenantId");
-    const mailboxId = requireString(args.mailboxId, "mailboxId");
-    const from = requireString(args.from, "from");
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId), { requireActive: true });
+    const agentId = optionalString(args.agentId) ?? requireSelfAgentId(auth);
+    const tenantId = optionalString(args.tenantId) ?? mailbox.tenant_id;
+    const mailboxId = mailbox.id;
+    const from = optionalString(args.from) ?? mailbox.address;
     const to = requireStringArray(args.to, "to");
     const subject = requireString(args.subject, "subject");
     const tenantError = enforceTenantAccess(auth, tenantId);
@@ -2106,6 +2123,9 @@ router.on("POST", "/mcp", async (request, env) => {
   return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
 });
 
+router.on("OPTIONS", "/mcp", async () => withMcpCors(new Response(null, { status: 204 })));
+
 export async function handleMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  return await router.handle(request, env, ctx);
+  const response = await router.handle(request, env, ctx);
+  return response ? withMcpCors(response) : null;
 }

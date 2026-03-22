@@ -1147,12 +1147,12 @@ function renderHome(url: URL): string {
 
 <h2>Current Delivery Notice</h2>
 
-<p>External operator inbox delivery is currently constrained by AWS SES sandbox rules. The signup API still returns a mailbox-scoped bearer token inline, but welcome emails and public token reissue emails should be treated as verified-recipient-only until unrestricted SES production access is restored for the active account and region.</p>
+<p>External operator inbox delivery is currently constrained by a mix of AWS SES environment limits and outbound credit enforcement. The signup API still returns a mailbox-scoped bearer token inline, but welcome emails and public token reissue emails should be treated as best-effort until both external delivery capacity and credit-backed sending are available for the active tenant and region.</p>
 
 <ul>
   <li><strong>Signup still works:</strong> save the inline <code>accessToken</code> from the signup response.</li>
-  <li><strong>Welcome email is not guaranteed for arbitrary external inboxes:</strong> <code>operatorEmail</code> delivery may fail unless the recipient is verified in SES.</li>
-  <li><strong>Public token reissue is acceptance-only:</strong> the API can accept the request even when external email delivery remains sandbox-limited.</li>
+  <li><strong>Welcome email is not guaranteed for arbitrary external inboxes:</strong> <code>operatorEmail</code> delivery may fail because of current SES delivery limits or insufficient outbound credits.</li>
+  <li><strong>Public token reissue is acceptance-only:</strong> the API can accept the request even when external email delivery remains blocked by SES constraints or outbound credit policy.</li>
 </ul>
 
 <h2>Intended Use</h2>

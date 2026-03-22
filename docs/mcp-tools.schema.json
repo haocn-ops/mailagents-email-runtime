@@ -231,7 +231,7 @@
         "composite": false,
         "inputSchema": {
           "type": "object",
-          "required": ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
+          "required": ["to", "subject"],
           "properties": {
             "agentId": { "type": "string" },
             "tenantId": { "type": "string" },

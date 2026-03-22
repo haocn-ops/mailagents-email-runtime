@@ -2707,6 +2707,43 @@ router.on("GET", "/v1/drafts/:draftId", async (request, env, _ctx, route) => {
   return json(draft);
 });
 
+router.on("DELETE", "/v1/drafts/:draftId", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["draft:create"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const draft = await getDraft(env, route.params.draftId);
+  if (!draft) {
+    return json({ error: "Draft not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(auth, draft.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const agentError = enforceAgentAccess(auth, draft.agentId);
+  if (agentError) {
+    return agentError;
+  }
+  const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
+  if (mailboxError) {
+    return mailboxError;
+  }
+
+  if (draft.status === "queued" || draft.status === "sent") {
+    return json({ error: `Draft status ${draft.status} cannot be cancelled` }, { status: 409 });
+  }
+
+  if (draft.status !== "cancelled") {
+    await markDraftStatus(env, draft.id, "cancelled");
+  }
+
+  return json({
+    ok: true,
+    id: draft.id,
+    status: "cancelled",
+  });
+});
+
 router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) => {
   const auth = await requireAuth(request, env, ["draft:send"]);
   if (auth instanceof Response) {
