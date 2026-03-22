@@ -1,9 +1,7 @@
 import {
   isCatchAllWorkerRule,
   listEmailRoutingRules,
-  requireCloudflareEmailConfig,
   upsertCatchAllWorkerRule,
-  upsertWorkerRule,
 } from "../cloudflare-email";
 import { readJson } from "../http";
 import { createId } from "../ids";
@@ -61,6 +59,8 @@ export interface SignupSuccessResult {
   accessTokenExpiresAt?: string;
   accessTokenScopes: string[];
   outboundJobId?: string;
+  routingStatus: "configured" | "skipped" | "failed";
+  routingError?: string;
   welcomeStatus: "queued" | "failed";
   welcomeError?: string;
 }
@@ -113,15 +113,6 @@ export async function parseSelfServeSignup(request: Request): Promise<
 }
 
 export async function performSelfServeSignup(env: Env, values: SignupFormValues): Promise<SignupSuccessResult> {
-  const configError = requireCloudflareEmailConfig(env);
-  if (configError) {
-    throw new SignupError("Self-serve signup is not configured on this environment yet. Please use the contact address instead.", 503);
-  }
-
-  if (!env.CLOUDFLARE_EMAIL_WORKER) {
-    throw new SignupError("Mailbox provisioning is not configured yet. Please use the contact address instead.", 503);
-  }
-
   const domain = env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net";
   const alias = normalizeAlias(values.mailboxAlias);
 
@@ -135,11 +126,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
   }
 
-  const rules = await listEmailRoutingRules(env);
-  const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
-  if (!catchAllRule) {
-    await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
-  }
+  const routing = await ensureSignupRouting(env);
 
   const tenantId = createId("tnt");
   let mailbox;
@@ -295,9 +282,40 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     accessTokenExpiresAt: access.accessTokenExpiresAt,
     accessTokenScopes: access.accessTokenScopes,
     outboundJobId,
+    routingStatus: routing.status,
+    routingError: routing.error,
     welcomeStatus,
     welcomeError,
   };
+}
+
+async function ensureSignupRouting(env: Env): Promise<{
+  status: SignupSuccessResult["routingStatus"];
+  error?: string;
+}> {
+  if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ZONE_ID || !env.CLOUDFLARE_EMAIL_WORKER) {
+    return {
+      status: "skipped",
+      error: "Cloudflare Email Routing automation is not configured in this environment.",
+    };
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
+    if (!catchAllRule) {
+      await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
+    }
+
+    return { status: "configured" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cloudflare Email Routing automation failed";
+    console.error(`[signup] email routing automation failed: ${message}`);
+    return {
+      status: "failed",
+      error: message,
+    };
+  }
 }
 
 export function normalizeAlias(alias: string): string {
