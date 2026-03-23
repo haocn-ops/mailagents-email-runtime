@@ -133,6 +133,7 @@ import {
   buildX402TopupQuote,
   encodePaymentRequiredHeader,
   encodePaymentResponseHeader,
+  getX402Defaults,
   parseX402PaymentProof,
   X402_PAYMENT_REQUIRED_HEADER,
   X402_PAYMENT_RESPONSE_HEADER,
@@ -664,6 +665,11 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
     return badRequest("credits must be an integer between 1 and 100000");
   }
 
+  const x402Defaults = getX402Defaults(env);
+  if (!x402Defaults.payTo) {
+    return x402UnavailableResponse();
+  }
+
   await ensureTenantBillingAccount(env, auth.tenantId);
   const didBinding = await getTenantDidBinding(env, auth.tenantId);
   const apiBaseUrl = new URL(request.url).origin;
@@ -740,6 +746,11 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   const targetPricingTier = body.targetPricingTier ?? "paid_review";
   if (targetPricingTier !== "paid_review") {
     return badRequest("targetPricingTier must currently be paid_review");
+  }
+
+  const x402Defaults = getX402Defaults(env);
+  if (!x402Defaults.payTo) {
+    return x402UnavailableResponse();
   }
 
   await ensureTenantBillingAccount(env, auth.tenantId);
@@ -3478,6 +3489,13 @@ function x402PaymentRequiredResponse(input: {
     status: 402,
     headers,
   });
+}
+
+function x402UnavailableResponse(): Response {
+  return json({
+    error: "x402 billing is not configured for this environment",
+    protocol: "x402",
+  }, { status: 503 });
 }
 
 async function confirmPaymentReceiptWithFacilitator(

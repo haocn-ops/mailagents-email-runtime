@@ -203,6 +203,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingTopupQuoteResponse'
+        '503':
+          description: x402 billing is not configured for this environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
         '202':
           description: Payment proof captured. Receipt created in pending state; verification is not yet enabled.
           content:
@@ -227,6 +233,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingUpgradeQuoteResponse'
+        '503':
+          description: x402 billing is not configured for this environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
         '202':
           description: Payment proof captured. Receipt created in pending state; verification is not yet enabled.
           content:
@@ -1759,6 +1771,15 @@ components:
           oneOf:
             - $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
             - $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    BillingUnavailableResponse:
+      type: object
+      required: [error, protocol]
+      properties:
+        error:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
     X402FacilitatorVerificationResponse:
       oneOf:
         - $ref: '#/components/schemas/X402FacilitatorVerificationSuccess'
