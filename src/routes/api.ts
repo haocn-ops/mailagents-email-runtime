@@ -1027,12 +1027,15 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   }
 
   const facilitatorConfigured = Boolean(getX402FacilitatorConfig(env));
-  const adminError = requireAdminSecret(request, env);
-  const manualConfirmationRequested = body.markFailed === true
-    || !facilitatorConfigured
-    || (!adminError && typeof body.settlementReference === "string" && body.settlementReference.trim().length > 0);
-  if (manualConfirmationRequested && adminError) {
-    return adminError;
+  if (!facilitatorConfigured) {
+    return x402UnavailableResponse();
+  }
+
+  if (body.markFailed === true || typeof body.settlementReference === "string") {
+    return json({
+      error: "manual payment confirmation is no longer supported; submit a facilitator-compatible payment proof and use this endpoint only to retry facilitator settlement by receiptId",
+      protocol: "x402",
+    }, { status: 410 });
   }
 
   const receipt = await getTypedTenantPaymentReceiptById(env, auth.tenantId, body.receiptId);
@@ -1040,49 +1043,19 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     return json({ error: "Payment receipt not found" }, { status: 404 });
   }
 
-  if (body.markFailed === true) {
-    if (receipt.status === "settled") {
-      return json({ error: "Settled payment receipts cannot be marked as failed" }, { status: 409 });
-    }
-    if (receipt.status === "failed") {
-      return json({
-        receipt,
-        verificationStatus: "failed",
-        message: "Payment receipt is already failed.",
-      });
-    }
-    if (!receipt.metadata) {
-      return json({ error: "Payment receipt metadata is invalid or incomplete" }, { status: 409 });
-    }
-    const failedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
-      tenantId: auth.tenantId,
-      receiptId: receipt.id,
-      status: "failed",
-      settlementReference: body.settlementReference,
-      metadata: withReceiptConfirmation(receipt.metadata, {
-        confirmationMode: "manual_admin",
-      }),
-    });
-    return json({
-      receipt: failedReceipt,
-      verificationStatus: "failed",
-      message: "Payment receipt marked as failed.",
-    });
-  }
-
   if (receipt.status === "failed") {
     return json({ error: "Failed payment receipts cannot be confirmed" }, { status: 409 });
   }
 
-  const facilitatorOutcome = receipt.status === "settled" || !facilitatorConfigured || manualConfirmationRequested
+  const facilitatorOutcome = receipt.status === "settled"
     ? null
-    : await confirmPaymentReceiptWithFacilitator(env, receipt, body.settlementReference);
+    : await confirmPaymentReceiptWithFacilitator(env, receipt);
 
   if (facilitatorOutcome?.failureResponse) {
     return facilitatorOutcome.failureResponse;
   }
 
-  return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome, body.settlementReference));
+  return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome));
 });
 
 router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) => {

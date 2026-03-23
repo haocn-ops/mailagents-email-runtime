@@ -70,7 +70,7 @@ The current flow is:
 
 1. Top up credits when the tenant needs outbound capacity.
 2. Request an upgrade with `POST /v1/billing/upgrade-intent`.
-3. If the environment still returns a pending receipt, complete payment confirmation with `POST /v1/billing/payment/confirm`.
+3. If the environment still returns a `pending` or `verified` receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
 4. Verify the resulting state with:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
@@ -95,18 +95,13 @@ The main states to expect are:
 
 ## Important Implementation Detail
 
-The repository currently supports two settlement styles:
+The supported x402 billing path is facilitator-backed settlement.
 
-- facilitator-backed settlement
-- manual operator-assisted settlement
-
-If the active environment has facilitator-backed settlement enabled, a
-successful proof submission can directly move the tenant to the configured
-settled state without a second confirmation request.
-
-If the active environment is still using manual settlement or manual review,
-the payment receipt can be captured first and Mailagents finalizes the enablement
-after confirmation.
+A successful proof submission can directly move the tenant to the configured
+settled state without a second confirmation request. If the first settlement
+attempt does not complete, `POST /v1/billing/payment/confirm` is used only to
+retry facilitator settlement for the existing receipt. Manual operator-driven
+payment confirmation is no longer part of the supported x402 flow.
 
 Do not assume payment alone unlocks arbitrary external delivery until the
 tenant send policy shows that external delivery is enabled.

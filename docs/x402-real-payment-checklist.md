@@ -42,11 +42,11 @@ That means:
 - the receipt is created only when the client replays the same billing route
   with a valid `payment-signature`
 
-## Real Runtime Modes
+## Real Runtime Mode
 
-Mailagents currently supports two real runtime modes for billing settlement.
+Mailagents now uses a facilitator-backed settlement path for x402 billing.
 
-### Mode A: Immediate Facilitator Settlement
+### Facilitator Settlement
 
 In this mode:
 
@@ -63,23 +63,10 @@ Expected response shape:
 - for topups: `ledgerEntry` and updated `account`
 - for upgrades: updated `account` and `sendPolicy`
 
-### Mode B: Pending Receipt Then Explicit Confirm
-
-In this mode:
-
-1. client requests quote
-2. server returns `402`
-3. client submits `payment-signature`
-4. server returns `202`
-5. client or operator calls `POST /v1/billing/payment/confirm`
-
-Expected intermediate shape:
-
-- `verificationStatus = pending`
-- `receipt.status = pending`
-
-The same codebase supports both modes. Which one you see depends on the active
-environment configuration.
+If a receipt remains `pending` or `verified` because facilitator settlement did
+not complete on the first try, `POST /v1/billing/payment/confirm` can be used as
+a facilitator retry endpoint by submitting the `receiptId` only. Manual payment
+confirmation is no longer part of the supported x402 flow.
 
 ## Target Outcome
 
@@ -202,9 +189,9 @@ payment-signature: <real proof>
 
 Expected result:
 
-- HTTP `200` when facilitator-backed settlement is enabled
-- HTTP `202` only in environments that still require a later confirmation step
-- receipt status `settled` or `pending`, depending on environment configuration
+- HTTP `200` when facilitator-backed settlement completes immediately
+- HTTP `202` only if the receipt is captured but needs a later facilitator retry
+- receipt status `settled` or `verified`/`pending`, depending on the exact retry state
 
 ### What The Client Must Actually Send
 
@@ -294,7 +281,8 @@ curl --http1.1 -X POST https://api.mailagents.net/v1/billing/topup \
 
 ### Step 6
 
-Confirm settlement only when the environment still returns a pending receipt:
+Retry facilitator settlement only when the environment still returns a `pending`
+or `verified` receipt:
 
 ```http
 POST /v1/billing/payment/confirm
@@ -302,8 +290,7 @@ POST /v1/billing/payment/confirm
 
 Expected result:
 
-- facilitator `verify` succeeds
-- facilitator `settle` succeeds
+- facilitator `verify` and `settle` are retried
 - receipt becomes `settled`
 - ledger gets a `topup` entry
 - `availableCredits` increases
@@ -334,8 +321,8 @@ Pay using the same wallet flow.
 
 ### Step 3
 
-Submit proof. If the environment still returns a pending receipt, confirm it with
-`POST /v1/billing/payment/confirm`.
+Submit proof. If the environment still returns a `pending` or `verified`
+receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
 
 Expected result:
 

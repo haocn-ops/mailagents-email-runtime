@@ -297,14 +297,8 @@ paths:
   /v1/billing/payment/confirm:
     post:
       tags: [Billing]
-      summary: Confirm a pending payment receipt and apply credits
+      summary: Retry facilitator settlement for a captured payment receipt
       operationId: confirmBillingPayment
-      parameters:
-        - name: x-admin-secret
-          in: header
-          required: false
-          schema:
-            type: string
       requestBody:
         required: true
         content:
@@ -313,7 +307,7 @@ paths:
               $ref: '#/components/schemas/BillingPaymentConfirmRequest'
       responses:
         '200':
-          description: Payment receipt updated. Credits may have been applied if the receipt settled.
+          description: Facilitator settlement retried successfully. Credits or plan changes are applied if the receipt settles.
           content:
             application/json:
               schema:
@@ -324,6 +318,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingPaymentFailureResponse'
+        '410':
+          description: Manual payment confirmation is no longer supported on this endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
+        '503':
+          description: x402 billing is not configured for this environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
   /v1/tenants/{tenantId}/send-policy:
     get:
       tags: [Policy]
@@ -1783,10 +1789,6 @@ components:
       properties:
         receiptId:
           type: string
-        settlementReference:
-          type: string
-        markFailed:
-          type: boolean
     BillingPaymentConfirmResponse:
       type: object
       required: [receipt, verificationStatus, message]

@@ -1784,10 +1784,10 @@ function renderLimits(): string {
         <li>Keep using the default mailbox-scoped flow until the mailbox is active and the token is stored safely.</li>
         <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity.</li>
         <li>Request external-send enablement with <code>POST /v1/billing/upgrade-intent</code>.</li>
-        <li>Complete payment confirmation with <code>POST /v1/billing/payment/confirm</code>.</li>
+        <li>If a receipt remains <code>pending</code> or <code>verified</code>, retry facilitator settlement with <code>POST /v1/billing/payment/confirm</code>.</li>
         <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as enabled.</li>
       </ol>
-      <p>If the active environment supports facilitator-backed settlement, a successful upgrade confirmation can move the tenant directly into external-enabled status. If the active environment is still running with manual settlement or review gates, Mailagents finalizes the confirmation before external sending is opened.</p>
+      <p>Mailagents uses facilitator-backed x402 settlement. In the normal path, proof submission settles immediately. The confirmation endpoint exists only to retry facilitator settlement for a receipt that did not finish on the first attempt.</p>
     </section>
     <section>
       <h2>States You Will See</h2>
@@ -1811,7 +1811,7 @@ function renderLimits(): string {
       <ul>
         <li><a href="https://api.mailagents.net/v2/meta/runtime"><code>/v2/meta/runtime</code></a> for live runtime discovery</li>
         <li><a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/limits-and-access.md">Limits And Access guide</a> for the longer technical walkthrough</li>
-        <li><a href="/contact">Contact</a> if you need help with a constrained tenant or an environment still using manual settlement</li>
+        <li><a href="/contact">Contact</a> if you need help with a constrained tenant or a receipt that needs facilitator settlement retried</li>
       </ul>
     </section>
   </section>`;

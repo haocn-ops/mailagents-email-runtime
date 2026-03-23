@@ -110,7 +110,6 @@ Optional overrides:
 - `X402_PAYMENT_SIGNATURE_FOR_SMOKE`
 - `PAYMENT_CONFIRM_MODE_FOR_SMOKE`
 
-`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` uses the existing admin-confirm path.
 `PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` exercises facilitator-backed
 confirmation and expects the worker environment to set
 `X402_FACILITATOR_URL=mock://local` or a real facilitator base URL.
@@ -126,9 +125,8 @@ npm run smoke:billing:facilitator:local:auto
 This flow is the closest current check to a real x402 payment:
 
 - it requests a live `402` topup quote from deployed `dev`
-- it sends a real Base Sepolia USDC transfer to the quoted `payTo`
-- it submits that chain-backed payment proof to `POST /v1/billing/topup`
-- it either auto-settles immediately or falls back to a later `POST /v1/billing/payment/confirm`, depending on environment configuration
+- it submits a real signed x402 v2 `exact/eip3009` proof to `POST /v1/billing/topup`
+- it either auto-settles immediately or retries facilitator settlement through `POST /v1/billing/payment/confirm`
 
 Prerequisites:
 
@@ -150,7 +148,6 @@ Optional overrides:
 - `BASE_URL`
 - `BASE_RPC_URL`
 - `WALLET_JSON_PATH`
-- `ADMIN_API_SECRET_FOR_SMOKE`
 - `CREDITS_TO_BUY`
 - `OPERATOR_EMAIL_FOR_SMOKE`
 - `PAYMENT_CONFIRM_MODE_FOR_SMOKE`
@@ -162,7 +159,6 @@ This script proves:
 - chain-backed payment proof capture works against deployed `dev`
 - settlement lands in receipts, ledger, and billing account state
 
-`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` keeps the explicit admin-confirm flow.
 `PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` expects deployed `dev` to have
 `X402_FACILITATOR_URL=mock://local` or a real facilitator configured.
 
