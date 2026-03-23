@@ -70,7 +70,7 @@ The current flow is:
 
 1. Top up credits when the tenant needs outbound capacity.
 2. Request an upgrade with `POST /v1/billing/upgrade-intent`.
-3. Complete payment confirmation with `POST /v1/billing/payment/confirm`.
+3. If the environment still returns a pending receipt, complete payment confirmation with `POST /v1/billing/payment/confirm`.
 4. Verify the resulting state with:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
@@ -101,8 +101,8 @@ The repository currently supports two settlement styles:
 - manual operator-assisted settlement
 
 If the active environment has facilitator-backed settlement enabled, a
-successful upgrade confirmation can directly move the tenant to
-`paid_active / external_enabled`.
+successful proof submission can directly move the tenant to the configured
+settled state without a second confirmation request.
 
 If the active environment is still using manual settlement or manual review,
 the payment receipt can be captured first and Mailagents finalizes the enablement

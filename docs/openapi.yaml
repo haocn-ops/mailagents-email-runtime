@@ -8,6 +8,7 @@ servers:
 security:
   - bearerAuth: []
 tags:
+  - name: Admin
   - name: Agents
   - name: Auth
   - name: Debug
@@ -46,6 +47,42 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/McpInitializeResponse'
                   - $ref: '#/components/schemas/McpToolsListResponse'
+                  - $ref: '#/components/schemas/McpToolsCallResponse'
+  /admin/mcp:
+    post:
+      tags: [Admin, MCP]
+      summary: MCP JSON-RPC endpoint for operator and admin agents
+      operationId: callAdminMcp
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+      description: |
+        Supports `initialize`, `tools/list`, and `tools/call`.
+        This surface is separate from `/mcp`, is gated by `ADMIN_ROUTES_ENABLED`,
+        and is intended for operator-only workflows such as token minting,
+        send-policy review, suppression management, and forensic inspection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/McpInitializeRequest'
+                - $ref: '#/components/schemas/McpToolsListRequest'
+                - $ref: '#/components/schemas/AdminMcpToolsCallRequest'
+      responses:
+        '200':
+          description: Admin MCP response
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/McpInitializeResponse'
+                  - $ref: '#/components/schemas/AdminMcpToolsListResponse'
                   - $ref: '#/components/schemas/McpToolsCallResponse'
   /public/signup:
     get:
@@ -197,6 +234,12 @@ paths:
             schema:
               $ref: '#/components/schemas/BillingTopupRequest'
       responses:
+        '200':
+          description: Payment proof was accepted and, when facilitator-backed settlement is enabled, credits were settled immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentConfirmResponse'
         '402':
           description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
           content:
@@ -210,7 +253,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingUnavailableResponse'
         '202':
-          description: Payment proof captured. Receipt created in pending state; verification is not yet enabled.
+          description: Payment proof captured. Receipt created in pending state because this environment still requires a later confirmation step.
           content:
             application/json:
               schema:
@@ -227,6 +270,12 @@ paths:
             schema:
               $ref: '#/components/schemas/BillingUpgradeIntentRequest'
       responses:
+        '200':
+          description: Payment proof was accepted and, when facilitator-backed settlement is enabled, the plan and send policy were updated immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentConfirmResponse'
         '402':
           description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
           content:
@@ -240,7 +289,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingUnavailableResponse'
         '202':
-          description: Payment proof captured. Receipt created in pending state; verification is not yet enabled.
+          description: Payment proof captured. Receipt created in pending state because this environment still requires a later confirmation step.
           content:
             application/json:
               schema:
@@ -2287,6 +2336,80 @@ components:
             arguments:
               type: object
               additionalProperties: true
+    AdminMcpToolsCallRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      properties:
+        jsonrpc:
+          type: string
+          const: '2.0'
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        method:
+          type: string
+          const: tools/call
+        params:
+          type: object
+          required: [name, arguments]
+          properties:
+            name:
+              type: string
+              enum:
+                - create_access_token
+                - bootstrap_mailbox_agent_token
+                - list_agents
+                - get_agent
+                - list_mailboxes
+                - get_mailbox
+                - get_tenant_send_policy
+                - upsert_tenant_send_policy
+                - apply_tenant_send_policy_review
+                - get_tenant_review_context
+                - get_debug_message
+                - get_debug_draft
+                - get_debug_outbound_job
+                - inspect_delivery_case
+                - get_suppression
+                - add_suppression
+            arguments:
+              type: object
+              additionalProperties: true
+    AdminMcpToolDefinition:
+      type: object
+      required: [name, description, inputSchema, annotations]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          additionalProperties: true
+        annotations:
+          type: object
+          properties:
+            riskLevel:
+              type: string
+              enum: [read, write, high_risk, privileged]
+            sideEffecting:
+              type: boolean
+            humanReviewRequired:
+              type: boolean
+            adminOnly:
+              type: boolean
+              const: true
+            category:
+              type: string
+              enum:
+                - token_admin
+                - registry_admin
+                - policy_admin
+                - debug
+                - suppression
+          additionalProperties: true
     McpToolDefinition:
       type: object
       required: [name, description, inputSchema, requiredScopes, annotations]
@@ -2368,6 +2491,25 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/McpToolDefinition'
+    AdminMcpToolsListResponse:
+      type: object
+      required: [jsonrpc, id, result]
+      properties:
+        jsonrpc:
+          type: string
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        result:
+          type: object
+          required: [tools]
+          properties:
+            tools:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminMcpToolDefinition'
     McpToolsCallResponse:
       type: object
       required: [jsonrpc, id, result]

@@ -723,6 +723,13 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
     throw error;
   }
 
+  if (getX402FacilitatorConfig(env)) {
+    const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, receipt);
+    if (autoSettlementResponse) {
+      return autoSettlementResponse;
+    }
+  }
+
   return accepted({
     receipt,
     creditsRequested: credits,
@@ -804,6 +811,13 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
       return retryReplayResponse;
     }
     throw error;
+  }
+
+  if (getX402FacilitatorConfig(env)) {
+    const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, receipt);
+    if (autoSettlementResponse) {
+      return autoSettlementResponse;
+    }
   }
 
   return accepted({
@@ -1021,130 +1035,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     return facilitatorOutcome.failureResponse;
   }
 
-  const finalizedReceipt = facilitatorOutcome?.receipt ?? receipt;
-  const parsedMetadata = finalizedReceipt.metadata;
-
-  if (finalizedReceipt.receiptType === "upgrade") {
-    if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
-      return json({ error: "Payment receipt metadata is missing targetPricingTier" }, { status: 409 });
-    }
-    const targetPricingTier = parsedMetadata.targetPricingTier;
-    const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
-
-    const existingAccount = await ensureTenantBillingAccount(env, auth.tenantId);
-    const account = await updateTenantBillingAccountProfile(env, {
-      tenantId: auth.tenantId,
-      status: existingAccount.status === "trial" ? "active" : undefined,
-      pricingTier: approvedPricingTier,
-      defaultNetwork: finalizedReceipt.network ?? undefined,
-      defaultAsset: finalizedReceipt.asset ?? undefined,
-    });
-
-    const existingSendPolicy = await ensureTenantSendPolicy(env, auth.tenantId);
-    const sendPolicy = await upsertTenantSendPolicy(env, {
-      tenantId: auth.tenantId,
-      pricingTier: approvedPricingTier,
-      outboundStatus: "external_enabled",
-      internalDomainAllowlist: existingSendPolicy.internalDomainAllowlist,
-      externalSendEnabled: true,
-      reviewRequired: false,
-    });
-
-    const settledReceipt = finalizedReceipt.status === "settled"
-      ? finalizedReceipt
-      : await updateTypedTenantPaymentReceiptStatus(env, {
-        tenantId: auth.tenantId,
-        receiptId: finalizedReceipt.id,
-        status: "settled",
-        paymentReference: facilitatorOutcome?.paymentReference,
-        settlementReference: body.settlementReference,
-        metadata: withReceiptConfirmation(parsedMetadata, {
-          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
-          sendPolicyStatus: sendPolicy.outboundStatus,
-          facilitatorVerify: facilitatorOutcome?.verifyResponse,
-          facilitatorSettle: facilitatorOutcome?.settleResponse,
-        }),
-      });
-
-    return json({
-      receipt: settledReceipt,
-      account,
-      sendPolicy,
-      verificationStatus: "settled",
-      message: "Upgrade payment settled and external sending approved automatically.",
-    });
-  }
-
-  const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, auth.tenantId, finalizedReceipt.id);
-  if (existingLedgerEntry) {
-    const account = await reconcileTenantAvailableCredits(env, auth.tenantId);
-    const settledReceipt = finalizedReceipt.status === "settled"
-      ? finalizedReceipt
-      : await updateTypedTenantPaymentReceiptStatus(env, {
-        tenantId: auth.tenantId,
-        receiptId: finalizedReceipt.id,
-        status: "settled",
-        paymentReference: facilitatorOutcome?.paymentReference,
-        settlementReference: body.settlementReference,
-        metadata: parsedMetadata
-          ? withReceiptConfirmation(parsedMetadata, {
-            confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
-            creditLedgerEntryId: existingLedgerEntry.id,
-            facilitatorVerify: facilitatorOutcome?.verifyResponse,
-            facilitatorSettle: facilitatorOutcome?.settleResponse,
-          })
-          : finalizedReceipt.metadata,
-      });
-    return json({
-      receipt: settledReceipt,
-      ledgerEntry: existingLedgerEntry,
-      account,
-      verificationStatus: "settled",
-      message: "Payment receipt was already settled.",
-    });
-  }
-
-  if (!parsedMetadata || parsedMetadata.receiptType !== "topup") {
-    return json({ error: "Payment receipt metadata is missing creditsRequested" }, { status: 409 });
-  }
-  const creditsRequested = parsedMetadata.creditsRequested;
-
-  const ledgerEntry = await appendTopupSettlementLedgerEntry(env, {
-    tenantId: auth.tenantId,
-    creditsDelta: creditsRequested,
-    reason: facilitatorOutcome ? "facilitator_payment_settlement" : "manual_payment_confirmation",
-    paymentReceiptId: finalizedReceipt.id,
-    referenceId: body.settlementReference ?? finalizedReceipt.settlementReference,
-    metadata: buildTopupSettlementLedgerMetadata({
-      receiptMetadata: parsedMetadata,
-      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
-      facilitatorVerify: facilitatorOutcome?.verifyResponse,
-      facilitatorSettle: facilitatorOutcome?.settleResponse,
-    }),
-  });
-
-  const account = await reconcileTenantAvailableCredits(env, auth.tenantId);
-  const settledReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
-    tenantId: auth.tenantId,
-    receiptId: finalizedReceipt.id,
-    status: "settled",
-    paymentReference: facilitatorOutcome?.paymentReference,
-    settlementReference: body.settlementReference,
-    metadata: withReceiptConfirmation(parsedMetadata, {
-      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
-      creditLedgerEntryId: ledgerEntry.id,
-      facilitatorVerify: facilitatorOutcome?.verifyResponse,
-      facilitatorSettle: facilitatorOutcome?.settleResponse,
-    }),
-  });
-
-  return json({
-    receipt: settledReceipt,
-    ledgerEntry,
-    account,
-    verificationStatus: "settled",
-    message: "Payment receipt settled and credits applied.",
-  });
+  return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome, body.settlementReference));
 });
 
 router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) => {
@@ -3637,6 +3528,150 @@ async function confirmPaymentReceiptWithFacilitator(
     settlementReference: settleResult.settlementReference ?? requestedSettlementReference,
     verifyResponse,
     settleResponse: settleResult.response,
+  };
+}
+
+async function attemptAutomaticPaymentSettlement(
+  env: Env,
+  receipt: TypedPaymentReceiptRecord,
+): Promise<Response | null> {
+  const facilitatorOutcome = await confirmPaymentReceiptWithFacilitator(env, receipt);
+  if (facilitatorOutcome?.failureResponse) {
+    return facilitatorOutcome.failureResponse;
+  }
+
+  return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome));
+}
+
+async function finalizePaymentReceiptSettlement(
+  env: Env,
+  receipt: TypedPaymentReceiptRecord,
+  facilitatorOutcome: Awaited<ReturnType<typeof confirmPaymentReceiptWithFacilitator>>,
+  requestedSettlementReference?: string,
+): Promise<Record<string, unknown>> {
+  const finalizedReceipt = facilitatorOutcome?.receipt ?? receipt;
+  const parsedMetadata = finalizedReceipt.metadata;
+
+  if (finalizedReceipt.receiptType === "upgrade") {
+    if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
+      throw new RouteRequestError("Payment receipt metadata is missing targetPricingTier", 409);
+    }
+    const targetPricingTier = parsedMetadata.targetPricingTier;
+    const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
+
+    const existingAccount = await ensureTenantBillingAccount(env, finalizedReceipt.tenantId);
+    const account = await updateTenantBillingAccountProfile(env, {
+      tenantId: finalizedReceipt.tenantId,
+      status: existingAccount.status === "trial" ? "active" : undefined,
+      pricingTier: approvedPricingTier,
+      defaultNetwork: finalizedReceipt.network ?? undefined,
+      defaultAsset: finalizedReceipt.asset ?? undefined,
+    });
+
+    const existingSendPolicy = await ensureTenantSendPolicy(env, finalizedReceipt.tenantId);
+    const sendPolicy = await upsertTenantSendPolicy(env, {
+      tenantId: finalizedReceipt.tenantId,
+      pricingTier: approvedPricingTier,
+      outboundStatus: "external_enabled",
+      internalDomainAllowlist: existingSendPolicy.internalDomainAllowlist,
+      externalSendEnabled: true,
+      reviewRequired: false,
+    });
+
+    const settledReceipt = finalizedReceipt.status === "settled"
+      ? finalizedReceipt
+      : await updateTypedTenantPaymentReceiptStatus(env, {
+        tenantId: finalizedReceipt.tenantId,
+        receiptId: finalizedReceipt.id,
+        status: "settled",
+        paymentReference: facilitatorOutcome?.paymentReference,
+        settlementReference: requestedSettlementReference,
+        metadata: withReceiptConfirmation(parsedMetadata, {
+          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+          sendPolicyStatus: sendPolicy.outboundStatus,
+          facilitatorVerify: facilitatorOutcome?.verifyResponse,
+          facilitatorSettle: facilitatorOutcome?.settleResponse,
+        }),
+      });
+
+    return {
+      receipt: settledReceipt,
+      account,
+      sendPolicy,
+      verificationStatus: "settled",
+      message: "Upgrade payment settled and external sending approved automatically.",
+    };
+  }
+
+  const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
+  if (existingLedgerEntry) {
+    const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
+    const settledReceipt = finalizedReceipt.status === "settled"
+      ? finalizedReceipt
+      : await updateTypedTenantPaymentReceiptStatus(env, {
+        tenantId: finalizedReceipt.tenantId,
+        receiptId: finalizedReceipt.id,
+        status: "settled",
+        paymentReference: facilitatorOutcome?.paymentReference,
+        settlementReference: requestedSettlementReference,
+        metadata: parsedMetadata
+          ? withReceiptConfirmation(parsedMetadata, {
+            confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+            creditLedgerEntryId: existingLedgerEntry.id,
+            facilitatorVerify: facilitatorOutcome?.verifyResponse,
+            facilitatorSettle: facilitatorOutcome?.settleResponse,
+          })
+          : finalizedReceipt.metadata,
+      });
+    return {
+      receipt: settledReceipt,
+      ledgerEntry: existingLedgerEntry,
+      account,
+      verificationStatus: "settled",
+      message: "Payment receipt was already settled.",
+    };
+  }
+
+  if (!parsedMetadata || parsedMetadata.receiptType !== "topup") {
+    throw new RouteRequestError("Payment receipt metadata is missing creditsRequested", 409);
+  }
+  const creditsRequested = parsedMetadata.creditsRequested;
+
+  const ledgerEntry = await appendTopupSettlementLedgerEntry(env, {
+    tenantId: finalizedReceipt.tenantId,
+    creditsDelta: creditsRequested,
+    reason: facilitatorOutcome ? "facilitator_payment_settlement" : "manual_payment_confirmation",
+    paymentReceiptId: finalizedReceipt.id,
+    referenceId: requestedSettlementReference ?? finalizedReceipt.settlementReference,
+    metadata: buildTopupSettlementLedgerMetadata({
+      receiptMetadata: parsedMetadata,
+      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+      facilitatorVerify: facilitatorOutcome?.verifyResponse,
+      facilitatorSettle: facilitatorOutcome?.settleResponse,
+    }),
+  });
+
+  const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
+  const settledReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
+    tenantId: finalizedReceipt.tenantId,
+    receiptId: finalizedReceipt.id,
+    status: "settled",
+    paymentReference: facilitatorOutcome?.paymentReference,
+    settlementReference: requestedSettlementReference,
+    metadata: withReceiptConfirmation(parsedMetadata, {
+      confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+      creditLedgerEntryId: ledgerEntry.id,
+      facilitatorVerify: facilitatorOutcome?.verifyResponse,
+      facilitatorSettle: facilitatorOutcome?.settleResponse,
+    }),
+  });
+
+  return {
+    receipt: settledReceipt,
+    ledgerEntry,
+    account,
+    verificationStatus: "settled",
+    message: "Payment receipt settled and credits applied.",
   };
 }
 

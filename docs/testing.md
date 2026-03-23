@@ -128,7 +128,7 @@ This flow is the closest current check to a real x402 payment:
 - it requests a live `402` topup quote from deployed `dev`
 - it sends a real Base Sepolia USDC transfer to the quoted `payTo`
 - it submits that chain-backed payment proof to `POST /v1/billing/topup`
-- it finishes with manual admin settlement through `POST /v1/billing/payment/confirm`
+- it either auto-settles immediately or falls back to a later `POST /v1/billing/payment/confirm`, depending on environment configuration
 
 Prerequisites:
 
@@ -160,9 +160,9 @@ This script proves:
 - the live quote fields are correct
 - the current `payTo` address is really reachable onchain
 - chain-backed payment proof capture works against deployed `dev`
-- manual settlement still lands in receipts, ledger, and billing account state
+- settlement lands in receipts, ledger, and billing account state
 
-`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` keeps the current admin-confirm flow.
+`PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` keeps the explicit admin-confirm flow.
 `PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` expects deployed `dev` to have
 `X402_FACILITATOR_URL=mock://local` or a real facilitator configured.
 
@@ -177,8 +177,8 @@ This flow exercises the paid upgrade path with the same live `dev` deployment:
 - it requests a live `402` upgrade quote from deployed `dev`
 - it builds a real x402 v2 `exact/eip3009` payment payload against Base Sepolia USDC
 - it submits that payload to `POST /v1/billing/upgrade-intent`
-- it confirms the pending receipt through facilitator-backed settlement
-- it verifies the tenant lands in `paid_review / external_review`
+- it expects the facilitator-backed path to settle immediately
+- it verifies the tenant lands in the environment's configured post-upgrade state
 
 Prerequisites:
 
@@ -204,8 +204,7 @@ This script proves:
 
 - low-value upgrade quotes display correctly, including sub-cent prices like `0.001`
 - the facilitator-backed `upgrade-intent` flow accepts a real signed x402 payload
-- successful settlement moves the tenant into `paid_review`
-- successful settlement moves send policy into `external_review` without enabling external sends yet
+- successful settlement applies the configured upgrade transition for that environment
 
 The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that

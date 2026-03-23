@@ -11,15 +11,14 @@ defaults in [src/lib/payments/x402.ts](../src/lib/payments/x402.ts).
 
 ## Current Status
 
-As of 2026-03-20, the runtime has already been verified for:
+As of 2026-03-23, the runtime has already been verified for:
 
 - `402 Payment Required` quote generation
-- `payment-signature` capture into pending receipts
-- receipt settlement into ledger and billing account state
-- `upgrade-intent` promotion into `paid_review`
+- `payment-signature` capture into receipts
+- real facilitator-backed settlement into ledger and billing account state
+- production topups that auto-settle immediately after proof submission
+- production upgrades that settle through the facilitator-backed flow
 - Mailagents-hosted `did:web` document generation and public resolution
-
-The remaining gap is real chain-backed verification and settlement.
 
 ## Target Outcome
 
@@ -142,12 +141,13 @@ payment-signature: <real proof>
 
 Expected result:
 
-- HTTP `202`
-- receipt status `pending`
+- HTTP `200` when facilitator-backed settlement is enabled
+- HTTP `202` only in environments that still require a later confirmation step
+- receipt status `settled` or `pending`, depending on environment configuration
 
 ### Step 6
 
-Confirm settlement:
+Confirm settlement only when the environment still returns a pending receipt:
 
 ```http
 POST /v1/billing/payment/confirm
@@ -187,14 +187,13 @@ Pay using the same wallet flow.
 
 ### Step 3
 
-Submit proof and confirm settlement.
+Submit proof. If the environment still returns a pending receipt, confirm it with
+`POST /v1/billing/payment/confirm`.
 
 Expected result:
 
 - receipt status `settled`
-- billing account `pricingTier` becomes `paid_review`
-- send policy `outboundStatus` becomes `external_review`
-- `externalSendEnabled` remains `false`
+- the billing and send-policy state moves to the configured post-upgrade target for that environment
 
 ## 7. Environment Variables Checklist
 
@@ -226,7 +225,7 @@ If the payer submits a malformed or unsupported proof:
 
 ### Duplicate Settlement
 
-Repeated confirm calls must not create duplicate ledger entries.
+Repeated proof submissions or confirm calls must not create duplicate ledger entries.
 
 ### Wrong Pay-To Address
 
