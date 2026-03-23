@@ -1,9 +1,11 @@
 import { parseRawEmail } from "../lib/email-parser";
-import { buildRawMimeMessage } from "../lib/mime";
+import { sendOutboundDraft } from "../lib/outbound-provider";
+import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { enqueueDeadLetter } from "../lib/queue";
-import { sendSesRawEmail, sendSesSimpleEmail } from "../lib/ses";
 import { nowIso } from "../lib/time";
 import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "../repositories/agents";
+import {
+} from "../repositories/billing";
 import {
   claimTaskForExecution,
   getDraftByR2Key,
@@ -14,6 +16,7 @@ import {
   getSuppression,
   getTaskBySourceMessageId,
   insertAttachments,
+  listDeliveryEventsByMessageId,
   markDraftStatus,
   markMessageSent,
   updateMessageStatus,
@@ -27,10 +30,31 @@ import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJ
 class OutboundPolicyError extends Error {}
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
+type TerminalDeliveryOutcome = "sent" | "failed" | null;
+
 function getOutboundSendMaxRetries(env: Env): number {
   const raw = env.OUTBOUND_SEND_MAX_RETRIES;
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
+}
+
+function getOutboundSendInDoubtGraceMs(env: Env): number {
+  const raw = env.OUTBOUND_SEND_IN_DOUBT_GRACE_SECONDS;
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 120;
+  return seconds * 1000;
+}
+
+function getTerminalDeliveryOutcome(events: Array<{ eventType: string }>): TerminalDeliveryOutcome {
+  if (events.some((event) => event.eventType === "delivery")) {
+    return "sent";
+  }
+
+  if (events.some((event) => event.eventType === "bounce" || event.eventType === "complaint" || event.eventType === "reject")) {
+    return "failed";
+  }
+
+  return null;
 }
 
 function normalizeRecipientAddress(value: string): string {
@@ -221,17 +245,14 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
   for (const message of batch.messages) {
     let outboundJob = null as Awaited<ReturnType<typeof getOutboundJob>> | null;
     let draft = null as Awaited<ReturnType<typeof getDraftByR2Key>> | null;
+    let to: string[] = [];
+    let cc: string[] = [];
+    let bcc: string[] = [];
     try {
       outboundJob = await getOutboundJob(env, message.body.outboundJobId);
       if (!outboundJob) {
         throw new Error("Outbound job not found");
       }
-
-      await updateOutboundJobStatus(env, {
-        outboundJobId: outboundJob.id,
-        status: "sending",
-        lastError: null,
-      });
 
       const draftObject = await env.R2_EMAIL.get(outboundJob.draftR2Key);
       if (!draftObject) {
@@ -244,15 +265,149 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
       }
+      const deliveryEvents = await listDeliveryEventsByMessageId(env, outboundMessage.id);
+      const deliveryOutcome = getTerminalDeliveryOutcome(deliveryEvents);
+
+      if (outboundJob.status === "sent") {
+        to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+        cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+        bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+        try {
+          await settleOutboundUsageDebit(env, {
+            tenantId: outboundMessage.tenantId,
+            messageId: outboundJob.messageId,
+            outboundJobId: outboundJob.id,
+            draftId: draft?.id,
+            draftCreatedVia: draft?.createdVia,
+            sourceMessageId: draft?.sourceMessageId,
+            to,
+            cc,
+            bcc,
+          });
+          message.ack();
+        } catch (billingError) {
+          await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+          message.retry();
+        }
+        continue;
+      }
+
+      if (
+        outboundJob.status === "sending"
+        && (
+          outboundMessage.providerMessageId
+          || outboundMessage.sentAt
+          || outboundMessage.status === "replied"
+          || deliveryOutcome === "sent"
+        )
+      ) {
+        to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+        cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+        bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "sent",
+          lastError: null,
+          nextRetryAt: null,
+        });
+
+        if (draft) {
+          await markDraftStatus(env, draft.id, "sent");
+        }
+
+        try {
+          await settleOutboundUsageDebit(env, {
+            tenantId: outboundMessage.tenantId,
+            messageId: outboundJob.messageId,
+            outboundJobId: outboundJob.id,
+            draftId: draft?.id,
+            draftCreatedVia: draft?.createdVia,
+            sourceMessageId: draft?.sourceMessageId,
+            to,
+            cc,
+            bcc,
+          });
+          message.ack();
+        } catch (billingError) {
+          await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+          message.retry();
+        }
+        continue;
+      }
+
+      if (
+        outboundJob.status === "sending"
+        && (outboundMessage.status === "failed" || deliveryOutcome === "failed")
+      ) {
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "failed",
+          lastError: deliveryOutcome === "failed" ? "provider_delivery_failed" : "send_failed",
+          nextRetryAt: null,
+        });
+        if (draft) {
+          await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+          to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+          cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+          bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+          await releaseOutboundUsageReservation(env, {
+            tenantId: draft.tenantId,
+            outboundJobId: outboundJob.id,
+            sourceMessageId: draft.sourceMessageId,
+            draftCreatedVia: draft.createdVia,
+            to,
+            cc,
+            bcc,
+          }).catch(() => undefined);
+        }
+        message.ack();
+        continue;
+      }
+
+      if (outboundJob.status === "sending") {
+        const sendingAgeMs = Date.now() - Date.parse(outboundJob.updatedAt);
+        if (Number.isFinite(sendingAgeMs) && sendingAgeMs < getOutboundSendInDoubtGraceMs(env)) {
+          message.retry();
+          continue;
+        }
+
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "failed",
+          lastError: "send_attempt_uncertain_manual_review_required",
+          nextRetryAt: null,
+        });
+        await updateMessageStatus(env, outboundJob.messageId, "failed").catch(() => undefined);
+        if (draft) {
+          await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+        }
+        await enqueueDeadLetter(
+          env,
+          deadLetterFromError(
+            "outbound-send",
+            outboundJob.id,
+            new Error("send_attempt_uncertain_manual_review_required")
+          )
+        );
+        message.ack();
+        continue;
+      }
+
+      await updateOutboundJobStatus(env, {
+        outboundJobId: outboundJob.id,
+        status: "sending",
+        lastError: null,
+      });
       const mailbox = await getMailboxById(env, outboundMessage.mailboxId);
       if (!mailbox) {
         throw new Error("Mailbox not found");
       }
 
       const from = typeof draftPayload.from === "string" ? draftPayload.from : "";
-      const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
-      const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
-      const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+      to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+      cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+      bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
       const subject = typeof draftPayload.subject === "string" ? draftPayload.subject : "";
       const text = typeof draftPayload.text === "string" ? draftPayload.text : undefined;
       const html = typeof draftPayload.html === "string" ? draftPayload.html : undefined;
@@ -276,36 +431,20 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         { Name: "mailbox_id", Value: outboundMessage.mailboxId },
       ];
 
-      const shouldUseRaw = Boolean(inReplyTo || references.length > 0 || attachmentRefs.length > 0);
-
-      const sendResult = shouldUseRaw
-        ? await sendRawDraft(env, {
-            from,
-            to,
-            cc,
-            bcc,
-            subject,
-            text,
-            html,
-            inReplyTo,
-            references,
-            attachmentRefs,
-            replyToAddresses: [mailbox.address],
-            configurationSetName: env.SES_CONFIGURATION_SET,
-            emailTags,
-          })
-        : await sendSesSimpleEmail(env, {
-            from,
-            to,
-            cc,
-            bcc,
-            subject,
-            text,
-            html,
-            replyToAddresses: [mailbox.address],
-            configurationSetName: env.SES_CONFIGURATION_SET,
-            emailTags,
-          });
+      const sendResult = await sendOutboundDraft(env, {
+        from,
+        to,
+        cc,
+        bcc,
+        subject,
+        text,
+        html,
+        inReplyTo,
+        references,
+        attachmentRefs,
+        replyToAddresses: [mailbox.address],
+        emailTags,
+      });
 
       await markMessageSent(env, {
         messageId: outboundJob.messageId,
@@ -322,6 +461,24 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
 
       if (draft) {
         await markDraftStatus(env, draft.id, "sent");
+      }
+
+      try {
+        await settleOutboundUsageDebit(env, {
+          tenantId: outboundMessage.tenantId,
+          messageId: outboundJob.messageId,
+          outboundJobId: outboundJob.id,
+          draftId: draft?.id,
+          draftCreatedVia: draft?.createdVia,
+          sourceMessageId: draft?.sourceMessageId,
+          to,
+          cc,
+          bcc,
+        });
+      } catch (billingError) {
+        await enqueueDeadLetter(env, deadLetterFromError("outbound-billing", outboundJob.id, billingError));
+        message.retry();
+        continue;
       }
 
       message.ack();
@@ -343,6 +500,17 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       if (draft && exhausted) {
         await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
       }
+      if (outboundJob && exhausted && draft) {
+        await releaseOutboundUsageReservation(env, {
+          tenantId: draft.tenantId,
+          outboundJobId: outboundJob.id,
+          sourceMessageId: draft.sourceMessageId,
+          draftCreatedVia: draft.createdVia,
+          to,
+          cc,
+          bcc,
+        }).catch(() => undefined);
+      }
       await enqueueDeadLetter(env, deadLetterFromError("outbound-send", message.body.outboundJobId, error));
       if (exhausted) {
         message.ack();
@@ -351,65 +519,6 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       }
     }
   }
-}
-
-async function sendRawDraft(env: Env, input: {
-  from: string;
-  to: string[];
-  cc: string[];
-  bcc: string[];
-  subject: string;
-  text?: string;
-  html?: string;
-  inReplyTo?: string;
-  references: string[];
-  attachmentRefs: Array<{ filename?: unknown; contentType?: unknown; r2Key?: unknown }>;
-  replyToAddresses: string[];
-  configurationSetName: string;
-  emailTags: Array<{ Name: string; Value: string }>;
-}) {
-  const attachments = [];
-  for (const ref of input.attachmentRefs) {
-    const r2Key = typeof ref.r2Key === "string" ? ref.r2Key : "";
-    if (!r2Key) {
-      continue;
-    }
-
-    const object = await env.R2_EMAIL.get(r2Key);
-    if (!object) {
-      throw new Error(`Attachment not found in R2: ${r2Key}`);
-    }
-
-    attachments.push({
-      filename: typeof ref.filename === "string" ? ref.filename : r2Key.split("/").pop() ?? "attachment.bin",
-      contentType: typeof ref.contentType === "string" ? ref.contentType : object.httpMetadata?.contentType ?? "application/octet-stream",
-      content: new Uint8Array(await object.arrayBuffer()),
-    });
-  }
-
-  const rawData = buildRawMimeMessage({
-    from: input.from,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    replyTo: input.replyToAddresses,
-    subject: input.subject,
-    text: input.text,
-    html: input.html,
-    inReplyTo: input.inReplyTo,
-    references: input.references,
-    attachments,
-  });
-
-  return await sendSesRawEmail(env, {
-    from: input.from,
-    to: input.to,
-    cc: input.cc,
-    bcc: input.bcc,
-    rawData,
-    configurationSetName: input.configurationSetName,
-    emailTags: input.emailTags,
-  });
 }
 
 function deadLetterFromError(source: string, refId: string, error: unknown): DeadLetterJob {

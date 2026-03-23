@@ -1,6 +1,6 @@
 # Deployment Checklist
 
-This document covers the minimum setup required to connect the project to real Cloudflare and AWS SES resources.
+This document covers the minimum setup required to connect the project to real Cloudflare resources and a supported outbound email provider.
 
 For the first real environment, see [docs/dev-bootstrap.md](../docs/dev-bootstrap.md).
 For Worker secret setup templates, see [scripts/bootstrap_worker_secrets.sh](../scripts/bootstrap_worker_secrets.sh).
@@ -67,6 +67,8 @@ Update [wrangler.toml](../wrangler.toml):
 - set the correct `SES_REGION`
 - set the correct `SES_FROM_DOMAIN` per environment
 - set the correct `SES_CONFIGURATION_SET` per environment
+- set `OUTBOUND_PROVIDER` to the active provider (`ses` or `resend`)
+- set `RESEND_API_BASE_URL` when using Resend (default `https://api.resend.com`)
 - set `ADMIN_ROUTES_ENABLED` and `DEBUG_ROUTES_ENABLED` appropriately
 - set `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_EMAIL_DOMAIN`, and `CLOUDFLARE_EMAIL_WORKER`
   for environments that should expose contact inbox and alias-management features
@@ -109,7 +111,25 @@ Runtime/site note:
 - the standalone profile in [wrangler.site.toml](../wrangler.site.toml) can still be used for a separate site Worker
 - do not enable automatic alias bootstrap in more than one live Worker for the same domain unless you intentionally want them to compete for ownership
 
-## AWS SES Setup
+## Outbound Provider Setup
+
+Choose one outbound provider path for each environment.
+
+### Resend
+
+You need:
+
+- a verified sending domain in Resend
+- a `RESEND_API_KEY` Worker secret
+- `OUTBOUND_PROVIDER = "resend"`
+
+Recommended:
+
+- keep inbound routing on Cloudflare and migrate outbound first
+- verify the same domain used by mailbox `from` addresses for the shortest path
+- keep `RESEND_API_BASE_URL = "https://api.resend.com"` unless you intentionally proxy the API
+
+### AWS SES
 
 You need:
 
@@ -137,8 +157,10 @@ Current SES restriction as of 2026-03-18:
 
 Fill [.dev.vars.example](../.dev.vars.example) into `.dev.vars` with real values for:
 
+- `OUTBOUND_PROVIDER`
 - `SES_ACCESS_KEY_ID`
 - `SES_SECRET_ACCESS_KEY`
+- `RESEND_API_KEY`
 - `WEBHOOK_SHARED_SECRET`
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
@@ -150,12 +172,15 @@ For deployed Cloudflare environments, store sensitive values as Worker secrets u
 
 For each deployed environment, set these as secrets:
 
+- `RESEND_API_KEY` when `OUTBOUND_PROVIDER=resend`
 - `SES_ACCESS_KEY_ID`
 - `SES_SECRET_ACCESS_KEY`
 - `WEBHOOK_SHARED_SECRET`
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
 - `CLOUDFLARE_API_TOKEN` when the runtime should manage Cloudflare Email Routing from the admin UI or automatic alias bootstrap
+- `X402_FACILITATOR_AUTH_TOKEN` when using a real x402 facilitator
+- `X402_PAY_TO` when you want quotes to point at a real settlement recipient
 
 Template helper:
 
@@ -163,6 +188,13 @@ Template helper:
 bash scripts/bootstrap_worker_secrets.sh dev
 bash scripts/bootstrap_worker_secrets.sh staging
 bash scripts/bootstrap_worker_secrets.sh production
+```
+
+For x402-specific payment setup:
+
+```bash
+bash scripts/bootstrap_x402_payment.sh dev
+bash scripts/bootstrap_x402_payment.sh production
 ```
 
 Important split:
@@ -176,15 +208,59 @@ Important split:
   - `SES_REGION`
   - `SES_FROM_DOMAIN`
   - `SES_CONFIGURATION_SET`
+  - `OUTBOUND_PROVIDER`
+  - `RESEND_API_BASE_URL`
   - `ADMIN_ROUTES_ENABLED`
   - `DEBUG_ROUTES_ENABLED`
   - idempotency retention windows
 - Worker secrets
   - AWS access keys
+  - Resend API key
   - webhook shared secret
   - token signing secret
   - admin secret
   - optional Cloudflare API token for Email Routing admin
+  - optional x402 facilitator auth token
+  - optional x402 settlement recipient when you do not want it stored in plain vars
+
+## x402 Real Payment Configuration
+
+For the first real Base Sepolia + USDC payment flow, confirm:
+
+- `X402_FACILITATOR_URL`
+- `X402_FACILITATOR_VERIFY_PATH`
+- `X402_FACILITATOR_SETTLE_PATH`
+- `X402_FACILITATOR_AUTH_TOKEN`
+- `X402_PAY_TO`
+- `X402_DEFAULT_SCHEME=exact`
+- `X402_DEFAULT_NETWORK_ID=eip155:84532`
+- `X402_DEFAULT_ASSET=usdc`
+- `X402_PRICE_PER_CREDIT_USD`
+- `X402_UPGRADE_PRICE_USD`
+
+Recommended split:
+
+- Worker secrets
+  - `X402_FACILITATOR_AUTH_TOKEN`
+  - `X402_PAY_TO`
+- `wrangler.toml` vars
+  - `X402_FACILITATOR_URL`
+  - `X402_FACILITATOR_VERIFY_PATH`
+  - `X402_FACILITATOR_SETTLE_PATH`
+  - `X402_DEFAULT_SCHEME`
+  - `X402_DEFAULT_NETWORK_ID`
+  - `X402_DEFAULT_ASSET`
+  - `X402_PRICE_PER_CREDIT_USD`
+  - `X402_UPGRADE_PRICE_USD`
+
+Before running the first real payment in `dev`, also verify:
+
+- hosted DID routes resolve publicly
+- the generated quote includes the expected `payTo`
+- the facilitator expects the same chain and asset as the runtime quote
+
+See [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) for
+the full runbook.
 
 ## Pre-Deploy Validation
 
@@ -228,6 +304,7 @@ Note:
 - with fake SES credentials, the outbound job should move to `retry`
 - with real SES credentials, the outbound send should progress further and produce a real `providerMessageId`
 - if the AWS account or active SES region still lacks production access, real external outbound validation remains limited to verified recipients
+- with `OUTBOUND_PROVIDER=resend`, outbound validation depends on a verified Resend sender domain and `RESEND_API_KEY`
 
 ## Remote D1
 

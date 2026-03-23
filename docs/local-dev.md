@@ -5,7 +5,7 @@
 - Node.js 20+
 - npm
 - optional for remote environment work: Cloudflare account with D1, R2, and Queues
-- optional for real outbound validation: AWS account with SES API access keys
+- optional for real outbound validation: AWS account with SES API access keys or a Resend API key
 
 ## 1. Install dependencies
 
@@ -22,7 +22,7 @@ Only update `wrangler.toml` when you want to:
 
 - point remote commands at real Cloudflare environments
 - change local bucket or queue names
-- adjust `SES_REGION`, `SES_FROM_DOMAIN`, or `SES_CONFIGURATION_SET`
+- adjust `OUTBOUND_PROVIDER`, `SES_REGION`, `SES_FROM_DOMAIN`, `SES_CONFIGURATION_SET`, or `RESEND_API_BASE_URL`
 
 ## 3. Configure secrets for local development
 
@@ -35,10 +35,19 @@ Required for the default local API flow:
 - `API_SIGNING_SECRET`
 - `ADMIN_API_SECRET`
 
+Optional outbound-provider selection:
+
+- `OUTBOUND_PROVIDER`
+
 Optional for real outbound SES-backed validation:
 
 - `SES_ACCESS_KEY_ID`
 - `SES_SECRET_ACCESS_KEY`
+
+Optional for real outbound Resend-backed validation:
+
+- `RESEND_API_KEY`
+- `RESEND_API_BASE_URL`
 
 Optional for contact inbox, alias-management, or Email Routing admin flows:
 
@@ -269,7 +278,7 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 ## Notes
 
 - The current parser is MVP-grade, not a full RFC-complete MIME parser.
-- Outbound now chooses SES `Raw` content when reply headers or attachments are present.
+- Outbound now chooses provider-specific rich send behavior for reply headers or attachments. SES uses `Raw` MIME; Resend uses headers plus attachment upload in the API payload.
 - Idempotency cleanup can be triggered manually with `POST /admin/api/maintenance/idempotency-cleanup`.
 - For remote D1, use the environment-specific scripts such as `npm run d1:migrate:remote:dev` and `npm run d1:seed:remote:dev`.
-- With fake or sandbox-limited SES credentials, local send tests can still exercise the accepted-to-retry path without proving external delivery.
+- With fake or sandbox-limited provider credentials, local send tests can still exercise the accepted-to-retry path without proving external delivery.

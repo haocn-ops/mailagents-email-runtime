@@ -7,9 +7,18 @@ ADMIN_API_SECRET=replace-with-admin-api-secret
 ADMIN_ROUTES_ENABLED=true
 DEBUG_ROUTES_ENABLED=true
 
+# Optional outbound provider selection
+OUTBOUND_PROVIDER=ses
+
 # Optional for real SES-backed outbound validation
 SES_ACCESS_KEY_ID=replace-with-aws-access-key-id
 SES_SECRET_ACCESS_KEY=replace-with-aws-secret-access-key
+SES_MOCK_SEND=false
+SES_MOCK_SEND_DELAY_MS=1500
+
+# Optional for real Resend-backed outbound validation
+RESEND_API_KEY=replace-with-resend-api-key
+RESEND_API_BASE_URL=https://api.resend.com
 
 # Optional for contact inbox, alias-management, and Email Routing admin flows
 CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED=false
@@ -17,3 +26,18 @@ CLOUDFLARE_API_TOKEN=replace-with-cloudflare-api-token
 CLOUDFLARE_ZONE_ID=replace-with-cloudflare-zone-id
 CLOUDFLARE_EMAIL_DOMAIN=mailagents.net
 CLOUDFLARE_EMAIL_WORKER=mailagents-dev
+
+# Optional for x402 facilitator-backed verification and settlement
+# Use `mock://local` to exercise the facilitator flow in local smoke tests.
+X402_DEFAULT_SCHEME=exact
+X402_DEFAULT_NETWORK_ID=eip155:84532
+X402_DEFAULT_ASSET=usdc
+X402_PAY_TO=replace-with-base-sepolia-usdc-recipient
+X402_PRICE_PER_CREDIT_USD=0.01
+X402_UPGRADE_PRICE_USD=10
+X402_FACILITATOR_URL=https://facilitator.example.com
+X402_FACILITATOR_VERIFY_PATH=/verify
+X402_FACILITATOR_SETTLE_PATH=/settle
+X402_FACILITATOR_AUTH_TOKEN=replace-with-facilitator-token
+X402_FACILITATOR_MOCK_VERIFY_RESULT=valid
+X402_FACILITATOR_MOCK_SETTLE_RESULT=success

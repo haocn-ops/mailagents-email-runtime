@@ -6,6 +6,8 @@ import {
 } from "../lib/auth";
 import { accepted, badRequest, json } from "../lib/http";
 import { createId } from "../lib/ids";
+import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
+import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
   buildRuntimeMetadata,
   MCP_PROTOCOL_VERSION,
@@ -39,6 +41,7 @@ import {
   getThread,
   listMessages,
   listTasks,
+  markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
 } from "../repositories/mail";
@@ -47,6 +50,8 @@ import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 type JsonRpcId = string | number | null;
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+const MCP_ALLOW_METHODS = "POST, OPTIONS";
+const MCP_ALLOW_HEADERS = "authorization, content-type";
 
 interface JsonRpcRequest {
   jsonrpc?: string;
@@ -70,6 +75,12 @@ class McpToolError extends Error {
   ) {
     super(message);
   }
+}
+
+interface CreatedAndSentDraftResult {
+  draft: Awaited<ReturnType<typeof createDraft>>;
+  outboundJobId: string;
+  status: "queued";
 }
 
 async function enqueueReplayTask(env: Env, input: {
@@ -223,6 +234,66 @@ async function validateDraftAttachments(env: Env, input: {
     if (owner.mailboxId !== input.mailboxId) {
       throw new McpToolError("invalid_arguments", "Attachment does not belong to mailbox");
     }
+  }
+}
+
+async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}> {
+  const draftObject = await env.R2_EMAIL.get(draftR2Key);
+  if (!draftObject) {
+    throw new McpToolError("resource_draft_not_found", "Draft payload not found");
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  return {
+    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
+    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
+    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
+async function validateDraftOutboundCredits(env: Env, draft: {
+  tenantId: string;
+  draftR2Key: string;
+  sourceMessageId?: string;
+  createdVia?: string;
+}): Promise<void> {
+  const recipients = await readDraftRecipients(env, draft.draftR2Key);
+  const creditCheck = await checkOutboundCreditRequirement(env, {
+    tenantId: draft.tenantId,
+    ...recipients,
+    sourceMessageId: draft.sourceMessageId,
+    createdVia: draft.createdVia,
+  });
+
+  if (!creditCheck.hasSufficientCredits) {
+    throw new McpToolError(
+      "insufficient_credits",
+      `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+    );
+  }
+}
+
+async function validateDraftOutboundPolicy(env: Env, draft: {
+  tenantId: string;
+  agentId: string;
+  draftR2Key: string;
+}): Promise<void> {
+  const recipients = await readDraftRecipients(env, draft.draftR2Key);
+  const decision = await evaluateOutboundPolicy(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    ...recipients,
+  });
+
+  if (!decision.ok) {
+    throw new McpToolError(
+      decision.code ?? "access_mailbox_denied",
+      decision.message ?? "Outbound policy denied this send request",
+    );
   }
 }
 
@@ -402,7 +473,7 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
     ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "create_draft")!,
     inputSchema: {
       type: "object",
-      required: ["agentId", "tenantId", "mailboxId", "from", "to", "subject"],
+      required: ["to", "subject"],
       properties: {
         agentId: { type: "string" },
         tenantId: { type: "string" },
@@ -441,6 +512,17 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
       properties: {
         draftId: { type: "string" },
         idempotencyKey: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    ...RUNTIME_TOOL_CATALOG.find((tool) => tool.name === "cancel_draft")!,
+    inputSchema: {
+      type: "object",
+      required: ["draftId"],
+      properties: {
+        draftId: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -656,6 +738,20 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
   };
 }
 
+function withMcpCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-methods", MCP_ALLOW_METHODS);
+  headers.set("access-control-allow-headers", MCP_ALLOW_HEADERS);
+  headers.set("access-control-max-age", "86400");
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 async function validateBindingResources(
   env: Env,
   tenantId: string,
@@ -761,7 +857,7 @@ async function createAndSendDraftForMcp(env: Env, input: {
   createdVia: string;
   idempotencyKey?: string;
   requestFingerprint: string;
-}) {
+}): Promise<CreatedAndSentDraftResult> {
   const idempotencyKey = input.idempotencyKey?.trim();
 
   if (input.idempotencyKey !== undefined && !idempotencyKey) {
@@ -784,6 +880,31 @@ async function createAndSendDraftForMcp(env: Env, input: {
       mailboxId: input.mailboxId,
       attachments: input.payload.attachments,
     });
+    const decision = await evaluateOutboundPolicy(env, {
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      to: input.payload.to,
+      cc: input.payload.cc,
+      bcc: input.payload.bcc,
+    });
+    if (!decision.ok) {
+      throw new McpToolError(decision.code ?? "access_mailbox_denied", decision.message ?? "Outbound policy denied this send request");
+    }
+
+    const creditCheck = await checkOutboundCreditRequirement(env, {
+      tenantId: input.tenantId,
+      to: input.payload.to,
+      cc: input.payload.cc,
+      bcc: input.payload.bcc,
+      sourceMessageId: input.sourceMessageId,
+      createdVia: input.createdVia,
+    });
+    if (!creditCheck.hasSufficientCredits) {
+      throw new McpToolError(
+        "insufficient_credits",
+        `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+      );
+    }
   };
 
   if (!idempotencyKey) {
@@ -821,7 +942,7 @@ async function createAndSendDraftForMcp(env: Env, input: {
   }
   if (reservation.status === "completed") {
     if (reservation.record.response) {
-      return reservation.record.response;
+      return reservation.record.response as CreatedAndSentDraftResult;
     }
 
     return await restoreDraftSendReplay(env, reservation.record.resourceId);
@@ -1101,22 +1222,29 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
     try {
       const { thread, draftPayload } = await buildReplyDraftInput();
-      const draft = await createDraft(env, {
+      const sendResult = await createAndSendDraftForMcp(env, {
         tenantId: message.tenantId,
         agentId,
         mailboxId: message.mailboxId,
         threadId: message.threadId,
         sourceMessageId: message.id,
-        createdVia: "mcp:reply_to_inbound_email",
         payload: draftPayload,
+        createdVia: "mcp:reply_to_inbound_email",
+        requestFingerprint: JSON.stringify({
+          tool: "reply_to_inbound_email",
+          agentId,
+          messageId,
+          replyText: replyText ?? null,
+          replyHtml: replyHtml ?? null,
+          send: true,
+        }),
       });
-      const result = await enqueueDraftSend(env, draft.id);
       const response = {
-        draft,
+        draft: sendResult.draft,
         sendResult: {
-          draftId: draft.id,
-          outboundJobId: result.outboundJobId,
-          status: result.status,
+          draftId: sendResult.draft.id,
+          outboundJobId: sendResult.outboundJobId,
+          status: sendResult.status,
         },
         sourceMessage: message,
         usedThreadContext: Boolean(thread),
@@ -1125,7 +1253,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         operation: "draft_send",
         tenantId: message.tenantId,
         idempotencyKey: idempotencyKey!,
-        resourceId: draft.id,
+        resourceId: sendResult.draft.id,
         response,
       });
       return response;
@@ -1270,21 +1398,38 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
 
     try {
       await validateOperatorManualSendInput();
-      const draft = await createDraft(env, {
+      const result = await createAndSendDraftForMcp(env, {
         tenantId,
         agentId,
         mailboxId,
         threadId,
         sourceMessageId,
-        createdVia: "mcp:operator_manual_send",
         payload: draftPayload,
+        createdVia: "mcp:operator_manual_send",
+        requestFingerprint: JSON.stringify({
+          tool: "operator_manual_send",
+          agentId,
+          tenantId,
+          mailboxId,
+          from,
+          to,
+          cc,
+          bcc,
+          subject,
+          text,
+          html,
+          inReplyTo: inReplyTo ?? null,
+          references,
+          threadId: threadId ?? null,
+          sourceMessageId: sourceMessageId ?? null,
+          send: true,
+        }),
       });
-      const result = await enqueueDraftSend(env, draft.id);
       const response = {
-        draft,
+        draft: result.draft,
         sendRequested: true,
         sendResult: {
-          draftId: draft.id,
+          draftId: result.draft.id,
           outboundJobId: result.outboundJobId,
           status: result.status,
         },
@@ -1293,7 +1438,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         operation: "draft_send",
         tenantId,
         idempotencyKey: idempotencyKey!,
-        resourceId: draft.id,
+        resourceId: result.draft.id,
         response,
       });
       return response;
@@ -1532,10 +1677,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
   if (toolName === "create_draft") {
     const auth = await requireClaimsStrict(request, env, ["draft:create"]);
 
-    const agentId = requireString(args.agentId, "agentId");
-    const tenantId = requireString(args.tenantId, "tenantId");
-    const mailboxId = requireString(args.mailboxId, "mailboxId");
-    const from = requireString(args.from, "from");
+    const mailbox = await resolveMailboxForClaims(env, auth, optionalString(args.mailboxId), { requireActive: true });
+    const agentId = optionalString(args.agentId) ?? requireSelfAgentId(auth);
+    const tenantId = optionalString(args.tenantId) ?? mailbox.tenant_id;
+    const mailboxId = mailbox.id;
+    const from = optionalString(args.from) ?? mailbox.address;
     const to = requireStringArray(args.to, "to");
     const subject = requireString(args.subject, "subject");
     const tenantError = enforceTenantAccess(auth, tenantId);
@@ -1658,6 +1804,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           mailboxId: draft.mailboxId,
         });
         await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+        await validateDraftOutboundPolicy(env, draft);
+        await validateDraftOutboundCredits(env, draft);
         const result = await enqueueDraftSend(env, draftId);
         const response = {
           draftId,
@@ -1686,12 +1834,50 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       mailboxId: draft.mailboxId,
     });
     await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    await validateDraftOutboundPolicy(env, draft);
+    await validateDraftOutboundCredits(env, draft);
 
     const result = await enqueueDraftSend(env, draftId);
     return {
       draftId,
       outboundJobId: result.outboundJobId,
       status: result.status,
+    };
+  }
+
+  if (toolName === "cancel_draft") {
+    const auth = await requireClaimsStrict(request, env, ["draft:create"]);
+
+    const draftId = requireString(args.draftId, "draftId");
+    const draft = await getDraft(env, draftId);
+    if (!draft) {
+      throw new McpToolError("resource_draft_not_found", "Draft not found");
+    }
+    const tenantError = enforceTenantAccess(auth, draft.tenantId);
+    if (tenantError) {
+      await throwIfResponseError(tenantError);
+    }
+    const agentError = enforceAgentAccess(auth, draft.agentId);
+    if (agentError) {
+      await throwIfResponseError(agentError);
+    }
+    const mailboxError = enforceMailboxAccess(auth, draft.mailboxId);
+    if (mailboxError) {
+      await throwIfResponseError(mailboxError);
+    }
+
+    if (draft.status === "queued" || draft.status === "sent") {
+      throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be cancelled`);
+    }
+
+    if (draft.status !== "cancelled") {
+      await markDraftStatus(env, draft.id, "cancelled");
+    }
+
+    return {
+      ok: true,
+      id: draft.id,
+      status: "cancelled",
     };
   }
 
@@ -1985,6 +2171,9 @@ router.on("POST", "/mcp", async (request, env) => {
   return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
 });
 
+router.on("OPTIONS", "/mcp", async () => withMcpCors(new Response(null, { status: 204 })));
+
 export async function handleMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  return await router.handle(request, env, ctx);
+  const response = await router.handle(request, env, ctx);
+  return response ? withMcpCors(response) : null;
 }

@@ -7,6 +7,15 @@ export type DraftStatus = "draft" | "approved" | "queued" | "sent" | "cancelled"
 export type MessageStatus = "received" | "normalized" | "tasked" | "replied" | "ignored" | "failed";
 export type OutboundJobStatus = "queued" | "sending" | "sent" | "retry" | "failed";
 export type DeliveryEventType = "delivery" | "bounce" | "complaint" | "reject" | "unknown";
+export type TenantBillingStatus = "trial" | "active" | "delinquent" | "suspended";
+export type PricingTier = "free" | "paid_review" | "paid_active" | "enterprise";
+export type CreditLedgerEntryType = "topup" | "debit_send" | "debit_reply" | "refund" | "adjustment";
+export type PaymentReceiptType = "topup" | "upgrade" | "refund" | "adjustment";
+export type PaymentReceiptStatus = "pending" | "verified" | "settled" | "failed" | "refunded";
+export type DidBindingStatus = "pending" | "verified" | "revoked";
+export type TenantOutboundStatus = "internal_only" | "external_review" | "external_enabled" | "suspended";
+export type OutboundProvider = "ses" | "resend";
+export type SendLimitWindowModel = "rolling";
 
 export interface MailboxRecord {
   id: string;
@@ -30,6 +39,11 @@ export interface Env {
   SES_SECRET_ACCESS_KEY?: string;
   SES_ACCESS_KEY?: string;
   SES_SECRET_KEY?: string;
+  SES_MOCK_SEND?: string;
+  SES_MOCK_SEND_DELAY_MS?: string;
+  OUTBOUND_PROVIDER?: string;
+  RESEND_API_KEY?: string;
+  RESEND_API_BASE_URL?: string;
   WEBHOOK_SHARED_SECRET?: string;
   API_SIGNING_SECRET?: string;
   SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS?: string;
@@ -47,6 +61,19 @@ export interface Env {
   PUBLIC_TOKEN_REISSUE_IP_WINDOW_SECONDS?: string;
   PUBLIC_TOKEN_REISSUE_IP_MAX_REQUESTS?: string;
   OUTBOUND_SEND_MAX_RETRIES?: string;
+  OUTBOUND_SEND_IN_DOUBT_GRACE_SECONDS?: string;
+  X402_DEFAULT_SCHEME?: string;
+  X402_DEFAULT_NETWORK_ID?: string;
+  X402_DEFAULT_ASSET?: string;
+  X402_PAY_TO?: string;
+  X402_PRICE_PER_CREDIT_USD?: string;
+  X402_UPGRADE_PRICE_USD?: string;
+  X402_FACILITATOR_URL?: string;
+  X402_FACILITATOR_VERIFY_PATH?: string;
+  X402_FACILITATOR_SETTLE_PATH?: string;
+  X402_FACILITATOR_AUTH_TOKEN?: string;
+  X402_FACILITATOR_MOCK_VERIFY_RESULT?: string;
+  X402_FACILITATOR_MOCK_SETTLE_RESULT?: string;
 }
 
 export interface AgentRecord {
@@ -128,6 +155,72 @@ export interface AgentPolicyRecord {
   updatedAt: string;
 }
 
+export interface BillingAccountRecord {
+  tenantId: string;
+  status: TenantBillingStatus;
+  pricingTier: PricingTier;
+  defaultNetwork?: string;
+  defaultAsset?: string;
+  availableCredits: number;
+  reservedCredits: number;
+  updatedAt: string;
+}
+
+export interface CreditLedgerEntryRecord<TMetadata extends object | undefined = Record<string, unknown> | undefined> {
+  id: string;
+  tenantId: string;
+  entryType: CreditLedgerEntryType;
+  creditsDelta: number;
+  reason: string;
+  paymentReceiptId?: string;
+  referenceId?: string;
+  metadata?: TMetadata;
+  createdAt: string;
+}
+
+export interface PaymentReceiptRecord<TMetadata extends object | undefined = Record<string, unknown> | undefined> {
+  id: string;
+  tenantId: string;
+  receiptType: PaymentReceiptType;
+  paymentScheme: string;
+  network?: string;
+  asset?: string;
+  amountAtomic: string;
+  amountDisplay?: string;
+  paymentReference?: string;
+  settlementReference?: string;
+  status: PaymentReceiptStatus;
+  metadata?: TMetadata;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DidBindingRecord {
+  tenantId: string;
+  did: string;
+  method: string;
+  documentUrl?: string;
+  status: DidBindingStatus;
+  verificationMethodId?: string;
+  service: Array<Record<string, unknown>>;
+  verifiedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantSendPolicyRecord {
+  tenantId: string;
+  pricingTier: PricingTier;
+  outboundStatus: TenantOutboundStatus;
+  internalDomainAllowlist: string[];
+  externalSendEnabled: boolean;
+  reviewRequired: boolean;
+  effectiveDailySendLimit: number | null;
+  effectiveHourlySendLimit: number | null;
+  limitWindowModel: SendLimitWindowModel | null;
+  updatedAt: string;
+}
+
 export interface TaskRecord {
   id: string;
   tenantId: string;
@@ -148,7 +241,7 @@ export interface MessageRecord {
   mailboxId: string;
   threadId?: string;
   direction: "inbound" | "outbound";
-  provider: "cloudflare" | "ses";
+  provider: "cloudflare" | OutboundProvider;
   internetMessageId?: string;
   providerMessageId?: string;
   fromAddr: string;

@@ -1,3 +1,4 @@
+import { getOutboundProvider } from "./outbound-provider";
 import type { Env } from "../types";
 
 export const RUNTIME_SERVER_INFO = {
@@ -158,6 +159,16 @@ export const RUNTIME_TOOL_CATALOG: RuntimeToolMetadata[] = [
     humanReviewRequired: true,
   },
   {
+    name: "cancel_draft",
+    description: "Cancel a draft that has not been queued or sent yet.",
+    requiredScopes: ["draft:create"],
+    category: "draft_control",
+    recommendedForMailboxAgents: true,
+    riskLevel: "write",
+    sideEffecting: true,
+    humanReviewRequired: false,
+  },
+  {
     name: "send_email",
     description: "Create and send a mailbox-scoped outbound email in one MCP call.",
     requiredScopes: ["draft:create", "draft:send"],
@@ -254,6 +265,24 @@ export const MCP_ERROR_CODE_CATALOG = [
     category: "input",
     retryable: false,
     description: "The tool call arguments failed validation or were malformed.",
+  },
+  {
+    code: "insufficient_credits",
+    category: "billing",
+    retryable: false,
+    description: "The tenant does not have enough credits to send to external recipients.",
+  },
+  {
+    code: "daily_quota_exceeded",
+    category: "policy",
+    retryable: true,
+    description: "The tenant has reached its rolling 24-hour outbound send limit.",
+  },
+  {
+    code: "hourly_quota_exceeded",
+    category: "policy",
+    retryable: true,
+    description: "The tenant has reached its rolling 1-hour outbound send limit.",
   },
   {
     code: "resource_agent_not_found",
@@ -454,6 +483,14 @@ export const COMPATIBILITY_CONTRACT_SCHEMA = {
       },
       additionalProperties: false,
     },
+    delivery: {
+      type: "object",
+      required: ["outboundProvider"],
+      properties: {
+        outboundProvider: { type: "string", enum: ["ses", "resend"] },
+      },
+      additionalProperties: false,
+    },
   },
   additionalProperties: false,
 } as const;
@@ -508,6 +545,9 @@ export function buildRuntimeMetadata(env: Env) {
     routes: {
       adminEnabled: isEnabled(env.ADMIN_ROUTES_ENABLED),
       debugEnabled: isEnabled(env.DEBUG_ROUTES_ENABLED),
+    },
+    delivery: {
+      outboundProvider: getOutboundProvider(env),
     },
   };
 }
@@ -578,5 +618,6 @@ export function buildCompatibilityContract(env: Env) {
     workflows: runtime.workflows,
     errors: MCP_ERROR_CODE_CATALOG,
     routes: runtime.routes,
+    delivery: runtime.delivery,
   };
 }

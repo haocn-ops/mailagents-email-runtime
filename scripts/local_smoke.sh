@@ -9,7 +9,7 @@ WEBHOOK_SECRET="${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-replace-with-shared-secret}"
 TENANT_ID="${TENANT_ID:-t_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 FROM_EMAIL="${FROM_EMAIL:-agent@mailagents.net}"
-TO_EMAIL="${TO_EMAIL:-user@example.com}"
+TO_EMAIL="${TO_EMAIL:-peer@mailagents.net}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then

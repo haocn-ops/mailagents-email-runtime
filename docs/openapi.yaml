@@ -8,6 +8,7 @@ servers:
 security:
   - bearerAuth: []
 tags:
+  - name: Admin
   - name: Agents
   - name: Auth
   - name: Debug
@@ -46,6 +47,42 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/McpInitializeResponse'
                   - $ref: '#/components/schemas/McpToolsListResponse'
+                  - $ref: '#/components/schemas/McpToolsCallResponse'
+  /admin/mcp:
+    post:
+      tags: [Admin, MCP]
+      summary: MCP JSON-RPC endpoint for operator and admin agents
+      operationId: callAdminMcp
+      security: []
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+      description: |
+        Supports `initialize`, `tools/list`, and `tools/call`.
+        This surface is separate from `/mcp`, is gated by `ADMIN_ROUTES_ENABLED`,
+        and is intended for operator-only workflows such as token minting,
+        send-policy review, suppression management, and forensic inspection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/McpInitializeRequest'
+                - $ref: '#/components/schemas/McpToolsListRequest'
+                - $ref: '#/components/schemas/AdminMcpToolsCallRequest'
+      responses:
+        '200':
+          description: Admin MCP response
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/McpInitializeResponse'
+                  - $ref: '#/components/schemas/AdminMcpToolsListResponse'
                   - $ref: '#/components/schemas/McpToolsCallResponse'
   /public/signup:
     get:
@@ -173,6 +210,292 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RotateAccessTokenResult'
+  /v1/billing/account:
+    get:
+      tags: [Billing]
+      summary: Get or initialize the billing account for the current tenant
+      operationId: getBillingAccount
+      responses:
+        '200':
+          description: Billing account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingAccount'
+  /v1/billing/topup:
+    post:
+      tags: [Billing]
+      summary: Start an x402-compatible topup flow for the current tenant
+      operationId: createBillingTopupIntent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingTopupRequest'
+      responses:
+        '200':
+          description: Payment proof was accepted and, when facilitator-backed settlement is enabled, credits were settled immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentConfirmResponse'
+        '402':
+          description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingTopupQuoteResponse'
+        '503':
+          description: x402 billing is not configured for this environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
+        '202':
+          description: Payment proof captured. Receipt created in pending state because this environment still requires a later confirmation step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingTopupPendingResponse'
+  /v1/billing/upgrade-intent:
+    post:
+      tags: [Billing]
+      summary: Start an x402-compatible upgrade payment flow for the current tenant
+      operationId: createBillingUpgradeIntent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingUpgradeIntentRequest'
+      responses:
+        '200':
+          description: Payment proof was accepted and, when facilitator-backed settlement is enabled, the plan and send policy were updated immediately.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentConfirmResponse'
+        '402':
+          description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUpgradeQuoteResponse'
+        '503':
+          description: x402 billing is not configured for this environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUnavailableResponse'
+        '202':
+          description: Payment proof captured. Receipt created in pending state because this environment still requires a later confirmation step.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingUpgradePendingResponse'
+  /v1/billing/payment/confirm:
+    post:
+      tags: [Billing]
+      summary: Confirm a pending payment receipt and apply credits
+      operationId: confirmBillingPayment
+      parameters:
+        - name: x-admin-secret
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingPaymentConfirmRequest'
+      responses:
+        '200':
+          description: Payment receipt updated. Credits may have been applied if the receipt settled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentConfirmResponse'
+        '402':
+          description: Facilitator verification or settlement failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPaymentFailureResponse'
+  /v1/tenants/{tenantId}/send-policy:
+    get:
+      tags: [Policy]
+      summary: Get the send policy for a tenant
+      operationId: getTenantSendPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Tenant send policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSendPolicy'
+    put:
+      tags: [Policy]
+      summary: Create or update the send policy for a tenant
+      operationId: upsertTenantSendPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertTenantSendPolicyRequest'
+      responses:
+        '200':
+          description: Tenant send policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSendPolicy'
+  /v1/tenants/{tenantId}/send-policy/review-decision:
+    post:
+      tags: [Policy]
+      summary: Apply an admin review decision to a tenant send policy
+      operationId: reviewTenantSendPolicy
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: x-admin-secret
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantSendPolicyReviewDecisionRequest'
+      responses:
+        '200':
+          description: Review decision applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSendPolicyReviewDecisionResponse'
+  /v1/billing/ledger:
+    get:
+      tags: [Billing]
+      summary: List recent credit ledger entries for the current tenant
+      operationId: listBillingLedger
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Credit ledger entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CreditLedgerEntry'
+  /v1/billing/receipts:
+    get:
+      tags: [Billing]
+      summary: List recent payment receipts for the current tenant
+      operationId: listPaymentReceipts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Payment receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentReceipt'
+  /v1/tenants/{tenantId}/did:
+    get:
+      tags: [Identity]
+      summary: Get the DID binding for a tenant
+      operationId: getTenantDidBinding
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: DID binding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DidBinding'
+        '404':
+          description: DID binding not found
+    put:
+      tags: [Identity]
+      summary: Create or update the DID binding for a tenant
+      operationId: upsertTenantDidBinding
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertDidBindingRequest'
+      responses:
+        '200':
+          description: DID binding updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DidBinding'
+  /v1/tenants/{tenantId}/did/hosted:
+    post:
+      tags: [Identity]
+      summary: Create or refresh a Mailagents-hosted did:web binding for a tenant
+      operationId: createHostedTenantDidBinding
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: Hosted DID binding created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DidBinding'
+  /did/tenants/{tenantId}/did.json:
+    get:
+      tags: [Identity]
+      summary: Resolve the hosted did:web document for a tenant
+      operationId: getHostedDidDocument
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: DID document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DidDocument'
+        '404':
+          description: DID document not found
   /v1/debug/agents/{agentId}:
     get:
       tags: [Debug]
@@ -1279,6 +1602,663 @@ components:
           type: string
         oldTokenRemainsValid:
           type: boolean
+    BillingAccount:
+      type: object
+      required:
+        [tenantId, status, pricingTier, availableCredits, reservedCredits, updatedAt]
+      properties:
+        tenantId:
+          type: string
+        status:
+          type: string
+          enum: [trial, active, delinquent, suspended]
+        pricingTier:
+          type: string
+          enum: [free, paid_review, paid_active, enterprise]
+        defaultNetwork:
+          type: string
+        defaultAsset:
+          type: string
+        availableCredits:
+          type: integer
+        reservedCredits:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+    BillingTopupRequest:
+      type: object
+      required: [credits]
+      properties:
+        credits:
+          type: integer
+          minimum: 1
+        paymentScheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+    X402PaymentRequirement:
+      type: object
+      required:
+        [scheme, network, asset, maxAmountRequired, resource, description, mimeType]
+      properties:
+        scheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        maxAmountRequired:
+          type: string
+        resource:
+          type: string
+        description:
+          type: string
+        mimeType:
+          type: string
+        payTo:
+          type: string
+        outputSchema:
+          type: string
+        extra:
+          type: object
+          additionalProperties: true
+    BillingTopupQuote:
+      type: object
+      required:
+        [scheme, network, asset, credits, amountUsd, amountAtomic, description, paymentRequired]
+      properties:
+        scheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        credits:
+          type: integer
+        amountUsd:
+          type: string
+        amountAtomic:
+          type: string
+        description:
+          type: string
+        paymentRequired:
+          $ref: '#/components/schemas/X402PaymentRequirement'
+    BillingTopupQuoteResponse:
+      type: object
+      required: [error, protocol, tenantId, quote]
+      properties:
+        error:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
+        tenantId:
+          type: string
+        tenantDid:
+          type: string
+        quote:
+          $ref: '#/components/schemas/BillingTopupQuote'
+    BillingTopupPendingResponse:
+      type: object
+      required: [receipt, creditsRequested, verificationStatus, message]
+      properties:
+        receipt:
+          $ref: '#/components/schemas/PaymentReceipt'
+        creditsRequested:
+          type: integer
+        verificationStatus:
+          type: string
+          enum: [pending]
+        message:
+          type: string
+    BillingUpgradeIntentRequest:
+      type: object
+      properties:
+        targetPricingTier:
+          type: string
+          enum: [paid_review]
+        paymentScheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+    BillingUpgradeQuoteResponse:
+      type: object
+      required: [error, protocol, tenantId, quote]
+      properties:
+        error:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
+        tenantId:
+          type: string
+        tenantDid:
+          type: string
+        quote:
+          $ref: '#/components/schemas/BillingUpgradeQuote'
+    BillingUpgradeQuote:
+      type: object
+      required:
+        [scheme, network, asset, targetPricingTier, amountUsd, amountAtomic, description, paymentRequired]
+      properties:
+        scheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        targetPricingTier:
+          type: string
+          enum: [paid_review]
+        amountUsd:
+          type: string
+        amountAtomic:
+          type: string
+        description:
+          type: string
+        paymentRequired:
+          $ref: '#/components/schemas/X402PaymentRequirement'
+    BillingUpgradePendingResponse:
+      type: object
+      required: [receipt, targetPricingTier, verificationStatus, message]
+      properties:
+        receipt:
+          $ref: '#/components/schemas/PaymentReceipt'
+        targetPricingTier:
+          type: string
+          enum: [paid_review]
+        verificationStatus:
+          type: string
+          enum: [pending]
+        message:
+          type: string
+    BillingPaymentConfirmRequest:
+      type: object
+      required: [receiptId]
+      properties:
+        receiptId:
+          type: string
+        settlementReference:
+          type: string
+        markFailed:
+          type: boolean
+    BillingPaymentConfirmResponse:
+      type: object
+      required: [receipt, verificationStatus, message]
+      properties:
+        receipt:
+          $ref: '#/components/schemas/PaymentReceipt'
+        ledgerEntry:
+          $ref: '#/components/schemas/CreditLedgerEntry'
+        account:
+          $ref: '#/components/schemas/BillingAccount'
+        sendPolicy:
+          $ref: '#/components/schemas/TenantSendPolicy'
+        verificationStatus:
+          type: string
+          enum: [settled, failed]
+        message:
+          type: string
+    BillingPaymentFailureResponse:
+      type: object
+      required: [error, protocol, verificationStatus]
+      properties:
+        error:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
+        verificationStatus:
+          type: string
+          enum: [failed]
+        settlement:
+          oneOf:
+            - $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
+            - $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    BillingUnavailableResponse:
+      type: object
+      required: [error, protocol]
+      properties:
+        error:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
+    X402FacilitatorVerificationResponse:
+      oneOf:
+        - $ref: '#/components/schemas/X402FacilitatorVerificationSuccess'
+        - $ref: '#/components/schemas/X402FacilitatorVerificationFailure'
+    X402FacilitatorVerificationSuccess:
+      type: object
+      required: [type, isValid, scheme, network]
+      properties:
+        type:
+          type: string
+          enum: [verify]
+        isValid:
+          type: boolean
+          enum: [true]
+        scheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        resource:
+          type: string
+        paymentReference:
+          type: string
+        raw:
+          type: object
+          additionalProperties: true
+    X402FacilitatorVerificationFailure:
+      type: object
+      required: [type, isValid, scheme, network, error]
+      properties:
+        type:
+          type: string
+          enum: [verify]
+        isValid:
+          type: boolean
+          enum: [false]
+        scheme:
+          type: string
+        network:
+          type: string
+        error:
+          type: string
+        paymentReference:
+          type: string
+        raw:
+          type: object
+          additionalProperties: true
+    X402FacilitatorSettlementResponse:
+      oneOf:
+        - $ref: '#/components/schemas/X402FacilitatorSettlementSuccess'
+        - $ref: '#/components/schemas/X402FacilitatorSettlementFailure'
+    X402FacilitatorSettlementSuccess:
+      type: object
+      required: [type, settled, scheme, network]
+      properties:
+        type:
+          type: string
+          enum: [settle]
+        settled:
+          type: boolean
+          enum: [true]
+        scheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        amount:
+          type: string
+        settlementReference:
+          type: string
+        transactionHash:
+          type: string
+        raw:
+          type: object
+          additionalProperties: true
+    X402FacilitatorSettlementFailure:
+      type: object
+      required: [type, settled, scheme, network, error]
+      properties:
+        type:
+          type: string
+          enum: [settle]
+        settled:
+          type: boolean
+          enum: [false]
+        scheme:
+          type: string
+        network:
+          type: string
+        error:
+          type: string
+        settlementReference:
+          type: string
+        raw:
+          type: object
+          additionalProperties: true
+    CreditLedgerEntry:
+      type: object
+      required: [id, tenantId, entryType, creditsDelta, reason, createdAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        entryType:
+          type: string
+          enum: [topup, debit_send, debit_reply, refund, adjustment]
+        creditsDelta:
+          type: integer
+        reason:
+          type: string
+        paymentReceiptId:
+          type: string
+        referenceId:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/CreditLedgerEntryMetadata'
+        createdAt:
+          type: string
+          format: date-time
+    CreditLedgerEntryMetadata:
+      oneOf:
+        - $ref: '#/components/schemas/TopupSettlementLedgerMetadata'
+        - $ref: '#/components/schemas/OutboundUsageLedgerMetadata'
+    TopupSettlementLedgerMetadata:
+      type: object
+      required: [entryType, receiptType, confirmationMode, creditsRequested]
+      properties:
+        entryType:
+          type: string
+          enum: [topup]
+        receiptType:
+          type: string
+          enum: [topup]
+        confirmationMode:
+          type: string
+          enum: [manual_admin, facilitator]
+        creditsRequested:
+          type: integer
+        facilitatorVerify:
+          $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
+        facilitatorSettle:
+          $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    OutboundUsageLedgerMetadata:
+      type: object
+      required:
+        [entryType, usageType, chargeStage, creditsCharged, messageId, outboundJobId, recipientDomains, externalDomains]
+      properties:
+        entryType:
+          type: string
+          enum: [debit_send, debit_reply]
+        usageType:
+          type: string
+          enum: [send, reply]
+        chargeStage:
+          type: string
+          enum: [post_send]
+        creditsCharged:
+          type: integer
+        messageId:
+          type: string
+        outboundJobId:
+          type: string
+        draftId:
+          type: string
+        draftCreatedVia:
+          type: string
+        recipientDomains:
+          type: array
+          items:
+            type: string
+        externalDomains:
+          type: array
+          items:
+            type: string
+    PaymentReceipt:
+      type: object
+      required:
+        [id, tenantId, receiptType, paymentScheme, amountAtomic, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        tenantId:
+          type: string
+        receiptType:
+          type: string
+          enum: [topup, upgrade, refund, adjustment]
+        paymentScheme:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        amountAtomic:
+          type: string
+        amountDisplay:
+          type: string
+        paymentReference:
+          type: string
+        settlementReference:
+          type: string
+        status:
+          type: string
+          enum: [pending, verified, settled, failed, refunded]
+        metadata:
+          $ref: '#/components/schemas/PaymentReceiptMetadata'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PaymentReceiptMetadata:
+      oneOf:
+        - $ref: '#/components/schemas/TopupReceiptMetadata'
+        - $ref: '#/components/schemas/UpgradeReceiptMetadata'
+    StoredX402PaymentProof:
+      type: object
+      properties:
+        raw:
+          type: string
+        parsed:
+          type: object
+          additionalProperties: true
+    TopupReceiptMetadata:
+      type: object
+      required: [receiptType, creditsRequested, quote, paymentProof]
+      properties:
+        receiptType:
+          type: string
+          enum: [topup]
+        tenantDid:
+          type: string
+        creditsRequested:
+          type: integer
+        quote:
+          $ref: '#/components/schemas/BillingTopupQuote'
+        paymentProof:
+          $ref: '#/components/schemas/StoredX402PaymentProof'
+        confirmationMode:
+          type: string
+          enum: [manual_admin, facilitator]
+        facilitatorVerify:
+          $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
+        facilitatorSettle:
+          $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+        facilitatorStatusCode:
+          type: integer
+        creditLedgerEntryId:
+          type: string
+        sendPolicyStatus:
+          type: string
+          enum: [internal_only, external_review, external_enabled, suspended]
+    UpgradeReceiptMetadata:
+      type: object
+      required: [receiptType, targetPricingTier, quote, paymentProof]
+      properties:
+        receiptType:
+          type: string
+          enum: [upgrade]
+        tenantDid:
+          type: string
+        targetPricingTier:
+          type: string
+          enum: [paid_review]
+        quote:
+          $ref: '#/components/schemas/BillingUpgradeQuote'
+        paymentProof:
+          $ref: '#/components/schemas/StoredX402PaymentProof'
+        confirmationMode:
+          type: string
+          enum: [manual_admin, facilitator]
+        facilitatorVerify:
+          $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
+        facilitatorSettle:
+          $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+        facilitatorStatusCode:
+          type: integer
+        creditLedgerEntryId:
+          type: string
+        sendPolicyStatus:
+          type: string
+          enum: [internal_only, external_review, external_enabled, suspended]
+    TenantSendPolicy:
+      type: object
+      required:
+        [tenantId, pricingTier, outboundStatus, internalDomainAllowlist, externalSendEnabled, reviewRequired, effectiveDailySendLimit, effectiveHourlySendLimit, limitWindowModel, updatedAt]
+      properties:
+        tenantId:
+          type: string
+        pricingTier:
+          type: string
+          enum: [free, paid_review, paid_active, enterprise]
+        outboundStatus:
+          type: string
+          enum: [internal_only, external_review, external_enabled, suspended]
+        internalDomainAllowlist:
+          type: array
+          items:
+            type: string
+        externalSendEnabled:
+          type: boolean
+        reviewRequired:
+          type: boolean
+        effectiveDailySendLimit:
+          type: integer
+          nullable: true
+        effectiveHourlySendLimit:
+          type: integer
+          nullable: true
+        limitWindowModel:
+          type: string
+          nullable: true
+          enum: [rolling]
+        updatedAt:
+          type: string
+          format: date-time
+    UpsertTenantSendPolicyRequest:
+      type: object
+      required: [pricingTier, outboundStatus, externalSendEnabled, reviewRequired]
+      properties:
+        pricingTier:
+          type: string
+          enum: [free, paid_review, paid_active, enterprise]
+        outboundStatus:
+          type: string
+          enum: [internal_only, external_review, external_enabled, suspended]
+        internalDomainAllowlist:
+          type: array
+          items:
+            type: string
+        externalSendEnabled:
+          type: boolean
+        reviewRequired:
+          type: boolean
+    TenantSendPolicyReviewDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve_external, reset_review, suspend_outbound]
+    TenantSendPolicyReviewDecisionResponse:
+      type: object
+      required: [sendPolicy, account, decision, message]
+      properties:
+        sendPolicy:
+          $ref: '#/components/schemas/TenantSendPolicy'
+        account:
+          $ref: '#/components/schemas/BillingAccount'
+        decision:
+          type: string
+          enum: [approve_external, reset_review, suspend_outbound]
+        message:
+          type: string
+    DidBinding:
+      type: object
+      required: [tenantId, did, method, status, service, createdAt, updatedAt]
+      properties:
+        tenantId:
+          type: string
+        did:
+          type: string
+        method:
+          type: string
+        documentUrl:
+          type: string
+        status:
+          type: string
+          enum: [pending, verified, revoked]
+        verificationMethodId:
+          type: string
+        service:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        verifiedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DidDocument:
+      type: object
+      required: ['@context', id, service]
+      properties:
+        '@context':
+          type: array
+          items:
+            type: string
+        id:
+          type: string
+        assertionMethod:
+          type: array
+          items:
+            type: string
+        service:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    UpsertDidBindingRequest:
+      type: object
+      required: [did, method, status]
+      properties:
+        did:
+          type: string
+        method:
+          type: string
+        documentUrl:
+          type: string
+        status:
+          type: string
+          enum: [pending, verified, revoked]
+        verificationMethodId:
+          type: string
+        service:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        verifiedAt:
+          type: string
+          format: date-time
     McpInitializeRequest:
       type: object
       required: [jsonrpc, id, method, params]
@@ -1356,6 +2336,80 @@ components:
             arguments:
               type: object
               additionalProperties: true
+    AdminMcpToolsCallRequest:
+      type: object
+      required: [jsonrpc, id, method, params]
+      properties:
+        jsonrpc:
+          type: string
+          const: '2.0'
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        method:
+          type: string
+          const: tools/call
+        params:
+          type: object
+          required: [name, arguments]
+          properties:
+            name:
+              type: string
+              enum:
+                - create_access_token
+                - bootstrap_mailbox_agent_token
+                - list_agents
+                - get_agent
+                - list_mailboxes
+                - get_mailbox
+                - get_tenant_send_policy
+                - upsert_tenant_send_policy
+                - apply_tenant_send_policy_review
+                - get_tenant_review_context
+                - get_debug_message
+                - get_debug_draft
+                - get_debug_outbound_job
+                - inspect_delivery_case
+                - get_suppression
+                - add_suppression
+            arguments:
+              type: object
+              additionalProperties: true
+    AdminMcpToolDefinition:
+      type: object
+      required: [name, description, inputSchema, annotations]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          additionalProperties: true
+        annotations:
+          type: object
+          properties:
+            riskLevel:
+              type: string
+              enum: [read, write, high_risk, privileged]
+            sideEffecting:
+              type: boolean
+            humanReviewRequired:
+              type: boolean
+            adminOnly:
+              type: boolean
+              const: true
+            category:
+              type: string
+              enum:
+                - token_admin
+                - registry_admin
+                - policy_admin
+                - debug
+                - suppression
+          additionalProperties: true
     McpToolDefinition:
       type: object
       required: [name, description, inputSchema, requiredScopes, annotations]
@@ -1437,6 +2491,25 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/McpToolDefinition'
+    AdminMcpToolsListResponse:
+      type: object
+      required: [jsonrpc, id, result]
+      properties:
+        jsonrpc:
+          type: string
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        result:
+          type: object
+          required: [tools]
+          properties:
+            tools:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminMcpToolDefinition'
     McpToolsCallResponse:
       type: object
       required: [jsonrpc, id, result]
@@ -1556,7 +2629,7 @@ components:
           enum: [inbound, outbound]
         provider:
           type: string
-          enum: [cloudflare, ses]
+          enum: [cloudflare, ses, resend]
         internetMessageId:
           type: string
         providerMessageId:

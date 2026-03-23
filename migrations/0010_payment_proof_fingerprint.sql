@@ -1,0 +1,6 @@
+ALTER TABLE tenant_payment_receipts
+ADD COLUMN payment_proof_fingerprint TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_payment_receipts_payment_proof_fingerprint_unique
+ON tenant_payment_receipts(payment_proof_fingerprint)
+WHERE payment_proof_fingerprint IS NOT NULL;

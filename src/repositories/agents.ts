@@ -227,6 +227,20 @@ function mapPolicyRow(row: AgentPolicyRow): AgentPolicyRecord {
   };
 }
 
+export async function getAgentPolicy(env: Env, agentId: string): Promise<AgentPolicyRecord | null> {
+  const row = await firstRow<AgentPolicyRow>(
+    env.D1_DB.prepare(
+      `SELECT agent_id, auto_reply_enabled, human_review_required, confidence_threshold,
+              max_auto_replies_per_thread, allowed_recipient_domains_json,
+              blocked_sender_domains_json, allowed_tools_json, updated_at
+       FROM agent_policies
+       WHERE agent_id = ?`
+    ).bind(agentId)
+  );
+
+  return row ? mapPolicyRow(row) : null;
+}
+
 export async function createAgent(env: Env, input: {
   tenantId: string;
   slug?: string;

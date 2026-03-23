@@ -7,7 +7,7 @@ An email-first AI agent runtime built on:
 - Cloudflare Queues
 - Cloudflare R2
 - Cloudflare D1
-- Amazon SES
+- Amazon SES or Resend
 
 ## Current Status
 
@@ -25,7 +25,7 @@ Implemented runtime capabilities:
 - inbound email normalization with parsed content, thread state, attachments, and task creation
 - SES delivery event ingestion with persisted lifecycle records
 - tenant-scoped signed bearer-token auth for agent, task, mail, and draft operations
-- outbound SES sending, including `Raw` MIME for replies and attachments
+- outbound provider switching between SES and Resend, while preserving the same queue-backed send flow
 - mailbox-specific routing for inbound handling and replay jobs
 - versioned agent registry with mailbox deployments and deployment-aware execution traces
 - site, admin dashboard, contact inbox, and alias-management routes in the main Worker when the related bindings are configured
@@ -41,6 +41,13 @@ Current SES limitation as of 2026-03-18:
 - internal mailbox routing and internal operator verification flows can still work within the current setup
 - for SES-backed outbound validation, only send to verified identities or verified test recipients
 - successful runtime delivery to `support@mailagents.net` or other verified inboxes does not imply unrestricted outbound sending to arbitrary external customer addresses
+
+Preferred migration path away from SES sandbox:
+
+- set `OUTBOUND_PROVIDER=resend`
+- verify the sending domain in Resend
+- install `RESEND_API_KEY` as a Worker secret
+- keep the existing Cloudflare inbound routing, draft lifecycle, queue, and admin dashboard unchanged
 
 ## Agent Quick Start
 
@@ -125,15 +132,24 @@ See [`docs/local-dev.md`](docs/local-dev.md) for the full local setup flow.
 
 See [`docs/README.md`](docs/README.md) for the full documentation map by reader type and task.
 
+Recommended by persona:
+
+- product integrator: [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/openapi.yaml`](docs/openapi.yaml)
+- agent developer: [`docs/mcp-local.md`](docs/mcp-local.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/runtime-metadata.md`](docs/runtime-metadata.md)
+- advanced operator: [`docs/deployment.md`](docs/deployment.md), [`docs/testing.md`](docs/testing.md), [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md)
+- users who need current limits and external-delivery unlock steps: [`docs/limits-and-access.md`](docs/limits-and-access.md)
+
 Recommended entry points:
 
 - [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for the fastest agent-integrator overview
 - [`docs/local-dev.md`](docs/local-dev.md) for local setup, migrations, seeds, and demo API calls
 - [`docs/deployment.md`](docs/deployment.md) for Cloudflare and SES environment wiring
 - [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and current coverage guidance
+- [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md) for the first real Base Sepolia + USDC payment run
 - [`docs/archive/README.md`](docs/archive/README.md) for dated rollout and verification records
 - [`docs/runtime-metadata.md`](docs/runtime-metadata.md) and [`docs/runtime-compatibility.md`](docs/runtime-compatibility.md) for discovery and stable integration contracts
 - [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) and [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for copyable integration examples and the TypeScript helper
+- [`docs/limits-and-access.md`](docs/limits-and-access.md) for the current default restrictions, unlock flow, and tenant send-policy states
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) and [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for production rollout and operator bootstrap
 
 ## Project Layout
@@ -165,12 +181,14 @@ Operational references:
 - [`docs/deployment.md`](docs/deployment.md) — shared deployment checklist and environment wiring
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) — production rollout record and caveats
 - [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) — first safe production write path
+- [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md) — first real testnet payment runbook
 - [`docs/dev-bootstrap.md`](docs/dev-bootstrap.md) — first real `dev` environment bootstrap
 
 Template scripts:
 
 - [`scripts/bootstrap_dev_resources.sh`](scripts/bootstrap_dev_resources.sh)
 - [`scripts/bootstrap_worker_secrets.sh`](scripts/bootstrap_worker_secrets.sh)
+- [`scripts/bootstrap_x402_payment.sh`](scripts/bootstrap_x402_payment.sh)
 - [`scripts/backfill_message_subjects.mjs`](scripts/backfill_message_subjects.mjs)
 
 ## Deploy

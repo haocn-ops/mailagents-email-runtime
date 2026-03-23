@@ -23,17 +23,21 @@ export interface ParsedEmail {
   threadKey: string;
 }
 
-function decodeQuotedPrintable(input: string): string {
-  return input
-    .replace(/=\r?\n/g, "")
-    .replace(/=([A-Fa-f0-9]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
-}
-
 function decodeQuotedPrintableBytes(input: string): Uint8Array {
   const bytes: number[] = [];
 
   for (let index = 0; index < input.length; index += 1) {
     const char = input[index];
+    if (char === "=" && input[index + 1] === "\r" && input[index + 2] === "\n") {
+      index += 2;
+      continue;
+    }
+
+    if (char === "=" && input[index + 1] === "\n") {
+      index += 1;
+      continue;
+    }
+
     if (char === "=" && /^[A-Fa-f0-9]{2}$/.test(input.slice(index + 1, index + 3))) {
       bytes.push(parseInt(input.slice(index + 1, index + 3), 16));
       index += 2;
@@ -74,6 +78,32 @@ function decodeHeaderEncodedWord(input: string): string {
   });
 }
 
+function extractCharset(contentType?: string): string | undefined {
+  const match = contentType?.match(/charset\s*=\s*("?)([^";\s]+)\1/i);
+  return match?.[2];
+}
+
+function normalizeCharsetLabel(charset?: string): string | undefined {
+  const normalized = charset?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "utf8") {
+    return "utf-8";
+  }
+
+  if (normalized === "us-ascii") {
+    return "utf-8";
+  }
+
+  if (normalized === "unknown-8bit") {
+    return "utf-8";
+  }
+
+  return normalized;
+}
+
 function decodeBody(content: string, encoding?: string): Uint8Array {
   const normalized = encoding?.toLowerCase();
   if (normalized === "base64") {
@@ -81,8 +111,24 @@ function decodeBody(content: string, encoding?: string): Uint8Array {
     return Uint8Array.from(binary, (char) => char.charCodeAt(0));
   }
 
-  const text = normalized === "quoted-printable" ? decodeQuotedPrintable(content) : content;
-  return new TextEncoder().encode(text);
+  if (normalized === "quoted-printable") {
+    return decodeQuotedPrintableBytes(content);
+  }
+
+  return new TextEncoder().encode(content);
+}
+
+function decodeText(bytes: Uint8Array, contentType?: string): string {
+  const charset = normalizeCharsetLabel(extractCharset(contentType));
+  if (charset) {
+    try {
+      return new TextDecoder(charset, { fatal: false, ignoreBOM: false }).decode(bytes);
+    } catch {
+      // Fall back to UTF-8 if the advertised charset is unsupported.
+    }
+  }
+
+  return new TextDecoder().decode(bytes);
 }
 
 function parseHeadersBlock(rawHeaders: string): Record<string, string> {
@@ -195,7 +241,7 @@ function collectContent(
   }
 
   const decoded = decodeBody(body, transferEncoding);
-  const decodedText = new TextDecoder().decode(decoded);
+  const decodedText = decodeText(decoded, contentType);
   const filename = extractFilename(contentDisposition, contentType);
   const isAttachment = /attachment/i.test(contentDisposition ?? "") || Boolean(filename);
 

@@ -6,6 +6,8 @@ compatibility_date = "2026-03-16"
 enabled = true
 
 [vars]
+OUTBOUND_PROVIDER = "ses"
+RESEND_API_BASE_URL = "https://api.resend.com"
 CLOUDFLARE_EMAIL_DOMAIN = "mailagents.net"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
@@ -48,11 +50,13 @@ binding = "OUTBOUND_SEND_QUEUE"
 queue = "mailagents-production-outbound-send"
 
 [env.production.vars]
+OUTBOUND_PROVIDER = "resend"
+RESEND_API_BASE_URL = "https://api.resend.com"
 CLOUDFLARE_EMAIL_DOMAIN = "mailagents.net"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-production"
-ADMIN_ROUTES_ENABLED = "false"
+ADMIN_ROUTES_ENABLED = "true"
 DEBUG_ROUTES_ENABLED = "false"
 IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
 IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"

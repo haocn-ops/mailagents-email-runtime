@@ -90,7 +90,7 @@ INSERT OR IGNORE INTO threads (
   'open'
 );
 
-INSERT OR IGNORE INTO messages (
+INSERT OR REPLACE INTO messages (
   id,
   tenant_id,
   mailbox_id,
@@ -113,7 +113,7 @@ INSERT OR IGNORE INTO messages (
   'inbound',
   'cloudflare',
   '<msg_demo_inbound@mailagents.net>',
-  'customer@example.com',
+  'customer@mailagents.net',
   'agent@mailagents.net',
   'Need help with setup',
   'Can you help me finish setup?',

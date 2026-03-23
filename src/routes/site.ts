@@ -10,6 +10,9 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
+import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
+import { evaluateOutboundPolicy } from "../lib/outbound-policy";
+import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { badRequest, InvalidJsonBodyError, json, readJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildRuntimeMetadata } from "../lib/runtime-metadata";
@@ -116,8 +119,28 @@ async function validateAdminSendReferences(env: Env, input: {
   }
 }
 
+async function readDraftRecipientsForAdmin(env: Env, draftR2Key: string): Promise<{
+  to: string[];
+  cc: string[];
+  bcc: string[];
+}> {
+  const object = await env.R2_EMAIL.get(draftR2Key);
+  if (!object) {
+    return { to: [], cc: [], bcc: [] };
+  }
+
+  const payload = await object.json<Record<string, unknown>>();
+  return {
+    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
+    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
+    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+  };
+}
+
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("HEAD", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
+site.on("GET", "/limits", () => html(layout("limits", "Limits And Access", renderLimits())));
+site.on("HEAD", "/limits", () => html(layout("limits", "Limits And Access", renderLimits())));
 site.on("GET", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
 site.on("HEAD", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
 site.on("GET", "/terms", () => html(layout("terms", "Terms of Service", renderTerms())));
@@ -449,8 +472,14 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     }
     const message = await getMessage(env, job.messageId);
     const previousMessageStatus = message?.status;
-    if (message?.providerMessageId) {
+    const deliveryEvents = message ? await listDeliveryEventsByMessageId(env, message.id) : [];
+    if (message?.providerMessageId || message?.sentAt || deliveryEvents.length > 0) {
       return json({ error: "Outbound jobs with provider delivery events cannot be retried from the queue state" }, { status: 409 });
+    }
+    if (job.lastError === "send_attempt_uncertain_manual_review_required") {
+      return json({
+        error: "Outbound jobs with uncertain prior send attempts require manual verification before any retry",
+      }, { status: 409 });
     }
     if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
@@ -491,6 +520,82 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to retry outbound job" }, { status: 502 });
+  }
+});
+site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", async (request, env, _ctx, route) => {
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
+  }
+
+  const body = await readJson<{ resolution?: string }>(request);
+  if (body.resolution !== "sent" && body.resolution !== "not_sent") {
+    return badRequest("resolution must be sent or not_sent");
+  }
+
+  try {
+    const job = await getOutboundJob(env, route.params.outboundJobId);
+    if (!job) {
+      return json({ error: "Outbound job not found" }, { status: 404 });
+    }
+    if (job.lastError !== "send_attempt_uncertain_manual_review_required") {
+      return json({ error: "Outbound job does not require manual send resolution" }, { status: 409 });
+    }
+
+    const message = await getMessage(env, job.messageId);
+    if (!message) {
+      return json({ error: "Outbound message not found" }, { status: 409 });
+    }
+    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    if (!draft) {
+      return json({ error: "Outbound draft not found" }, { status: 409 });
+    }
+    const recipients = await readDraftRecipientsForAdmin(env, job.draftR2Key);
+    const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
+
+    if (body.resolution === "not_sent" && (message.providerMessageId || message.sentAt || deliveryEvents.length > 0)) {
+      return json({ error: "Outbound job already has delivery evidence and cannot be resolved as not_sent" }, { status: 409 });
+    }
+
+    if (body.resolution === "sent") {
+      await settleOutboundUsageDebit(env, {
+        tenantId: draft.tenantId,
+        messageId: job.messageId,
+        outboundJobId: job.id,
+        draftId: draft.id,
+        draftCreatedVia: draft.createdVia,
+        sourceMessageId: draft.sourceMessageId,
+        ...recipients,
+      });
+      await updateOutboundJobStatus(env, {
+        outboundJobId: job.id,
+        status: "sent",
+        lastError: null,
+        nextRetryAt: null,
+      });
+      await updateMessageStatus(env, job.messageId, "replied");
+      await markDraftStatus(env, draft.id, "sent");
+      return json({ ok: true, outboundJobId: job.id, status: "sent", billingResolution: "settled" });
+    }
+
+    await releaseOutboundUsageReservation(env, {
+      tenantId: draft.tenantId,
+      outboundJobId: job.id,
+      sourceMessageId: draft.sourceMessageId,
+      draftCreatedVia: draft.createdVia,
+      ...recipients,
+    });
+    await updateOutboundJobStatus(env, {
+      outboundJobId: job.id,
+      status: "failed",
+      lastError: "manual_send_not_sent_confirmed",
+      nextRetryAt: null,
+    });
+    await updateMessageStatus(env, job.messageId, "failed");
+    await markDraftStatus(env, draft.id, "failed");
+    return json({ ok: true, outboundJobId: job.id, status: "failed", billingResolution: "released" });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to resolve outbound job manually" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/drafts", async (request, env) => {
@@ -595,6 +700,34 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         threadId: body.threadId,
         sourceMessageId: body.sourceMessageId,
       });
+
+      const policyDecision = await evaluateOutboundPolicy(env, {
+        tenantId,
+        agentId: "admin_console",
+        to: body.to ?? [],
+        cc: body.cc ?? [],
+        bcc: body.bcc ?? [],
+      });
+      if (!policyDecision.ok) {
+        const status = policyDecision.code === "daily_quota_exceeded" || policyDecision.code === "hourly_quota_exceeded"
+          ? 429
+          : 403;
+        return json({ error: policyDecision.message ?? "Outbound policy denied this send request" }, { status });
+      }
+
+      const creditCheck = await checkOutboundCreditRequirement(env, {
+        tenantId,
+        to: body.to ?? [],
+        cc: body.cc ?? [],
+        bcc: body.bcc ?? [],
+        sourceMessageId: body.sourceMessageId,
+        createdVia: "site:admin_send",
+      });
+      if (!creditCheck.hasSufficientCredits) {
+        return json({
+          error: `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+        }, { status: 402 });
+      }
 
       return null;
     };
@@ -1003,6 +1136,7 @@ function layout(active: string, title: string, content: string): string {
     Mailagents provides transactional email infrastructure, mailbox orchestration, and operator controls for agent-native products.
     <nav class="footer-nav footer-nav-wrap" aria-label="Primary">
       <a class="${active === "overview" ? "active" : ""}" href="/">Overview</a>
+      <a class="${active === "limits" ? "active" : ""}" href="/limits">Limits</a>
       <a class="${active === "privacy" ? "active" : ""}" href="/privacy">Privacy</a>
       <a class="${active === "terms" ? "active" : ""}" href="/terms">Terms</a>
       <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
@@ -1025,16 +1159,22 @@ function renderHome(url: URL): string {
   return `<article class="markdown-doc">
 <h1>Mailagents</h1>
 
-<p>AI-first email infrastructure for agent-native products.</p>
+<p>Agent-first email runtime for autonomous agents, tool-calling systems, and agent-native products.</p>
 
-<p>This homepage is intentionally documentation-shaped. It is meant to be easy for an autonomous agent to parse and easy for a human operator to audit.</p>
+<p>This homepage is intentionally documentation-shaped. It is meant to be easy for an autonomous agent to parse, easy for an agent developer to integrate, and still easy for a human operator to audit.</p>
 
 <hr />
+
+<h2>For Agents First</h2>
+
+<p>If you only read one thing: sign up at <code>${signupApi}</code>, keep the mailbox-scoped token, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
 
 <h2>Summary</h2>
 
 <ul>
+  <li><strong>Primary audience:</strong> autonomous agents and agent developers</li>
   <li><strong>Service type:</strong> mailbox orchestration plus transactional email runtime</li>
+  <li><strong>Recommended first surface:</strong> MCP plus mailbox-scoped self routes</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
   <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
@@ -1042,6 +1182,44 @@ function renderHome(url: URL): string {
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
   <li><strong>GitHub repo:</strong> <a href="${githubRepo}"><code>${githubRepo}</code></a></li>
   <li><strong>Fallback contact:</strong> <a href="mailto:${accessEmail}">${accessEmail}</a></li>
+</ul>
+
+<h2>Choose Your Entry Point</h2>
+
+<p>If you are building for an agent first, start with MCP and mailbox-scoped self routes before reaching for lower-level control paths.</p>
+
+<ul>
+  <li><strong>MCP:</strong> best for tool-calling agents. Start with <code>POST /mcp</code>, then call <code>tools/list</code> and use high-level mailbox tools such as <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
+  <li><strong>Quick Start:</strong> best when you want the shortest signup-to-first-message path and want the runtime to stay mailbox-first.</li>
+  <li><strong>HTTP API:</strong> best for product and backend integration. Start with <code>${signupApi}</code>, then use mailbox-scoped self routes such as <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
+</ul>
+
+<h2>HTTP API vs MCP vs SDK</h2>
+
+<ul>
+  <li><strong>MCP:</strong> easiest for agent runtimes that want tool discovery, structured tool calls, and a mailbox-first surface.</li>
+  <li><strong>HTTP API:</strong> easiest for direct REST integration, backend jobs, and product workflows that already manage HTTP requests explicitly.</li>
+  <li><strong>SDK:</strong> easiest when you want typed helpers over the same runtime surfaces. If you are unsure, start with HTTP or MCP first and add an SDK wrapper later.</li>
+</ul>
+
+<h2>Recommended By Persona</h2>
+
+<ul>
+  <li><strong>Agent developer:</strong> start with <code>POST /mcp</code>, then use <code>tools/list</code>, <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</li>
+  <li><strong>Product integrator:</strong> start with <code>POST ${signupApi}</code>, <code>GET /v1/mailboxes/self</code>, <code>GET /v1/mailboxes/self/messages</code>, <code>POST /v1/messages/send</code>, and <code>POST /v1/messages/{messageId}/reply</code>.</li>
+  <li><strong>Advanced operator:</strong> start with runtime metadata, compatibility, explicit draft lifecycle control, token rotation, billing, send policy, and x402 or DID setup only when you need those lower-level paths.</li>
+</ul>
+
+<h2>Availability And Constraints</h2>
+
+<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
+
+<ul>
+  <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
+  <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
+  <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
+  <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
+  <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
 
 <h2>Intended Use</h2>
@@ -1082,7 +1260,7 @@ content-type: application/json
 <ul>
   <li><code>mailboxAlias</code>: desired local-part under <code>mailagents.net</code></li>
   <li><code>agentName</code>: default agent display name</li>
-  <li><code>operatorEmail</code>: inbox that receives the first welcome email</li>
+  <li><code>operatorEmail</code>: operator inbox for welcome and token-reissue email; external delivery may still require verified-recipient setup while the active outbound provider remains constrained</li>
   <li><code>productName</code>: product context used in metadata</li>
   <li><code>useCase</code>: short description of the mailbox workflow</li>
 </ul>
@@ -1113,14 +1291,16 @@ content-type: application/json
 <h2>Quick Start</h2>
 
 <p>If you want the shortest path from signup to a working agent mailbox, use this sequence.</p>
+<p>This path intentionally prefers mailbox-scoped self routes and high-level send/reply routes first. Treat explicit draft lifecycle control as the advanced path.</p>
 
 <ol>
-  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code>, <code>agentId</code>, <code>mailboxId</code>, and <code>mailboxAddress</code>.</li>
+  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code> and <code>mailboxAddress</code>.</li>
   <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
-  <li>Discover runtime tools with <code>POST /mcp</code> and method <code>tools/list</code>.</li>
-  <li>Read inbound mail with <code>list_messages</code> or the mailbox self routes.</li>
-  <li>Send outbound mail with <code>send_email</code>.</li>
-  <li>Reply on-thread with <code>reply_to_message</code>.</li>
+  <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
+  <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
+  <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
+  <li>Reply on-thread with <code>POST /v1/messages/{messageId}/reply</code>.</li>
+  <li>Use <code>POST /mcp</code> and <code>tools/list</code> when you want the MCP tool surface instead of direct HTTP.</li>
 </ol>
 
 <p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
@@ -1132,8 +1312,9 @@ content-type: application/json
 
 <ul>
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
-  <li><strong>Expired token:</strong> call <code>POST /public/token/reissue</code>. The API always returns a generic acceptance response and, if the mailbox exists, emails a refreshed token only to the original <code>operatorEmail</code>.</li>
+  <li><strong>Expired token:</strong> call <code>POST /public/token/reissue</code>. The API always returns a generic acceptance response and, if the mailbox exists, attempts to email a refreshed token only to the original <code>operatorEmail</code>.</li>
   <li><strong>Still-valid token:</strong> call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the rotated token inline, deliver it back to the mailbox itself, or do both without emailing the operator.</li>
+  <li><strong>Current external delivery constraint:</strong> public reissue email to arbitrary external operator inboxes is not guaranteed until the active outbound provider is fully enabled for external delivery.</li>
   <li><strong>Current session safety:</strong> public reissue does not invalidate the token an agent is already using. Authenticated rotate also leaves the previous token valid for now.</li>
 </ul>
 
@@ -1153,14 +1334,48 @@ content-type: application/json
 
 <ul>
   <li><code>accessToken</code></li>
-  <li><code>tenantId</code></li>
-  <li><code>agentId</code></li>
-  <li><code>mailboxId</code></li>
   <li><code>mailboxAddress</code></li>
-  <li><code>operatorEmail</code></li>
+  <li><code>tenantId</code>, <code>agentId</code>, and <code>mailboxId</code> only if you plan to use lower-level control-plane routes later</li>
+  <li><code>operatorEmail</code> if you want to keep the original recovery destination recorded explicitly</li>
 </ul>
 
-<h3>2. Discover Available Tools</h3>
+<h3>2. Confirm Mailbox Context</h3>
+
+<pre><code>curl -sS https://api.mailagents.net/v1/mailboxes/self \
+  -H "authorization: Bearer $TOKEN" | jq</code></pre>
+
+<p>This is the fastest way to confirm which mailbox the current token is bound to before reading or sending mail.</p>
+
+<h3>3. Read Mailbox Messages</h3>
+
+<pre><code>curl -sS https://api.mailagents.net/v1/mailboxes/self/messages \
+  -H "authorization: Bearer $TOKEN" | jq</code></pre>
+
+<p>Mailbox-scoped tokens can use the self routes directly. This is the recommended first read path for product or backend integrations.</p>
+
+<h3>4. Send a New Email With The HTTP API</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/messages/send \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "to": ["recipient@example.com"],
+    "subject": "Hello from Mailagents",
+    "text": "Sent through the mailbox-scoped HTTP send route.",
+    "idempotencyKey": "send-demo-001"
+  }' | jq</code></pre>
+
+<h3>5. Reply To An Inbound Message With The HTTP API</h3>
+
+<pre><code>curl -sS -X POST https://api.mailagents.net/v1/messages/REPLACE_WITH_MESSAGE_ID/reply \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $TOKEN" \
+  -d '{
+    "text": "Thanks for your message.",
+    "idempotencyKey": "reply-demo-001"
+  }' | jq</code></pre>
+
+<h3>6. Discover MCP Tools</h3>
 
 <pre><code>curl -sS ${runtimeMetadata} | jq
 
@@ -1174,7 +1389,9 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "params": {}
   }' | jq</code></pre>
 
-<h3>3. Read Mailbox Messages</h3>
+<p>Use MCP when you want the runtime to show its mailbox-scoped tool surface directly, including <code>list_messages</code>, <code>send_email</code>, <code>reply_to_message</code>, and <code>cancel_draft</code>.</p>
+
+<h3>7. Read Mailbox Messages With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1192,9 +1409,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }'</code></pre>
 
-<p>Mailbox-scoped tokens can also use the HTTP self routes directly, for example <code>GET /v1/mailboxes/self/messages</code>.</p>
-
-<h3>4. Send a New Email</h3>
+<h3>8. Send A New Email With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1214,7 +1429,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }' | jq</code></pre>
 
-<h3>5. Reply to an Inbound Message</h3>
+<h3>9. Reply To An Inbound Message With MCP</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/mcp \
   -H 'content-type: application/json' \
@@ -1233,9 +1448,18 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     }
   }' | jq</code></pre>
 
-<p>Use <code>tools/list</code> to discover the full MCP surface. The default mailbox-scoped token is expected to use <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code> as the primary workflow path.</p>
+<h3>10. Advanced Draft Control</h3>
 
-<h3>6. Reissue an Expired Token</h3>
+<p>When you need explicit lifecycle control, use the draft path as the advanced workflow:</p>
+
+<ul>
+  <li><code>create_draft</code> or <code>POST /v1/agents/{agentId}/drafts</code></li>
+  <li><code>get_draft</code> or <code>GET /v1/drafts/{draftId}</code></li>
+  <li><code>send_draft</code> or <code>POST /v1/drafts/{draftId}/send</code></li>
+  <li><code>cancel_draft</code> or <code>DELETE /v1/drafts/{draftId}</code></li>
+</ul>
+
+<h3>11. Reissue An Expired Token</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/public/token/reissue \
   -H 'content-type: application/json' \
@@ -1243,10 +1467,11 @@ curl -sS -X POST https://api.mailagents.net/mcp \
     "mailboxAlias": "agent-demo"
   }'</code></pre>
 
-<p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered to the original <code>operatorEmail</code> from signup.</p>
+<p>This endpoint always returns a generic acceptance response. If the mailbox exists, a refreshed token is delivered only to the original <code>operatorEmail</code> from signup.</p>
+<p>While external outbound delivery remains limited for arbitrary external recipients, treat that path as best-effort unless the destination inbox is on a verified validation path for the active provider.</p>
 <p>Abuse controls apply: repeated requests are cooled down per mailbox and rate limited per source IP. The API never returns the token inline.</p>
 
-<h3>7. Rotate a Still-Valid Token</h3>
+<h3>12. Rotate A Still-Valid Token</h3>
 
 <pre><code>curl -sS -X POST https://api.mailagents.net/v1/auth/token/rotate \
   -H 'content-type: application/json' \
@@ -1333,11 +1558,86 @@ unsupported_use:
 <h2>Policy Pages</h2>
 
 <ul>
+  <li><a href="/limits">Limits And Access</a></li>
   <li><a href="/privacy">Privacy Policy</a></li>
   <li><a href="/terms">Terms of Service</a></li>
   <li><a href="/contact">Contact</a></li>
 </ul>
 </article>`;
+}
+
+function renderLimits(): string {
+  return `<section class="panel section legal">
+    <section>
+      <div class="eyebrow">Limits And Access</div>
+      <h2>What Is Available By Default</h2>
+      <p>Every signup returns a mailbox-scoped bearer token and an active mailbox. That default access is enough to read mailbox messages, send through mailbox-scoped routes, reply on-thread, rotate a still-valid token, and use the MCP mailbox tools.</p>
+      <ul>
+        <li>Signup API and inline <code>accessToken</code></li>
+        <li>Mailbox self routes such as <code>GET /v1/mailboxes/self</code> and <code>GET /v1/mailboxes/self/messages</code></li>
+        <li>High-level send and reply routes such as <code>POST /v1/messages/send</code> and <code>POST /v1/messages/{messageId}/reply</code></li>
+        <li>Authenticated token rotation with <code>POST /v1/auth/token/rotate</code></li>
+        <li>MCP mailbox tools such as <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code></li>
+      </ul>
+    </section>
+    <section>
+      <h2>What Is Limited By Default</h2>
+      <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has both usable credits and an outbound policy that allows external sending.</p>
+      <ul>
+        <li>Ordinary free-tier tenants can send up to <strong>10 outbound emails per rolling 24 hours</strong>.</li>
+        <li>Ordinary free-tier tenants can send up to <strong>1 outbound email per rolling 1 hour</strong>.</li>
+        <li>Welcome email to arbitrary external operator inboxes should be treated as best-effort, not the primary access path.</li>
+        <li>Public token reissue email to arbitrary external operator inboxes is not guaranteed while the tenant is still on the default constrained path.</li>
+        <li>External-recipient sending is not considered unlocked until the tenant send policy reports external delivery as enabled.</li>
+        <li>Bulk marketing, purchased lists, cold outreach, and suppression bypass are never supported, even after an upgrade.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>How To Work Safely While Limited</h2>
+      <ul>
+        <li>Save the inline <code>accessToken</code> returned by signup and use mailbox-scoped routes immediately.</li>
+        <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
+        <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>How To Unlock External Delivery</h2>
+      <p>External delivery is gated by both billing state and send-policy state. The current unlock flow is:</p>
+      <ol>
+        <li>Keep using the default mailbox-scoped flow until the mailbox is active and the token is stored safely.</li>
+        <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity.</li>
+        <li>Request external-send enablement with <code>POST /v1/billing/upgrade-intent</code>.</li>
+        <li>Complete payment confirmation with <code>POST /v1/billing/payment/confirm</code>.</li>
+        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as enabled.</li>
+      </ol>
+      <p>If the active environment supports facilitator-backed settlement, a successful upgrade confirmation can move the tenant directly into external-enabled status. If the active environment is still running with manual settlement or review gates, Mailagents finalizes the confirmation before external sending is opened.</p>
+    </section>
+    <section>
+      <h2>States You Will See</h2>
+      <ul>
+        <li><strong>Default path:</strong> billing is typically <code>free</code>, outbound policy is <code>internal_only</code>, and the ordinary-user send cap is <code>10/day</code> plus <code>1/hour</code> on rolling windows.</li>
+        <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
+        <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
+        <li><strong>Restricted again:</strong> outbound policy can become <code>suspended</code> if abuse, payment, or deliverability controls require it.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Important Boundaries</h2>
+      <ul>
+        <li>Payment alone does not guarantee unlimited sending to arbitrary recipients.</li>
+        <li>External sending remains subject to abuse controls, suppression handling, bounce review, and provider constraints.</li>
+        <li>Do not treat a successful send to an internal or previously validated address as proof that all external recipient delivery is enabled.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Where To Go Next</h2>
+      <ul>
+        <li><a href="https://api.mailagents.net/v2/meta/runtime"><code>/v2/meta/runtime</code></a> for live runtime discovery</li>
+        <li><a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/limits-and-access.md">Limits And Access guide</a> for the longer technical walkthrough</li>
+        <li><a href="/contact">Contact</a> if you need help with a constrained tenant or an environment still using manual settlement</li>
+      </ul>
+    </section>
+  </section>`;
 }
 
 function renderPrivacy(): string {
@@ -2527,9 +2827,15 @@ function renderAdmin(url: URL): string {
               '<p>Message: ' + esc(job.messageId) + '</p>' +
               '<p>Updated: ' + esc(job.updatedAt) + '</p>' +
               '<p>' + esc(job.lastError || 'No error') + '</p>' +
-              '<p style="margin-top:12px;">' + (job.status === 'failed'
-                ? '<button data-job="' + esc(job.id) + '" class="button secondary retry-job" type="button">Retry Job</button>'
-                : '') + '</p>' +
+              '<p style="margin-top:12px;">' +
+                (job.status === 'failed' && job.lastError !== 'send_attempt_uncertain_manual_review_required'
+                  ? '<button data-job="' + esc(job.id) + '" class="button secondary retry-job" type="button">Retry Job</button>'
+                  : '') +
+                (job.lastError === 'send_attempt_uncertain_manual_review_required'
+                  ? '<button data-job="' + esc(job.id) + '" class="button secondary resolve-job-sent" type="button" style="margin-right:8px;">Confirm Sent</button>' +
+                    '<button data-job="' + esc(job.id) + '" class="button secondary resolve-job-not-sent" type="button">Confirm Not Sent</button>'
+                  : '') +
+              '</p>' +
             '</div>'
           ).join('')
         : 'No outbound jobs found.';
@@ -2544,6 +2850,44 @@ function renderAdmin(url: URL): string {
             await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
             await loadOutboundJobs();
             outboxDetail.textContent = 'Retried outbound job ' + id + '.';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+
+      document.querySelectorAll('.resolve-job-sent').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.getAttribute('data-job');
+          if (!id) {
+            return;
+          }
+          try {
+            await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/manual-resolution', {
+              method: 'POST',
+              body: JSON.stringify({ resolution: 'sent' }),
+            });
+            await loadOutboundJobs();
+            outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as sent.';
+          } catch (error) {
+            outboxDetail.textContent = error.message;
+          }
+        });
+      });
+
+      document.querySelectorAll('.resolve-job-not-sent').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const id = button.getAttribute('data-job');
+          if (!id) {
+            return;
+          }
+          try {
+            await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/manual-resolution', {
+              method: 'POST',
+              body: JSON.stringify({ resolution: 'not_sent' }),
+            });
+            await loadOutboundJobs();
+            outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as not sent.';
           } catch (error) {
             outboxDetail.textContent = error.message;
           }
