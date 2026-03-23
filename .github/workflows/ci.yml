@@ -53,6 +53,7 @@ jobs:
           DEBUG_ROUTES_ENABLED=true
           SES_MOCK_SEND=true
           SES_MOCK_SEND_DELAY_MS=1500
+          X402_PAY_TO=0x0b4fbD3AA802B9eAE9c5F6D4B5FE7ADd6eB1D3D2
           EOF
 
       - name: Apply local D1 migrations
