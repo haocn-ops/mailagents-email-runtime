@@ -1,8 +1,12 @@
 import {
+  CONTACT_ALIAS_LOCALPARTS,
+} from "../contact-aliases";
+import {
   isCatchAllWorkerRule,
   listEmailRoutingRules,
   upsertCatchAllWorkerRule,
 } from "../cloudflare-email";
+import { execute } from "../db";
 import { readJson } from "../http";
 import { createId } from "../ids";
 import {
@@ -12,6 +16,8 @@ import {
   createAgentVersion,
   ensureMailbox,
   getMailboxByAddress,
+  listAgents,
+  listAgentVersions,
   MailboxConflictError,
   updateAgent,
   upsertAgentPolicy,
@@ -68,6 +74,7 @@ export interface SignupSuccessResult {
 export const RESERVED_SELF_SERVE_ALIASES = new Set([
   "admin",
   "api",
+  ...CONTACT_ALIAS_LOCALPARTS,
   "support",
   "www",
 ]);
@@ -127,166 +134,297 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   }
 
   const routing = await ensureSignupRouting(env);
-
-  const tenantId = createId("tnt");
-  let mailbox;
-  try {
-    mailbox = await ensureMailbox(env, {
-      tenantId,
-      address,
-      status: "active",
-    });
-  } catch (error) {
-    if (error instanceof MailboxConflictError) {
-      throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
-    }
-    throw error;
+  if (routing.status === "failed") {
+    throw new SignupError(
+      routing.error ?? "Self-serve signup is temporarily unavailable because inbound routing could not be configured.",
+      503,
+    );
+  }
+  if (routing.status === "skipped" && shouldRequireConfiguredSignupRouting(env)) {
+    throw new SignupError(
+      routing.error ?? "Self-serve signup is unavailable until inbound routing automation is configured for this environment.",
+      503,
+    );
   }
 
-  const agent = await createAgent(env, {
-    tenantId,
-    slug: `${alias}-primary`,
-    name: values.agentName,
-    description: buildAgentDescription(values),
-    mode: "assistant",
-    config: {
-      productName: values.productName,
-      operatorEmail: values.operatorEmail,
-      useCase: values.useCase,
-      mailboxAddress: address,
-    },
-  });
-
-  await bindMailbox(env, {
-    tenantId,
-    agentId: agent.id,
-    mailboxId: mailbox.id,
-    role: "primary",
-  });
-
-  const version = await createAgentVersion(env, {
-    agentId: agent.id,
-    version: "self-serve-v1",
-    model: "gpt-5",
-    status: "published",
-    config: {
-      mode: "assistant",
-      onboarding: "self_serve",
-      mailboxAddress: address,
-    },
-    manifest: {
-      productName: values.productName,
-      operatorEmail: values.operatorEmail,
-      useCase: values.useCase,
-    },
-    capabilities: [
-      { capability: "read_inbound_email" },
-      { capability: "reply_email" },
-      { capability: "transactional_send" },
-    ],
-    tools: [
-      { toolName: "reply_email", enabled: true },
-      { toolName: "mark_task_done", enabled: true },
-    ],
-  });
-
-  await updateAgent(env, agent.id, { defaultVersionId: version.id });
-
-  const deployment = await createAgentDeployment(env, {
-    tenantId,
-    agentId: agent.id,
-    agentVersionId: version.id,
-    targetType: "mailbox",
-    targetId: mailbox.id,
-    status: "active",
-  });
-
-  await upsertAgentPolicy(env, {
-    agentId: agent.id,
-    autoReplyEnabled: false,
-    humanReviewRequired: true,
-    confidenceThreshold: 0.85,
-    maxAutoRepliesPerThread: 1,
-    allowedRecipientDomains: [domain],
-    blockedSenderDomains: [],
-    allowedTools: ["reply_email", "mark_task_done"],
-  });
-
-  await upsertTenantSendPolicy(env, {
-    tenantId,
-    pricingTier: "free",
-    outboundStatus: "internal_only",
-    internalDomainAllowlist: [domain],
-    externalSendEnabled: false,
-    reviewRequired: true,
-  });
-
-  const access = await issueSelfServeAccessToken({
-    env,
-    tenantId,
-    agentId: agent.id,
-    mailboxId: mailbox.id,
-  });
-
-  let outboundJobId: string | undefined;
-  let welcomeStatus: SignupSuccessResult["welcomeStatus"] = "queued";
-  let welcomeError: string | undefined;
-
+  const tenantId = createId("tnt");
   try {
-    const draft = await createDraft(env, {
+    let mailbox;
+    try {
+      mailbox = await ensureMailbox(env, {
+        tenantId,
+        address,
+        status: "active",
+      });
+    } catch (error) {
+      if (error instanceof MailboxConflictError) {
+        throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
+      }
+      throw error;
+    }
+
+    const agent = await createAgent(env, {
       tenantId,
-      agentId: agent.id,
-      mailboxId: mailbox.id,
-      createdVia: "system:signup_welcome",
-      payload: {
-        from: address,
-        to: [values.operatorEmail],
-        subject: `Your Mailagents mailbox ${address} is ready`,
-        text: buildWelcomeText({
-          mailboxAddress: address,
-          productName: values.productName,
-          agentName: values.agentName,
-          accessToken: access.accessToken,
-          accessTokenExpiresAt: access.accessTokenExpiresAt,
-          accessTokenScopes: access.accessTokenScopes,
-        }),
-        html: buildWelcomeHtml({
-          mailboxAddress: address,
-          productName: values.productName,
-          agentName: values.agentName,
-          accessToken: access.accessToken,
-          accessTokenExpiresAt: access.accessTokenExpiresAt,
-          accessTokenScopes: access.accessTokenScopes,
-        }),
-        attachments: [],
+      slug: `${alias}-primary`,
+      name: values.agentName,
+      description: buildAgentDescription(values),
+      mode: "assistant",
+      config: {
+        productName: values.productName,
+        operatorEmail: values.operatorEmail,
+        useCase: values.useCase,
+        mailboxAddress: address,
       },
     });
 
-    const sendResult = await enqueueDraftSend(env, draft.id);
-    outboundJobId = sendResult.outboundJobId;
+    await bindMailbox(env, {
+      tenantId,
+      agentId: agent.id,
+      mailboxId: mailbox.id,
+      role: "primary",
+    });
+
+    const version = await createAgentVersion(env, {
+      agentId: agent.id,
+      version: "self-serve-v1",
+      model: "gpt-5",
+      status: "published",
+      config: {
+        mode: "assistant",
+        onboarding: "self_serve",
+        mailboxAddress: address,
+      },
+      manifest: {
+        productName: values.productName,
+        operatorEmail: values.operatorEmail,
+        useCase: values.useCase,
+      },
+      capabilities: [
+        { capability: "read_inbound_email" },
+        { capability: "reply_email" },
+        { capability: "transactional_send" },
+      ],
+      tools: [
+        { toolName: "reply_email", enabled: true },
+        { toolName: "mark_task_done", enabled: true },
+      ],
+    });
+
+    await updateAgent(env, agent.id, { defaultVersionId: version.id });
+
+    const deployment = await createAgentDeployment(env, {
+      tenantId,
+      agentId: agent.id,
+      agentVersionId: version.id,
+      targetType: "mailbox",
+      targetId: mailbox.id,
+      status: "active",
+    });
+
+    await upsertAgentPolicy(env, {
+      agentId: agent.id,
+      autoReplyEnabled: false,
+      humanReviewRequired: true,
+      confidenceThreshold: 0.85,
+      maxAutoRepliesPerThread: 1,
+      allowedRecipientDomains: [domain],
+      blockedSenderDomains: [],
+      allowedTools: ["reply_email", "mark_task_done"],
+    });
+
+    await upsertTenantSendPolicy(env, {
+      tenantId,
+      pricingTier: "free",
+      outboundStatus: "internal_only",
+      internalDomainAllowlist: [domain],
+      externalSendEnabled: false,
+      reviewRequired: true,
+    });
+
+    const access = await issueSelfServeAccessToken({
+      env,
+      tenantId,
+      agentId: agent.id,
+      mailboxId: mailbox.id,
+    });
+
+    let outboundJobId: string | undefined;
+    let welcomeStatus: SignupSuccessResult["welcomeStatus"] = "queued";
+    let welcomeError: string | undefined;
+
+    try {
+      const draft = await createDraft(env, {
+        tenantId,
+        agentId: agent.id,
+        mailboxId: mailbox.id,
+        createdVia: "system:signup_welcome",
+        payload: {
+          from: address,
+          to: [values.operatorEmail],
+          subject: `Your Mailagents mailbox ${address} is ready`,
+          text: buildWelcomeText({
+            mailboxAddress: address,
+            productName: values.productName,
+            agentName: values.agentName,
+            accessToken: access.accessToken,
+            accessTokenExpiresAt: access.accessTokenExpiresAt,
+            accessTokenScopes: access.accessTokenScopes,
+          }),
+          html: buildWelcomeHtml({
+            mailboxAddress: address,
+            productName: values.productName,
+            agentName: values.agentName,
+            accessToken: access.accessToken,
+            accessTokenExpiresAt: access.accessTokenExpiresAt,
+            accessTokenScopes: access.accessTokenScopes,
+          }),
+          attachments: [],
+        },
+      });
+
+      const sendResult = await enqueueDraftSend(env, draft.id);
+      outboundJobId = sendResult.outboundJobId;
+    } catch (error) {
+      welcomeStatus = "failed";
+      welcomeError = error instanceof Error ? error.message : "Unable to queue onboarding email";
+    }
+
+    return {
+      tenantId,
+      productName: values.productName,
+      operatorEmail: values.operatorEmail,
+      mailboxAddress: address,
+      mailboxId: mailbox.id,
+      agentId: agent.id,
+      agentVersionId: version.id,
+      deploymentId: deployment.id,
+      accessToken: access.accessToken,
+      accessTokenExpiresAt: access.accessTokenExpiresAt,
+      accessTokenScopes: access.accessTokenScopes,
+      outboundJobId,
+      routingStatus: routing.status,
+      routingError: routing.error,
+      welcomeStatus,
+      welcomeError,
+    };
   } catch (error) {
-    welcomeStatus = "failed";
-    welcomeError = error instanceof Error ? error.message : "Unable to queue onboarding email";
+    await cleanupPartialSelfServeSignup(env, tenantId).catch((cleanupError) => {
+      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      console.error(`[signup] cleanup failed for tenant ${tenantId}: ${message}`);
+    });
+    throw error;
+  }
+}
+
+function shouldRequireConfiguredSignupRouting(env: Env): boolean {
+  const domain = (env.CLOUDFLARE_EMAIL_DOMAIN ?? "").trim().toLowerCase();
+  if (!domain) {
+    return false;
   }
 
-  return {
-    tenantId,
-    productName: values.productName,
-    operatorEmail: values.operatorEmail,
-    mailboxAddress: address,
-    mailboxId: mailbox.id,
-    agentId: agent.id,
-    agentVersionId: version.id,
-    deploymentId: deployment.id,
-    accessToken: access.accessToken,
-    accessTokenExpiresAt: access.accessTokenExpiresAt,
-    accessTokenScopes: access.accessTokenScopes,
-    outboundJobId,
-    routingStatus: routing.status,
-    routingError: routing.error,
-    welcomeStatus,
-    welcomeError,
-  };
+  return !domain.endsWith(".test") && !domain.endsWith(".example") && !domain.endsWith(".example.com");
+}
+
+async function cleanupPartialSelfServeSignup(env: Env, tenantId: string): Promise<void> {
+  const agents = await listAgents(env, tenantId);
+  const versionRecords = await Promise.all(agents.map((agent) => listAgentVersions(env, agent.id)));
+  const r2Keys = new Set<string>();
+
+  for (const agent of agents) {
+    if (agent.configR2Key) {
+      r2Keys.add(agent.configR2Key);
+    }
+  }
+  for (const versions of versionRecords) {
+    for (const version of versions) {
+      if (version.configR2Key) {
+        r2Keys.add(version.configR2Key);
+      }
+      if (version.manifestR2Key) {
+        r2Keys.add(version.manifestR2Key);
+      }
+    }
+  }
+
+  await Promise.all(Array.from(r2Keys).map((key) => env.R2_EMAIL.delete(key).catch(() => undefined)));
+
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_tool_bindings
+     WHERE agent_version_id IN (
+       SELECT av.id
+       FROM agent_versions av
+       INNER JOIN agents a ON a.id = av.agent_id
+       WHERE a.tenant_id = ?
+     )`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_capabilities
+     WHERE agent_version_id IN (
+       SELECT av.id
+       FROM agent_versions av
+       INNER JOIN agents a ON a.id = av.agent_id
+       WHERE a.tenant_id = ?
+     )`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_deployments WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_mailboxes WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_policies
+     WHERE agent_id IN (SELECT id FROM agents WHERE tenant_id = ?)`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_versions
+     WHERE agent_id IN (SELECT id FROM agents WHERE tenant_id = ?)`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tenant_send_policies WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tasks WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM delivery_events
+     WHERE message_id IN (SELECT id FROM messages WHERE tenant_id = ?)`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM attachments
+     WHERE message_id IN (SELECT id FROM messages WHERE tenant_id = ?)`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM outbound_jobs
+     WHERE message_id IN (SELECT id FROM messages WHERE tenant_id = ?)`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM drafts WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM messages WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM threads WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tenant_credit_ledger WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tenant_payment_receipts WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tenant_billing_accounts WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM tenant_did_bindings WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agents WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM mailboxes WHERE tenant_id = ?`
+  ).bind(tenantId));
 }
 
 async function ensureSignupRouting(env: Env): Promise<{

@@ -131,7 +131,7 @@ async function readDraftRecipientsForAdmin(env: Env, draftR2Key: string): Promis
 }> {
   const object = await env.R2_EMAIL.get(draftR2Key);
   if (!object) {
-    return { to: [], cc: [], bcc: [] };
+    throw new SiteRequestError("Draft payload not found", 409);
   }
 
   const payload = await object.json<Record<string, unknown>>();

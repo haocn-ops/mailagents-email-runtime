@@ -101,14 +101,14 @@ Recommended route exposure:
   - `ADMIN_ROUTES_ENABLED = "false"`
   - `DEBUG_ROUTES_ENABLED = "false"`
 - `production`
-  - `ADMIN_ROUTES_ENABLED = "false"`
+  - `ADMIN_ROUTES_ENABLED = "true"`
   - `DEBUG_ROUTES_ENABLED = "false"`
   - `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED = "false"` until production should own alias routing
 
 Runtime/site note:
 
 - the main runtime Worker (`src/index.ts`) now includes the public site and admin dashboard routes
-- the standalone profile in [wrangler.site.toml](../wrangler.site.toml) can still be used for a separate site Worker
+- production routing should attach `api.mailagents.net`, `mailagents.net`, and `www.mailagents.net` to the same Worker
 - do not enable automatic alias bootstrap in more than one live Worker for the same domain unless you intentionally want them to compete for ownership
 
 ## Outbound Provider Setup

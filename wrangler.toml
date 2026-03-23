@@ -213,7 +213,9 @@ X402_UPGRADE_PRICE_USD = "10"
 [env.production]
 name = "mailagents-production"
 routes = [
-  { pattern = "api.mailagents.net/*", zone_name = "mailagents.net" }
+  { pattern = "api.mailagents.net/*", zone_name = "mailagents.net" },
+  { pattern = "mailagents.net/*", zone_name = "mailagents.net" },
+  { pattern = "www.mailagents.net/*", zone_name = "mailagents.net" }
 ]
 
 [env.production.triggers]
@@ -265,7 +267,7 @@ RESEND_API_BASE_URL = "https://api.resend.com"
 SES_REGION = "us-east-1"
 SES_FROM_DOMAIN = "mailagents.net"
 SES_CONFIGURATION_SET = "mailagents-production"
-ADMIN_ROUTES_ENABLED = "false"
+ADMIN_ROUTES_ENABLED = "true"
 DEBUG_ROUTES_ENABLED = "false"
 IDEMPOTENCY_COMPLETED_RETENTION_HOURS = "168"
 IDEMPOTENCY_PENDING_RETENTION_HOURS = "1"
