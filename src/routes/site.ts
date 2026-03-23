@@ -49,6 +49,11 @@ import {
 import type { Env } from "../types";
 
 const site = new Router<Env>();
+const CHANGELOG_REDIRECT_URL = "https://raw.githubusercontent.com/haocn-ops/mailagents-email-runtime/main/CHANGELOG.md";
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mailagents">
+  <rect width="64" height="64" rx="16" fill="#22493d" />
+  <path d="M14 45V19h8l10 13 10-13h8v26h-7V29L32 41 21 29v16z" fill="#f6f0e7" />
+</svg>`;
 
 class SiteRequestError extends Error {
   readonly status: number;
@@ -147,6 +152,14 @@ site.on("GET", "/terms", () => html(layout("terms", "Terms of Service", renderTe
 site.on("HEAD", "/terms", () => html(layout("terms", "Terms of Service", renderTerms())));
 site.on("GET", "/contact", () => html(layout("contact", "Contact", renderContact())));
 site.on("HEAD", "/contact", () => html(layout("contact", "Contact", renderContact())));
+site.on("GET", "/CHANGELOG.md", () => redirect(CHANGELOG_REDIRECT_URL, 302));
+site.on("HEAD", "/CHANGELOG.md", () => redirect(CHANGELOG_REDIRECT_URL, 302));
+site.on("GET", "/robots.txt", (_request, _env, _ctx, route) => text(renderRobots(route.url), "text/plain; charset=utf-8"));
+site.on("HEAD", "/robots.txt", (_request, _env, _ctx, route) => text(renderRobots(route.url), "text/plain; charset=utf-8"));
+site.on("GET", "/sitemap.xml", (_request, _env, _ctx, route) => text(renderSitemap(route.url), "application/xml; charset=utf-8"));
+site.on("HEAD", "/sitemap.xml", (_request, _env, _ctx, route) => text(renderSitemap(route.url), "application/xml; charset=utf-8"));
+site.on("GET", "/favicon.ico", () => text(FAVICON_SVG, "image/svg+xml"));
+site.on("HEAD", "/favicon.ico", () => text(FAVICON_SVG, "image/svg+xml"));
 site.on("GET", "/signup", () => redirect("/"));
 site.on("HEAD", "/signup", () => redirect("/"));
 site.on("GET", "/admin", (_request, env, _ctx, route) => {
@@ -911,6 +924,17 @@ function html(markup: string, init: ResponseInit = {}): Response {
   });
 }
 
+function text(body: string, contentType: string, init: ResponseInit = {}): Response {
+  const headers = new Headers(init.headers);
+  headers.set("content-type", contentType);
+  headers.set("cache-control", "public, max-age=300");
+
+  return new Response(body, {
+    ...init,
+    headers,
+  });
+}
+
 function redirect(location: string, status = 302): Response {
   return new Response(null, {
     status,
@@ -918,6 +942,28 @@ function redirect(location: string, status = 302): Response {
       location,
     },
   });
+}
+
+function renderRobots(url: URL): string {
+  if (url.host === "api.mailagents.net") {
+    return "User-agent: *\nDisallow: /\n";
+  }
+
+  const sitemapOrigin = url.host === "www.mailagents.net" ? "https://mailagents.net" : url.origin;
+  return `User-agent: *\nAllow: /\nSitemap: ${sitemapOrigin}/sitemap.xml\n`;
+}
+
+function renderSitemap(url: URL): string {
+  const origin = url.host === "www.mailagents.net" ? "https://mailagents.net" : url.origin;
+  const paths = url.host === "api.mailagents.net"
+    ? ["/v2/meta/runtime", "/v2/meta/compatibility", "/v2/meta/compatibility/schema", "/CHANGELOG.md"]
+    : ["/", "/limits", "/privacy", "/terms", "/contact", "/CHANGELOG.md"];
+  const urls = paths.map((pathname) => `  <url><loc>${escapeHtml(origin)}${pathname}</loc></url>`).join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+</urlset>`;
 }
 
 function layout(active: string, title: string, content: string): string {
@@ -1010,8 +1056,113 @@ function layout(active: string, title: string, content: string): string {
       margin-left: 8px;
       color: rgba(28, 25, 22, 0.32);
     }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(181, 95, 51, 0.12);
+      color: var(--brand-deep);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .lead {
+      margin: 0;
+      max-width: 58ch;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.8;
+    }
+    .code {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      background: rgba(28, 25, 22, 0.06);
+      color: var(--ink);
+      font-size: 13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(28, 25, 22, 0.12);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--ink);
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(28, 25, 22, 0.18);
+    }
+    .button.primary {
+      background: var(--brand-deep);
+      border-color: var(--brand-deep);
+      color: #f7f1e8;
+    }
+    .button.secondary {
+      background: rgba(255, 255, 255, 0.9);
+    }
     main {
       padding: 24px 0 56px;
+    }
+    .panel.section {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 30px 34px;
+      background: rgba(255, 252, 247, 0.88);
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+    }
+    .panel.section h1,
+    .panel.section h2,
+    .panel.section h3 {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      letter-spacing: -0.02em;
+    }
+    .panel.section h1 {
+      margin: 14px 0 18px;
+      font-size: clamp(32px, 5vw, 52px);
+      line-height: 1.05;
+    }
+    .panel.section h2 {
+      margin: 0 0 12px;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    .panel.section h3 {
+      margin: 0 0 10px;
+      font-size: 19px;
+      line-height: 1.25;
+    }
+    .panel.section p,
+    .panel.section li {
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.8;
+    }
+    .panel.section ul,
+    .panel.section ol {
+      margin: 12px 0;
+      padding-left: 22px;
+    }
+    .panel.section code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      background: rgba(28, 25, 22, 0.06);
+      padding: 2px 6px;
+      border-radius: 8px;
     }
     .legal {
       display: grid;
@@ -1035,6 +1186,25 @@ function layout(active: string, title: string, content: string): string {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 18px;
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .section-head p {
+      margin: 0;
+      max-width: 48ch;
+      color: var(--muted);
+    }
+    .card {
+      padding: 22px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(28, 25, 22, 0.08);
+      background: rgba(255, 255, 255, 0.5);
+      box-shadow: 0 12px 34px rgba(58, 41, 26, 0.08);
     }
     .footer {
       padding: 24px 0 56px;
@@ -1113,6 +1283,10 @@ function layout(active: string, title: string, content: string): string {
     }
     @media (max-width: 980px) {
       .contact-grid { grid-template-columns: 1fr; }
+      .section-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
     }
     @media (max-width: 680px) {
       .shell {
@@ -1120,6 +1294,7 @@ function layout(active: string, title: string, content: string): string {
       }
       .nav { padding-top: 14px; }
       .markdown-doc { padding: 24px 20px; }
+      .panel.section { padding: 24px 20px; }
     }
   </style>
 </head>
@@ -1570,6 +1745,8 @@ function renderLimits(): string {
   return `<section class="panel section legal">
     <section>
       <div class="eyebrow">Limits And Access</div>
+      <h1>Limits And Access</h1>
+      <p class="lead">The current default access model, delivery guardrails, and the safest path to unlock external sending.</p>
       <h2>What Is Available By Default</h2>
       <p>Every signup returns a mailbox-scoped bearer token and an active mailbox. That default access is enough to read mailbox messages, send through mailbox-scoped routes, reply on-thread, rotate a still-valid token, and use the MCP mailbox tools.</p>
       <ul>
@@ -1644,6 +1821,8 @@ function renderPrivacy(): string {
   return `<section class="panel section legal">
     <section>
       <div class="eyebrow">Privacy Policy</div>
+      <h1>Privacy Policy</h1>
+      <p class="lead">How Mailagents handles mailbox metadata, delivery records, support communications, and the operational data needed to run the service.</p>
       <h2>Overview</h2>
       <p>Mailagents processes information needed to operate inbox provisioning, inbound routing, transactional message delivery, account administration, and service security. This includes account information, mailbox metadata, message routing metadata, delivery events, and support communications.</p>
     </section>
@@ -1688,6 +1867,8 @@ function renderTerms(): string {
   return `<section class="panel section legal">
     <section>
       <div class="eyebrow">Terms of Service</div>
+      <h1>Terms of Service</h1>
+      <p class="lead">The service boundaries, acceptable use requirements, and enforcement expectations for Mailagents customers and operators.</p>
       <h2>Service Scope</h2>
       <p>Mailagents provides infrastructure for mailbox orchestration, inbound message handling, and transactional email delivery. Use of the service must comply with applicable law, provider policies, and these terms.</p>
     </section>
@@ -1728,7 +1909,7 @@ function renderContact(): string {
     <div class="section-head">
       <div>
         <div class="eyebrow">Contact</div>
-        <h2>Reach the team behind Mailagents.</h2>
+        <h1>Reach the team behind Mailagents.</h1>
       </div>
       <p>If you need product information, support, or compliance context for the service, use the channels below.</p>
     </div>

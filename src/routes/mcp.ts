@@ -2143,7 +2143,13 @@ router.on("POST", "/mcp", async (request, env) => {
     }
 
     const toolName = params.name;
-    if (typeof toolName !== "string" || !getToolByName(toolName)) {
+    if (toolName === undefined) {
+      return jsonRpcError(rpc.id ?? null, -32602, "Missing required parameter: name");
+    }
+    if (typeof toolName !== "string" || !toolName.trim()) {
+      return jsonRpcError(rpc.id ?? null, -32602, "name must be a non-empty string");
+    }
+    if (!getToolByName(toolName)) {
       return jsonRpcError(rpc.id ?? null, -32602, "Unknown tool");
     }
 

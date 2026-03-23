@@ -21,3 +21,4 @@ Do not use this directory for:
 Current records:
 
 - [docs/archive/2026-03-runtime-verification.md](./2026-03-runtime-verification.md) — dated `dev` and production verification details from the March 2026 rollout window
+- [docs/archive/2026-03-23-black-box-followup.md](./2026-03-23-black-box-followup.md) — archived black-box findings received through `hello@mailagents.net` and the corresponding remediation pass

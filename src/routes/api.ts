@@ -9,7 +9,7 @@ import {
   requireAuth,
   requireDebugRoutesEnabled,
 } from "../lib/auth";
-import { accepted, badRequest, InvalidJsonBodyError, json, readJson, readOptionalJson } from "../lib/http";
+import { accepted, badRequest, InvalidJsonBodyError, json, notFound, readJson, readOptionalJson } from "../lib/http";
 import { Router } from "../lib/router";
 import { buildCompatibilityContract, buildRuntimeMetadata, COMPATIBILITY_CONTRACT_SCHEMA } from "../lib/runtime-metadata";
 import { normalizeSesEvent } from "../lib/ses-events";
@@ -167,6 +167,8 @@ async function findPaymentReceiptReplay(
 }
 const PUBLIC_SELF_SERVE_ALLOW_METHODS = "POST, OPTIONS";
 const PUBLIC_SELF_SERVE_ALLOW_HEADERS = "content-type";
+const AUTHENTICATED_API_ALLOW_METHODS = "GET, HEAD, POST, OPTIONS";
+const AUTHENTICATED_API_ALLOW_HEADERS = "authorization, content-type, x-admin-secret";
 
 class RouteRequestError extends Error {
   readonly status: number;
@@ -518,7 +520,12 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
     mailboxAddress?: string;
   }>(request);
 
-  const mailboxAddress = normalizeMailboxLookup(env, body);
+  const mailboxLookup = normalizeMailboxLookup(env, body);
+  if (mailboxLookup.error) {
+    return withPublicSelfServeCors(badRequest(mailboxLookup.error));
+  }
+
+  const mailboxAddress = mailboxLookup.mailboxAddress;
   if (!mailboxAddress) {
     return withPublicSelfServeCors(badRequest("mailboxAlias or mailboxAddress is required"));
   }
@@ -2874,39 +2881,67 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
 });
 
 export async function handleApiRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
+  if (request.method.toUpperCase() === "OPTIONS") {
+    if (isPublicSelfServeRequest(request)) {
+      return publicSelfServePreflight();
+    }
+    if (isAuthenticatedApiCorsRequest(request)) {
+      return authenticatedApiPreflight();
+    }
+  }
+
   try {
     const response = await router.handle(request, env, ctx);
-    if (response && isPublicSelfServeRequest(request)) {
+    if (!response) {
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(notFound()) : null;
+    }
+    if (isPublicSelfServeRequest(request)) {
       return withPublicSelfServeCors(response);
     }
-    return response;
+    return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
       const response = badRequest(error.message);
-      return isPublicSelfServeRequest(request) ? withPublicSelfServeCors(response) : response;
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
     }
     if (error instanceof RouteRequestError) {
       const response = json({ error: error.message }, { status: error.status });
-      return isPublicSelfServeRequest(request) ? withPublicSelfServeCors(response) : response;
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
     }
 
     throw error;
   }
 }
 
-function normalizeMailboxLookup(env: Env, input: { mailboxAlias?: string; mailboxAddress?: string }): string | null {
+function normalizeMailboxLookup(env: Env, input: { mailboxAlias?: string; mailboxAddress?: string }): {
+  mailboxAddress: string | null;
+  error?: string;
+} {
   const address = input.mailboxAddress?.trim().toLowerCase();
   if (address) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) ? address : null;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)
+      ? { mailboxAddress: address }
+      : { mailboxAddress: null, error: "mailboxAddress must be a valid email address" };
   }
 
   const alias = input.mailboxAlias?.trim().toLowerCase();
   if (!alias) {
-    return null;
+    return { mailboxAddress: null };
   }
 
   const domain = env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net";
-  return /^[a-z0-9][a-z0-9._+-]{2,31}$/.test(alias) ? `${alias}@${domain}` : null;
+  return /^[a-z0-9][a-z0-9._+-]{2,31}$/.test(alias)
+    ? { mailboxAddress: `${alias}@${domain}` }
+    : {
+      mailboxAddress: null,
+      error: "mailboxAlias must be 3-32 characters, start with a letter or digit, and use only lowercase letters, digits, ., _, +, or -",
+    };
 }
 
 function isoSecondsAgo(seconds: number): string {
@@ -3731,7 +3766,45 @@ function publicSelfServePreflight(): Response {
   });
 }
 
+function authenticatedApiCorsHeaders(): Headers {
+  return new Headers({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": AUTHENTICATED_API_ALLOW_METHODS,
+    "access-control-allow-headers": AUTHENTICATED_API_ALLOW_HEADERS,
+    "access-control-max-age": "86400",
+  });
+}
+
+function withAuthenticatedApiCors(response: Response): Response {
+  const headers = authenticatedApiCorsHeaders();
+  for (const [key, value] of response.headers.entries()) {
+    headers.set(key, value);
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function authenticatedApiPreflight(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: authenticatedApiCorsHeaders(),
+  });
+}
+
 function isPublicSelfServeRequest(request: Request): boolean {
   const pathname = new URL(request.url).pathname;
   return pathname === "/public/signup" || pathname === "/public/token/reissue";
+}
+
+function isAuthenticatedApiCorsRequest(request: Request): boolean {
+  const pathname = new URL(request.url).pathname;
+  if (pathname.startsWith("/v1/webhooks/")) {
+    return false;
+  }
+
+  return pathname.startsWith("/v1/") || pathname.startsWith("/v2/");
 }
