@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "0.1.0",
+  "workflows": [
+    {
+      "name": "bootstrap_mailbox_agent",
+      "goal": "Mint the narrowest viable mailbox-scoped bearer token, then return the agent to the normal mailbox workflow surface.",
+      "compositeTool": "bootstrap_mailbox_agent_token",
+      "categories": ["token_admin", "registry_admin"],
+      "steps": [
+        { "tool": "get_mailbox", "mode": "read" },
+        { "tool": "get_agent", "mode": "read_optional" },
+        { "tool": "bootstrap_mailbox_agent_token", "mode": "privileged" }
+      ],
+      "sideEffects": ["create_access_token"],
+      "stopConditions": [
+        "mailbox identity or tenant ownership is unclear",
+        "the requested token scope exceeds the mailbox workflow need",
+        "the intended agent binding is ambiguous"
+      ]
+    },
+    {
+      "name": "review_tenant_outbound_access",
+      "goal": "Gather billing and policy context before deciding whether a tenant should be approved for external send, reset back to review, or suspended.",
+      "compositeTool": "get_tenant_review_context",
+      "categories": ["policy_admin", "registry_admin"],
+      "steps": [
+        { "tool": "get_tenant_send_policy", "mode": "read" },
+        { "tool": "list_mailboxes", "mode": "read" },
+        { "tool": "get_tenant_review_context", "mode": "read" },
+        { "tool": "apply_tenant_send_policy_review", "mode": "high_risk" },
+        { "tool": "upsert_tenant_send_policy", "mode": "privileged_optional" }
+      ],
+      "sideEffects": [
+        "apply_tenant_send_policy_review",
+        "upsert_tenant_send_policy"
+      ],
+      "stopConditions": [
+        "the tenant identity or mailbox inventory is incomplete",
+        "payment state is still ambiguous or disputed",
+        "the review outcome would broaden outbound access without operator approval"
+      ]
+    },
+    {
+      "name": "forensic_delivery_inspection",
+      "goal": "Correlate message, draft, outbound-job, delivery-event, and suppression state before taking remediation actions on a delivery incident.",
+      "compositeTool": "inspect_delivery_case",
+      "categories": ["debug", "suppression"],
+      "steps": [
+        { "tool": "get_debug_message", "mode": "read_optional" },
+        { "tool": "get_debug_draft", "mode": "read_optional" },
+        { "tool": "get_debug_outbound_job", "mode": "read_optional" },
+        { "tool": "get_suppression", "mode": "read_optional" },
+        { "tool": "inspect_delivery_case", "mode": "read" },
+        { "tool": "add_suppression", "mode": "high_risk_optional" }
+      ],
+      "sideEffects": ["add_suppression"],
+      "stopConditions": [
+        "the lookup target does not uniquely identify the delivery case",
+        "delivery evidence is incomplete and requires provider-side logs",
+        "adding a suppression would materially change customer delivery behavior without human review"
+      ]
+    }
+  ]
+}

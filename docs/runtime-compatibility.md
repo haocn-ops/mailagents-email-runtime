@@ -30,8 +30,10 @@ Top-level fields:
 - `guarantees`
 - `mcp`
 - `workflows`
+- `admin`, when admin routes are enabled
 - `errors`
 - `routes`
+- `delivery`
 
 Key details:
 
@@ -40,6 +42,8 @@ Key details:
 - `discovery.runtimeMetadataPath` points to the richer runtime metadata endpoint
 - `discovery.compatibilityPath` points back to this contract
 - `discovery.compatibilitySchemaPath` points to the JSON Schema for contract validation
+- `discovery.adminMcpPath`, when present, points to the separate operator MCP surface
+- `admin.mcp`, when present, provides the stable admin MCP path, auth mode, methods, and admin workflow packs
 - `evolution.versioningPolicy` explains which changes are additive and which require a compatibility version bump
 - `evolution.deprecationPolicy` explains how removals should be announced
 - `evolution.deprecatedFields` is the machine-readable place to watch for pending removals
@@ -59,6 +63,10 @@ The schema endpoint is especially useful for:
 - SDK fixture validation
 - contract snapshot testing
 - generated clients that validate responses before use
+
+For operator-facing planning, the `admin.mcp.workflows` section is the stable
+contract-oriented counterpart to the richer `result.meta.adminMcp` data
+returned by admin MCP `initialize`.
 
 Current deprecation stance:
 

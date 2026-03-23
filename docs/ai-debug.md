@@ -2,6 +2,9 @@
 
 This page explains how to use debug and admin endpoints safely.
 
+For operator agents that prefer MCP instead of raw HTTP debug routes, see
+[docs/admin-mcp.md](./admin-mcp.md).
+
 ## Core Debug Endpoints
 
 - `GET /v1/debug/agents/{agentId}`

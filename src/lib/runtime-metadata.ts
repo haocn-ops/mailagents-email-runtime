@@ -1,4 +1,10 @@
 import { getOutboundProvider } from "./outbound-provider";
+import {
+  ADMIN_MCP_AUTH,
+  ADMIN_MCP_METHODS,
+  ADMIN_MCP_PATH,
+  ADMIN_WORKFLOW_PACKS,
+} from "./admin-mcp-contract";
 import type { Env } from "../types";
 
 export const RUNTIME_SERVER_INFO = {
@@ -231,6 +237,12 @@ export const WORKFLOW_PACKS = [
 
 export const MCP_ERROR_CODE_CATALOG = [
   {
+    code: "route_disabled",
+    category: "availability",
+    retryable: false,
+    description: "The requested MCP surface is disabled in the current environment.",
+  },
+  {
     code: "auth_unauthorized",
     category: "auth",
     retryable: false,
@@ -315,6 +327,18 @@ export const MCP_ERROR_CODE_CATALOG = [
     description: "The requested draft does not exist.",
   },
   {
+    code: "resource_outbound_job_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested outbound job does not exist.",
+  },
+  {
+    code: "resource_suppression_not_found",
+    category: "resource",
+    retryable: false,
+    description: "The requested suppression record does not exist.",
+  },
+  {
     code: "idempotency_conflict",
     category: "idempotency",
     retryable: false,
@@ -358,6 +382,7 @@ export const COMPATIBILITY_CONTRACT_SCHEMA = {
         runtimeMetadataPath: { type: "string" },
         compatibilityPath: { type: "string" },
         compatibilitySchemaPath: { type: "string" },
+        adminMcpPath: { type: "string" },
         mcpInitializeEmbedsRuntimeMetadata: { type: "boolean" },
         toolsListScopeFiltered: { type: "boolean" },
       },
@@ -460,6 +485,64 @@ export const COMPATIBILITY_CONTRACT_SCHEMA = {
         additionalProperties: false,
       },
     },
+    admin: {
+      type: "object",
+      required: ["mcp"],
+      properties: {
+        mcp: {
+          type: "object",
+          required: ["path", "auth", "methods", "workflows"],
+          properties: {
+            path: { type: "string" },
+            auth: {
+              type: "object",
+              required: ["type", "header"],
+              properties: {
+                type: { type: "string", enum: ["header"] },
+                header: { type: "string" },
+              },
+              additionalProperties: false,
+            },
+            methods: { type: "array", items: { type: "string" } },
+            workflows: {
+              type: "array",
+              items: {
+                type: "object",
+                required: [
+                  "name",
+                  "description",
+                  "goal",
+                  "compositeTool",
+                  "categories",
+                  "recommendedToolSequence",
+                  "sideEffects",
+                  "stopConditions",
+                ],
+                properties: {
+                  name: { type: "string" },
+                  description: { type: "string" },
+                  goal: { type: "string" },
+                  compositeTool: { type: "string" },
+                  categories: {
+                    type: "array",
+                    items: {
+                      type: "string",
+                      enum: ["token_admin", "registry_admin", "policy_admin", "debug", "suppression"],
+                    },
+                  },
+                  recommendedToolSequence: { type: "array", items: { type: "string" } },
+                  sideEffects: { type: "array", items: { type: "string" } },
+                  stopConditions: { type: "array", items: { type: "string" } },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
     errors: {
       type: "array",
       items: {
@@ -515,6 +598,7 @@ function isEnabled(value: string | undefined): boolean {
 }
 
 export function buildRuntimeMetadata(env: Env) {
+  const adminEnabled = isEnabled(env.ADMIN_ROUTES_ENABLED);
   return {
     server: RUNTIME_SERVER_INFO,
     api: {
@@ -522,6 +606,7 @@ export function buildRuntimeMetadata(env: Env) {
       compatibilityPath: "/v2/meta/compatibility",
       compatibilitySchemaPath: "/v2/meta/compatibility/schema",
       mcpPath: "/mcp",
+      ...(adminEnabled ? { adminMcpPath: ADMIN_MCP_PATH } : {}),
       supportedHttpVersions: ["v1", "v2"],
     },
     mcp: {
@@ -543,7 +628,7 @@ export function buildRuntimeMetadata(env: Env) {
       pendingRetentionHours: Number(env.IDEMPOTENCY_PENDING_RETENTION_HOURS ?? "1"),
     },
     routes: {
-      adminEnabled: isEnabled(env.ADMIN_ROUTES_ENABLED),
+      adminEnabled,
       debugEnabled: isEnabled(env.DEBUG_ROUTES_ENABLED),
     },
     delivery: {
@@ -554,6 +639,16 @@ export function buildRuntimeMetadata(env: Env) {
 
 export function buildCompatibilityContract(env: Env) {
   const runtime = buildRuntimeMetadata(env);
+  const admin = runtime.routes.adminEnabled
+    ? {
+      mcp: {
+        path: ADMIN_MCP_PATH,
+        auth: ADMIN_MCP_AUTH,
+        methods: [...ADMIN_MCP_METHODS],
+        workflows: ADMIN_WORKFLOW_PACKS,
+      },
+    }
+    : undefined;
   return {
     contract: {
       name: "mailagents-agent-compatibility",
@@ -565,6 +660,7 @@ export function buildCompatibilityContract(env: Env) {
       runtimeMetadataPath: runtime.api.metaRuntimePath,
       compatibilityPath: runtime.api.compatibilityPath,
       compatibilitySchemaPath: runtime.api.compatibilitySchemaPath,
+      ...(runtime.api.adminMcpPath ? { adminMcpPath: runtime.api.adminMcpPath } : {}),
       mcpInitializeEmbedsRuntimeMetadata: true,
       toolsListScopeFiltered: true,
     },
@@ -596,7 +692,7 @@ export function buildCompatibilityContract(env: Env) {
       }>,
     },
     guarantees: {
-      stableRuntimeFields: ["server", "api", "mcp", "workflows", "idempotency", "routes"],
+      stableRuntimeFields: ["server", "api", "mcp", "workflows", "idempotency", "routes", "delivery"],
       stableToolAnnotations: [
         "riskLevel",
         "sideEffecting",
@@ -616,6 +712,7 @@ export function buildCompatibilityContract(env: Env) {
       tools: serializeToolCatalog(),
     },
     workflows: runtime.workflows,
+    ...(admin ? { admin } : {}),
     errors: MCP_ERROR_CODE_CATALOG,
     routes: runtime.routes,
     delivery: runtime.delivery,

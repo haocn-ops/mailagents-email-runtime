@@ -9,6 +9,7 @@ import {
   shouldBootstrapContactAliasRouting,
 } from "./lib/contact-aliases";
 import { withSecurityHeaders, redirectToHttps } from "./lib/transport-security";
+import { handleAdminMcpRequest } from "./routes/admin-mcp";
 import { handleApiRequest } from "./routes/api";
 import { handleMcpRequest } from "./routes/mcp";
 import { handleSiteRequest } from "./routes/site";
@@ -96,6 +97,11 @@ export default {
     const httpsRedirect = redirectToHttps(request);
     if (httpsRedirect) {
       return httpsRedirect;
+    }
+
+    const adminMcpResponse = await handleAdminMcpRequest(request, env, ctx);
+    if (adminMcpResponse) {
+      return withSecurityHeaders(adminMcpResponse, request);
     }
 
     const mcpResponse = await handleMcpRequest(request, env, ctx);

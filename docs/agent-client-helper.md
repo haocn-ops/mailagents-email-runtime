@@ -22,8 +22,42 @@ It is intentionally lightweight:
 - `publicSignup()`
 - `reissueAccessToken()`
 - `createAccessToken()`
+- `adminCreateAccessToken()`
+- `adminBootstrapMailboxAgentToken()`
+- `adminBootstrapMailboxAgentWorkflow()`
 - `rotateAccessToken()`
 - `rotateToken()`
+- `withAdminSecret()`
+- `operator()`
+- `getAdminMcpMetadata()`
+- `getAdminWorkflowSurface()`
+- `MailagentsOperatorClient`
+- `MailagentsOperatorMailboxSession`
+- `getCapabilitySurface()`
+- `getWorkflowSurface()`
+- `mintAccessToken()`
+- `bootstrapMailboxAgent()`
+- `openMailboxSession()`
+- `reviewTenantOutboundAccess()`
+- `inspectDeliveryCase()`
+- `listAdminTools()`
+- `callAdminTool()`
+- `adminListAgents()`
+- `adminGetAgent()`
+- `adminListMailboxes()`
+- `adminGetMailbox()`
+- `adminGetTenantSendPolicy()`
+- `adminUpsertTenantSendPolicy()`
+- `adminApplyTenantSendPolicyReview()`
+- `adminGetTenantReviewContext()`
+- `adminReviewTenantOutboundAccessWorkflow()`
+- `adminGetDebugMessage()`
+- `adminGetDebugDraft()`
+- `adminGetDebugOutboundJob()`
+- `adminInspectDeliveryCase()`
+- `adminInspectDeliveryCaseWorkflow()`
+- `adminGetSuppression()`
+- `adminAddSuppression()`
 - `getSelfMailbox()`
 - `listTools()`
 - `listRecommendedMailboxTools()`
@@ -49,6 +83,25 @@ It is intentionally lightweight:
 
 The goal is to reduce boilerplate for agent builders who would otherwise start
 from raw `curl` or handcrafted JSON-RPC payloads.
+
+For operator agents, the helper can also hold an `adminSecret` and talk to the
+separate `/admin/mcp` surface without mixing those calls into the normal bearer
+token workflow.
+
+If you want a narrower operator-facing entrypoint, use `client.operator()` to
+switch into the typed `MailagentsOperatorClient` facade. That wrapper groups
+runtime discovery, admin workflow discovery, mailbox-agent bootstrap, tenant
+review, and delivery forensics under one admin-oriented surface.
+
+If the operator flow ends in a mailbox-scoped bearer token, prefer
+`operator.openMailboxSession()`. It returns a
+`MailagentsOperatorMailboxSession` that already carries the bootstrap metadata,
+recommended mailbox workflow, and a mailbox-scoped client for read/send/reply
+helpers.
+
+When admin routes are enabled, `getCompatibilityContract()` also carries an
+optional `admin.mcp` section so SDK users can discover admin workflow packs
+from the narrower compatibility contract before switching to admin MCP calls.
 
 It is best treated as:
 
@@ -90,6 +143,12 @@ draft lifecycle control.
 Runnable repository examples:
 
 - `npm run example:agent:discover`
+- `npm run example:agent:discover-admin`
+- `npm run example:agent:admin-workflows`
+- `npm run example:agent:operator-client`
+- `npm run example:agent:admin-bootstrap`
+- `npm run example:agent:admin-review`
+- `npm run example:agent:admin-forensics`
 - `npm run example:agent:mailbox-first`
 - `npm run example:agent:reply-draft`
 - `npm run example:agent:operator-send`

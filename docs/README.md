@@ -60,6 +60,9 @@ Use these docs when you need stable machine-readable integration points:
 
 - [docs/runtime-metadata.md](./runtime-metadata.md) — `/v2/meta/runtime`
 - [docs/runtime-compatibility.md](./runtime-compatibility.md) — `/v2/meta/compatibility`
+- [docs/admin-mcp.md](./admin-mcp.md) — `/admin/mcp` operator MCP surface
+- [docs/admin-workflow-packs.md](./admin-workflow-packs.md) — operator workflow planning above admin MCP tools
+- [docs/admin-workflow-packs.json](./admin-workflow-packs.json) — machine-readable admin workflow pack data
 - [docs/runtime-compatibility.schema.json](./runtime-compatibility.schema.json) — compatibility schema
 - [docs/openapi.yaml](./openapi.yaml) — HTTP API surface
 - [docs/agent-capabilities.json](./agent-capabilities.json) — pinned capability snapshot
@@ -74,6 +77,8 @@ Use these pages when you need policy, safety, or operator-facing guidance:
 - [docs/ai-debug.md](./ai-debug.md) — debug and admin endpoints
 - [docs/agent-workflow-packs.md](./agent-workflow-packs.md) — reusable workflow patterns
 - [docs/agent-workflow-packs.json](./agent-workflow-packs.json) — machine-readable workflow pack data
+- [docs/admin-workflow-packs.md](./admin-workflow-packs.md) — reusable admin/operator workflow patterns
+- [docs/admin-workflow-packs.json](./admin-workflow-packs.json) — machine-readable admin workflow pack data
 
 ## Production And Operations
 

@@ -10,6 +10,7 @@ MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 FROM_EMAIL="${FROM_EMAIL:-agent@mailagents.net}"
 TO_EMAIL="${TO_EMAIL:-peer@mailagents.net}"
 SEEDED_INBOUND_MESSAGE_ID="${SEEDED_INBOUND_MESSAGE_ID:-msg_demo_inbound}"
+PREPARE_SMOKE_TENANT_POLICY="${PREPARE_SMOKE_TENANT_POLICY:-1}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -50,6 +51,61 @@ wait_for_server() {
   exit 1
 }
 
+ensure_demo_tenant_send_policy() {
+  if [[ "$PREPARE_SMOKE_TENANT_POLICY" != "1" || "$TENANT_ID" != "t_demo" ]]; then
+    return
+  fi
+
+  local current_policy
+  local pricing_tier
+  local outbound_status
+
+  current_policy="$(curl -sS "$BASE_URL/admin/mcp" \
+    -H 'content-type: application/json' \
+    -H "x-admin-secret: $ADMIN_SECRET" \
+    -d "{
+      \"jsonrpc\": \"2.0\",
+      \"id\": 1.96,
+      \"method\": \"tools/call\",
+      \"params\": {
+        \"name\": \"get_tenant_send_policy\",
+        \"arguments\": {
+          \"tenantId\": \"$TENANT_ID\"
+        }
+      }
+    }")"
+
+  pricing_tier="$(echo "$current_policy" | jq -r '.result.structuredContent.pricingTier // empty')"
+  outbound_status="$(echo "$current_policy" | jq -r '.result.structuredContent.outboundStatus // empty')"
+
+  if [[ "$pricing_tier" == "paid_active" && "$outbound_status" == "external_enabled" ]]; then
+    return
+  fi
+
+  echo "Preparing demo tenant outbound policy for smoke..."
+  curl -sS "$BASE_URL/admin/mcp" \
+    -H 'content-type: application/json' \
+    -H "x-admin-secret: $ADMIN_SECRET" \
+    -d "{
+      \"jsonrpc\": \"2.0\",
+      \"id\": 1.965,
+      \"method\": \"tools/call\",
+      \"params\": {
+        \"name\": \"apply_tenant_send_policy_review\",
+        \"arguments\": {
+          \"tenantId\": \"$TENANT_ID\",
+          \"decision\": \"approve_external\"
+        }
+      }
+    }" | jq -e '
+      .result.structuredContent.sendPolicy.pricingTier == "paid_active" and
+      .result.structuredContent.sendPolicy.outboundStatus == "external_enabled" and
+      .result.structuredContent.sendPolicy.externalSendEnabled == true and
+      .result.structuredContent.sendPolicy.reviewRequired == false and
+      .result.structuredContent.account.pricingTier == "paid_active"
+    ' >/dev/null
+}
+
 load_local_secrets
 wait_for_server
 
@@ -85,6 +141,27 @@ if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
   exit 1
 fi
 
+echo "Checking top-level MCP auth error shape..."
+curl -sS "$BASE_URL/mcp" \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 0.5,
+    "method": "tools/list",
+    "params": {}
+  }' | jq -e '.error.message == "Unauthorized" and .error.data.errorCode == "auth_unauthorized"' >/dev/null
+
+echo "Checking top-level admin MCP auth error shape..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H 'x-admin-secret: invalid-secret' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 0.75,
+    "method": "initialize",
+    "params": {}
+  }' | jq -e '.error.message == "Admin secret required" and .error.data.errorCode == "auth_unauthorized"' >/dev/null
+
 echo "Initializing MCP endpoint..."
 curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
@@ -97,11 +174,106 @@ curl -sS "$BASE_URL/mcp" \
 
 echo "Checking runtime metadata endpoint..."
 curl -sS "$BASE_URL/v2/meta/runtime" \
-  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime" and .api.compatibilityPath == "/v2/meta/compatibility" and .api.compatibilitySchemaPath == "/v2/meta/compatibility/schema"' >/dev/null
+  | jq -e '.server.name == "mailagents-runtime" and (.mcp.tools | any(.name == "reply_to_inbound_email")) and .api.metaRuntimePath == "/v2/meta/runtime" and .api.compatibilityPath == "/v2/meta/compatibility" and .api.compatibilitySchemaPath == "/v2/meta/compatibility/schema" and .api.adminMcpPath == "/admin/mcp"' >/dev/null
+
+echo "Initializing admin MCP endpoint..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1.5,
+    "method": "initialize",
+    "params": {}
+  }' | jq -e '.result.serverInfo.name == "mailagents-runtime" and .result.meta.api.adminMcpPath == "/admin/mcp" and .result.meta.adminMcp.path == "/admin/mcp" and (.result.meta.adminMcp.tools | any(.name == "create_access_token")) and (.result.meta.adminMcp.workflows | any(.name == "bootstrap_mailbox_agent" and .goal != null and (.recommendedToolSequence | index("bootstrap_mailbox_agent_token")) and (.categories | index("token_admin")) and (.stopConditions | length) >= 1))' >/dev/null
+
+echo "Listing admin MCP tools..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1.75,
+    "method": "tools/list",
+    "params": {}
+  }' | jq -e '.result.tools | any(.name == "get_debug_message" and .annotations.category == "debug") and any(.name == "create_access_token" and .annotations.category == "token_admin") and any(.name == "bootstrap_mailbox_agent_token") and any(.name == "get_tenant_review_context") and any(.name == "inspect_delivery_case")' >/dev/null
+
+echo "Minting token through admin MCP..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 1.9,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"create_access_token\",
+      \"arguments\": {
+        \"sub\": \"admin-mcp-smoke\",
+        \"tenantId\": \"$TENANT_ID\",
+        \"scopes\": [\"mail:read\"],
+        \"mailboxIds\": [\"$MAILBOX_ID\"],
+        \"expiresInSeconds\": 600
+      }
+    }
+  }" | jq -e '.result.structuredContent.token | type == "string"' >/dev/null
+
+echo "Bootstrapping mailbox-agent token through admin MCP..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 1.95,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"bootstrap_mailbox_agent_token\",
+      \"arguments\": {
+        \"tenantId\": \"$TENANT_ID\",
+        \"mailboxId\": \"$MAILBOX_ID\",
+        \"mode\": \"send\"
+      }
+    }
+  }" | jq -e --arg mailbox "$MAILBOX_ID" '.result.structuredContent.mailbox.id == $mailbox and .result.structuredContent.scopeProfile == "send" and (.result.structuredContent.visibleTools | any(.name == "send_email"))' >/dev/null
+
+echo "Fetching tenant review context through admin MCP..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 1.97,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"get_tenant_review_context\",
+      \"arguments\": {
+        \"tenantId\": \"$TENANT_ID\",
+        \"receiptsLimit\": 5
+      }
+    }
+  }" | jq -e --arg tenant "$TENANT_ID" '.result.structuredContent.tenantId == $tenant and (.result.structuredContent.summary.suggestedActions | type == "array")' >/dev/null
+
+ensure_demo_tenant_send_policy
+
+echo "Inspecting seeded delivery case through admin MCP..."
+curl -sS "$BASE_URL/admin/mcp" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 1.98,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"inspect_delivery_case\",
+      \"arguments\": {
+        \"messageId\": \"$SEEDED_INBOUND_MESSAGE_ID\"
+      }
+    }
+  }" | jq -e --arg message "$SEEDED_INBOUND_MESSAGE_ID" '.result.structuredContent.lookup.type == "message" and .result.structuredContent.message.id == $message' >/dev/null
 
 echo "Checking compatibility contract endpoint..."
 curl -sS "$BASE_URL/v2/meta/compatibility" \
-  | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and .contract.changelogPath == "/CHANGELOG.md" and .evolution.deprecationPolicy.minimumNotice == "one compatibility version" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
+  | jq -e '.contract.name == "mailagents-agent-compatibility" and .contract.version == "2026-03-17" and .contract.changelogPath == "/CHANGELOG.md" and .discovery.adminMcpPath == "/admin/mcp" and .admin.mcp.path == "/admin/mcp" and .admin.mcp.auth.header == "x-admin-secret" and (.admin.mcp.workflows | any(.name == "bootstrap_mailbox_agent" and .goal != null and (.categories | index("token_admin")) and (.recommendedToolSequence | index("bootstrap_mailbox_agent_token")))) and .evolution.deprecationPolicy.minimumNotice == "one compatibility version" and (.guarantees.stableErrorCodes | index("idempotency_conflict")) and (.guarantees.stableErrorCodes | index("route_disabled")) and (.errors | any(.code == "access_mailbox_denied" and .retryable == false))' >/dev/null
 
 echo "Checking compatibility schema endpoint..."
 curl -sS "$BASE_URL/v2/meta/compatibility/schema" \

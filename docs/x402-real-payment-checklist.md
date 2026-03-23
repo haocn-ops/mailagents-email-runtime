@@ -20,6 +20,67 @@ As of 2026-03-23, the runtime has already been verified for:
 - production upgrades that settle through the facilitator-backed flow
 - Mailagents-hosted `did:web` document generation and public resolution
 
+In other words, production is no longer in a "quote only" state. When the
+environment has a working facilitator and the client submits a standards-shaped
+`x402Version: 2` proof, the same billing endpoint can now return a fully
+settled result without a separate confirm call.
+
+## What Actually Creates A Receipt
+
+This point is easy to misunderstand, so it is worth stating explicitly:
+
+1. The first billing request is a quote request.
+2. The second billing request is the proof-submission request.
+3. Mailagents only creates a `receiptId` after it receives a
+   `payment-signature` header on that second request.
+
+That means:
+
+- a blockchain transfer by itself does not create a Mailagents receipt
+- a `402` quote response does not include a receipt
+- a raw transaction hash is not enough
+- the receipt is created only when the client replays the same billing route
+  with a valid `payment-signature`
+
+## Real Runtime Modes
+
+Mailagents currently supports two real runtime modes for billing settlement.
+
+### Mode A: Immediate Facilitator Settlement
+
+In this mode:
+
+1. client requests quote
+2. server returns `402`
+3. client submits `payment-signature`
+4. server calls facilitator `verify -> settle`
+5. server returns `200`
+
+Expected response shape:
+
+- `verificationStatus = settled`
+- `receipt.status = settled`
+- for topups: `ledgerEntry` and updated `account`
+- for upgrades: updated `account` and `sendPolicy`
+
+### Mode B: Pending Receipt Then Explicit Confirm
+
+In this mode:
+
+1. client requests quote
+2. server returns `402`
+3. client submits `payment-signature`
+4. server returns `202`
+5. client or operator calls `POST /v1/billing/payment/confirm`
+
+Expected intermediate shape:
+
+- `verificationStatus = pending`
+- `receipt.status = pending`
+
+The same codebase supports both modes. Which one you see depends on the active
+environment configuration.
+
 ## Target Outcome
 
 After completing this checklist, a tenant should be able to:
@@ -145,6 +206,92 @@ Expected result:
 - HTTP `202` only in environments that still require a later confirmation step
 - receipt status `settled` or `pending`, depending on environment configuration
 
+### What The Client Must Actually Send
+
+The most important implementation detail is the shape of the proof.
+
+Mailagents does not expect:
+
+- only a chain transaction hash
+- only a block number
+- only a transfer receipt
+- a custom JSON blob without x402 metadata
+
+Mailagents expects a base64-encoded JSON payload shaped like x402 v2. At
+minimum, the decoded JSON should look like:
+
+```json
+{
+  "x402Version": 2,
+  "resource": {
+    "url": "https://api.mailagents.net/v1/billing/topup",
+    "description": "Top up 1 Mailagents credits for tenant tnt_...",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:84532",
+    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "amount": "10000",
+    "payTo": "0x0b4fbD3AA802B9eAE9c5F6D4B5FE7ADd6eB1D3D2",
+    "maxTimeoutSeconds": 300,
+    "extra": {
+      "assetTransferMethod": "eip3009",
+      "name": "USDC",
+      "version": "2"
+    }
+  },
+  "payload": {
+    "signature": "0x...",
+    "authorization": {
+      "from": "0x...",
+      "to": "0x...",
+      "value": "10000",
+      "validAfter": "1774235547",
+      "validBefore": "1774235877",
+      "nonce": "0x..."
+    }
+  }
+}
+```
+
+The entire JSON document above must be base64-encoded and sent as:
+
+```http
+payment-signature: <base64 encoded x402 payload>
+```
+
+### Minimal Proof Submission Example
+
+```bash
+PAYMENT_SIGNATURE="$(base64 < payment.json | tr -d '\n')"
+
+curl --http1.1 -X POST https://api.mailagents.net/v1/billing/topup \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -H "payment-signature: $PAYMENT_SIGNATURE" \
+  --data '{"credits":1}'
+```
+
+### Typical Success Response In Immediate-Settlement Mode
+
+```json
+{
+  "receipt": {
+    "id": "prc_...",
+    "status": "settled"
+  },
+  "ledgerEntry": {
+    "id": "led_..."
+  },
+  "account": {
+    "availableCredits": 1
+  },
+  "verificationStatus": "settled",
+  "message": "Payment receipt settled and credits applied."
+}
+```
+
 ### Step 6
 
 Confirm settlement only when the environment still returns a pending receipt:
@@ -195,6 +342,33 @@ Expected result:
 - receipt status `settled`
 - the billing and send-policy state moves to the configured post-upgrade target for that environment
 
+### Typical Success Response For Upgrade
+
+In production, a successfully settled upgrade can return a shape like:
+
+```json
+{
+  "receipt": {
+    "id": "prc_...",
+    "status": "settled"
+  },
+  "account": {
+    "pricingTier": "paid_active",
+    "status": "active"
+  },
+  "sendPolicy": {
+    "outboundStatus": "external_enabled",
+    "externalSendEnabled": true,
+    "reviewRequired": false
+  },
+  "verificationStatus": "settled"
+}
+```
+
+Do not assume every environment will use these exact post-upgrade values. The
+important point is that the settlement response itself tells you which target
+state that environment applies.
+
 ## 7. Environment Variables Checklist
 
 For the target environment, confirm:
@@ -223,6 +397,37 @@ If the payer submits a malformed or unsupported proof:
 - receipt should remain `pending` or become `failed`
 - credits must not be granted
 
+The most common real-world variant is not a malformed signature, but a proof
+document that is structurally incomplete for x402. For example:
+
+- missing `x402Version`
+- missing `resource`
+- missing `accepted`
+- missing `payload.authorization`
+- submitting only a chain transaction record instead of an x402 proof object
+
+### "No facilitator registered for x402 version: undefined"
+
+This specific error almost always points to a client-side payload-shape problem,
+not a missing server facilitator.
+
+Interpret it as:
+
+- the facilitator did receive a request
+- but the decoded proof did not contain a usable `x402Version`
+- so the facilitator treated the version as `undefined`
+
+In practice, check these first:
+
+1. Was the `payment-signature` header sent at all?
+2. Does the decoded payload include `"x402Version": 2`?
+3. Is the client sending the whole x402 proof object, not just tx metadata?
+4. Does the proof include both `accepted` and `payload.authorization`?
+
+Do not jump straight to "server facilitator is unconfigured" when this error
+appears. A working facilitator can still return this exact error if the client
+proof is not x402-shaped.
+
 ### Duplicate Settlement
 
 Repeated proof submissions or confirm calls must not create duplicate ledger entries.
@@ -243,12 +448,68 @@ facilitator configuration is complete.
 
 1. configure facilitator credentials and `X402_PAY_TO`
 2. verify hosted DID routes in the target environment
-3. run one real topup payment
-4. validate ledger and credit balance
-5. run one real upgrade payment
-6. validate plan and send-policy transition
+3. request a quote and inspect its `paymentRequired.accepts[0]`
+4. generate a standards-shaped x402 v2 proof object
+5. run one real topup payment
+6. validate ledger and credit balance
+7. run one real upgrade payment
+8. validate plan and send-policy transition
 
-## 10. Repo Touchpoints
+## 10. Troubleshooting Decision Tree
+
+Use this quick map when a real payment test fails.
+
+### Case 1: The server returns `503 x402 billing is not configured`
+
+Likely cause:
+
+- environment missing `X402_PAY_TO`
+- environment missing or misconfigured billing vars
+
+Check:
+
+- `X402_PAY_TO`
+- `X402_DEFAULT_NETWORK_ID`
+- `X402_DEFAULT_ASSET`
+
+### Case 2: The server returns `402 Payment required`
+
+Likely cause:
+
+- this is still only the quote step
+- the client has not replayed the request with `payment-signature` yet
+
+### Case 3: The server returns `202 pending`
+
+Likely cause:
+
+- that environment still expects a later `POST /v1/billing/payment/confirm`
+- or facilitator settlement is not enabled there
+
+### Case 4: The server returns `No facilitator registered for x402 version: undefined`
+
+Likely cause:
+
+- proof shape is wrong
+- `x402Version` missing from the decoded proof
+
+Check:
+
+- base64 decode the header value locally
+- confirm the JSON includes `"x402Version": 2`
+- confirm the proof is not just a raw tx hash or receipt
+
+### Case 5: The server returns `200 settled` but credits or policy did not change
+
+This should be treated as a real runtime bug. Capture:
+
+- full response body
+- receipt id
+- tenant id
+- quote body
+- exact environment URL
+
+## 11. Repo Touchpoints
 
 The main implementation areas involved in real payment integration are:
 

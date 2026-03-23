@@ -1,6 +1,8 @@
 # Local MCP Usage
 
 This repository now exposes a minimal HTTP MCP endpoint at `/mcp`.
+When admin routes are enabled, it also exposes a separate admin MCP endpoint at
+`/admin/mcp`.
 
 Current support:
 
@@ -236,6 +238,78 @@ curl -sS http://127.0.0.1:8787/mcp \
 - `reply_to_message`
 - `replay_message`
 
+## Admin MCP
+
+`/admin/mcp` is a separate operator-facing MCP surface.
+
+Use it when:
+
+- the caller has `x-admin-secret`
+- `ADMIN_ROUTES_ENABLED` is enabled
+- the workflow needs privileged token minting, send-policy review, or debug inspection
+
+Do not use it for normal mailbox-agent happy paths.
+
+Example: list admin tools
+
+```bash
+curl -sS http://127.0.0.1:8787/admin/mcp \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "tools/list",
+    "params": {}
+  }'
+```
+
+Example: mint a bearer token through admin MCP
+
+```bash
+curl -sS http://127.0.0.1:8787/admin/mcp \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "tools/call",
+    "params": {
+      "name": "create_access_token",
+      "arguments": {
+        "sub": "admin-mcp-local",
+        "tenantId": "t_demo",
+        "scopes": ["mail:read"],
+        "mailboxIds": ["mbx_demo"],
+        "expiresInSeconds": 1800
+      }
+    }
+  }'
+```
+
+Example: bootstrap a standard mailbox-agent token through admin MCP
+
+```bash
+curl -sS http://127.0.0.1:8787/admin/mcp \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 11.5,
+    "method": "tools/call",
+    "params": {
+      "name": "bootstrap_mailbox_agent_token",
+      "arguments": {
+        "tenantId": "t_demo",
+        "mailboxId": "mbx_demo",
+        "mode": "send"
+      }
+    }
+  }'
+```
+
+See [docs/admin-mcp.md](../docs/admin-mcp.md) for the full design and current tool catalog.
+
 ## Notes
 
 - `tools/list` only shows tools allowed by the current token scopes
@@ -255,6 +329,7 @@ curl -sS http://127.0.0.1:8787/mcp \
 - composite send tools may be listed for draft-only usage even when the token lacks `draft:send`; check `sendAdditionalScopes` before planning a delivery step
 - `/v2/meta/compatibility` is the preferred machine-readable contract for long-lived external agents and SDKs
 - this is a minimal HTTP MCP surface, not yet a full SDK package or hosted MCP distribution
+- `/admin/mcp` is intentionally separate so high-privilege operator tools do not appear in normal `/mcp` discovery
 
 ## Error codes
 

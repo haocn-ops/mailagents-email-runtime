@@ -49,6 +49,12 @@
     "backfill:subjects:dev": "node ./scripts/backfill_message_subjects.mjs --env dev",
     "backfill:subjects:production": "node ./scripts/backfill_message_subjects.mjs --env production",
     "example:agent:discover": "node ./examples/discover_agent_capabilities.mjs",
+    "example:agent:discover-admin": "node ./examples/discover_admin_capabilities.mjs",
+    "example:agent:admin-workflows": "node ./examples/discover_admin_workflow_surface.mjs",
+    "example:agent:operator-client": "node ./examples/operator_client_facade.mjs",
+    "example:agent:admin-bootstrap": "node ./examples/admin_bootstrap_mailbox_agent.mjs",
+    "example:agent:admin-review": "node ./examples/admin_review_tenant_outbound_access.mjs",
+    "example:agent:admin-forensics": "node ./examples/admin_inspect_delivery_case.mjs",
     "example:agent:mailbox-first": "node ./examples/mailbox_first_agent.mjs",
     "example:agent:reply-draft": "node ./examples/reply_draft_only.mjs",
     "example:agent:operator-send": "node ./examples/operator_manual_send.mjs"

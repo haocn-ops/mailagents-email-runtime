@@ -25,6 +25,7 @@ Implemented runtime capabilities:
 - inbound email normalization with parsed content, thread state, attachments, and task creation
 - SES delivery event ingestion with persisted lifecycle records
 - tenant-scoped signed bearer-token auth for agent, task, mail, and draft operations
+- separate admin MCP for operator agents, rooted in the same `x-admin-secret` trust model as admin routes
 - outbound provider switching between SES and Resend, while preserving the same queue-backed send flow
 - mailbox-specific routing for inbound handling and replay jobs
 - versioned agent registry with mailbox deployments and deployment-aware execution traces
@@ -106,7 +107,19 @@ See:
 
 - [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md)
 - [`docs/mcp-local.md`](docs/mcp-local.md)
+- [`docs/admin-mcp.md`](docs/admin-mcp.md)
+- [`docs/admin-workflow-packs.md`](docs/admin-workflow-packs.md)
 - [`docs/openapi.yaml`](docs/openapi.yaml)
+
+Runnable discovery examples:
+
+- `npm run example:agent:discover`
+- `npm run example:agent:discover-admin`
+- `npm run example:agent:admin-workflows`
+- `npm run example:agent:operator-client`
+- `npm run example:agent:admin-bootstrap`
+- `npm run example:agent:admin-review`
+- `npm run example:agent:admin-forensics`
 
 ## Local Development Quick Start
 

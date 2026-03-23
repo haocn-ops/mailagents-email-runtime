@@ -40,6 +40,7 @@ Recommended usage:
 
 - use `/v2/meta/runtime` for richer environment-aware discovery
 - use `/v2/meta/compatibility` for long-lived branching logic
+- when admin routes are enabled, read `admin.mcp` from `/v2/meta/compatibility` for stable operator-workflow discovery
 - use `/v2/meta/compatibility/schema` in CI or SDK validation
 - use `docs/agent-capabilities.json` as a fixed example fixture when live calls are not desirable
 
@@ -121,6 +122,22 @@ For composite tools:
 
 - `requiredScopes` means the minimum needed to use the tool at all
 - `sendAdditionalScopes` means the extra scopes needed for delivery behavior
+
+For operator agents using `/admin/mcp`, prefer workflow-pack discovery before
+planning from raw admin tools alone:
+
+- `npm run example:agent:discover-admin`
+- `npm run example:agent:admin-workflows`
+- `npm run example:agent:operator-client`
+- `npm run example:agent:admin-bootstrap`
+- `npm run example:agent:admin-review`
+- `npm run example:agent:admin-forensics`
+- [docs/admin-mcp.md](../docs/admin-mcp.md)
+- [docs/admin-workflow-packs.md](../docs/admin-workflow-packs.md)
+
+If the admin flow ends in a mailbox-scoped token, prefer the SDK handoff
+through `operator.openMailboxSession()` so the rest of the workflow can stay on
+the mailbox-first read/send/reply helpers.
 
 ## 4. Read Before Acting
 

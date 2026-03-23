@@ -22,6 +22,7 @@
         "runtimeMetadataPath": { "type": "string" },
         "compatibilityPath": { "type": "string" },
         "compatibilitySchemaPath": { "type": "string" },
+        "adminMcpPath": { "type": "string" },
         "mcpInitializeEmbedsRuntimeMetadata": { "type": "boolean" },
         "toolsListScopeFiltered": { "type": "boolean" }
       },
@@ -89,13 +90,18 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["name", "requiredScopes", "sendAdditionalScopes", "composite", "supportsPartialAuthorization", "riskLevel", "sideEffecting", "humanReviewRequired"],
+            "required": ["name", "requiredScopes", "sendAdditionalScopes", "composite", "supportsPartialAuthorization", "category", "recommendedForMailboxAgents", "riskLevel", "sideEffecting", "humanReviewRequired"],
             "properties": {
               "name": { "type": "string" },
               "requiredScopes": { "type": "array", "items": { "type": "string" } },
               "sendAdditionalScopes": { "type": "array", "items": { "type": "string" } },
               "composite": { "type": "boolean" },
               "supportsPartialAuthorization": { "type": "boolean" },
+              "category": {
+                "type": "string",
+                "enum": ["provisioning", "policy", "task_read", "mail_read", "thread_read", "draft_control", "mail_send", "mail_reply", "recovery"]
+              },
+              "recommendedForMailboxAgents": { "type": "boolean" },
               "riskLevel": { "type": "string", "enum": ["read", "write", "high_risk", "privileged"] },
               "sideEffecting": { "type": "boolean" },
               "humanReviewRequired": { "type": "boolean" }
@@ -119,6 +125,64 @@
         "additionalProperties": false
       }
     },
+    "admin": {
+      "type": "object",
+      "required": ["mcp"],
+      "properties": {
+        "mcp": {
+          "type": "object",
+          "required": ["path", "auth", "methods", "workflows"],
+          "properties": {
+            "path": { "type": "string" },
+            "auth": {
+              "type": "object",
+              "required": ["type", "header"],
+              "properties": {
+                "type": { "type": "string", "enum": ["header"] },
+                "header": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "methods": { "type": "array", "items": { "type": "string" } },
+            "workflows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "description",
+                  "goal",
+                  "compositeTool",
+                  "categories",
+                  "recommendedToolSequence",
+                  "sideEffects",
+                  "stopConditions"
+                ],
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "goal": { "type": "string" },
+                  "compositeTool": { "type": "string" },
+                  "categories": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["token_admin", "registry_admin", "policy_admin", "debug", "suppression"]
+                    }
+                  },
+                  "recommendedToolSequence": { "type": "array", "items": { "type": "string" } },
+                  "sideEffects": { "type": "array", "items": { "type": "string" } },
+                  "stopConditions": { "type": "array", "items": { "type": "string" } }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "errors": {
       "type": "array",
       "items": {
@@ -139,6 +203,14 @@
       "properties": {
         "adminEnabled": { "type": "boolean" },
         "debugEnabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "delivery": {
+      "type": "object",
+      "required": ["outboundProvider"],
+      "properties": {
+        "outboundProvider": { "type": "string", "enum": ["ses", "resend"] }
       },
       "additionalProperties": false
     }

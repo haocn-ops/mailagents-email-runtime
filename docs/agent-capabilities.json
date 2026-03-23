@@ -9,7 +9,8 @@
     "runtimeMetadataPath": "/v2/meta/runtime",
     "compatibilityPath": "/v2/meta/compatibility",
     "compatibilitySchemaPath": "/v2/meta/compatibility/schema",
-    "mcpPath": "/mcp"
+    "mcpPath": "/mcp",
+    "adminMcpPath": "/admin/mcp"
   },
   "toolAnnotations": [
     "riskLevel",
@@ -148,7 +149,55 @@
       "sideEffects": ["replay_message"]
     }
   ],
+  "adminWorkflowPacks": [
+    {
+      "name": "bootstrap_mailbox_agent",
+      "compositeTool": "bootstrap_mailbox_agent_token",
+      "categories": ["token_admin", "registry_admin"],
+      "sideEffects": ["create_access_token"]
+    },
+    {
+      "name": "review_tenant_outbound_access",
+      "compositeTool": "get_tenant_review_context",
+      "categories": ["policy_admin", "registry_admin"],
+      "sideEffects": ["apply_tenant_send_policy_review", "upsert_tenant_send_policy"]
+    },
+    {
+      "name": "forensic_delivery_inspection",
+      "compositeTool": "inspect_delivery_case",
+      "categories": ["debug", "suppression"],
+      "sideEffects": ["add_suppression"]
+    }
+  ],
+  "adminCompatibility": {
+    "mcp": {
+      "path": "/admin/mcp",
+      "auth": {
+        "type": "header",
+        "header": "x-admin-secret"
+      },
+      "methods": ["initialize", "tools/list", "tools/call"],
+      "workflowPacks": [
+        {
+          "name": "bootstrap_mailbox_agent",
+          "compositeTool": "bootstrap_mailbox_agent_token",
+          "categories": ["token_admin", "registry_admin"]
+        },
+        {
+          "name": "review_tenant_outbound_access",
+          "compositeTool": "get_tenant_review_context",
+          "categories": ["policy_admin", "registry_admin"]
+        },
+        {
+          "name": "forensic_delivery_inspection",
+          "compositeTool": "inspect_delivery_case",
+          "categories": ["debug", "suppression"]
+        }
+      ]
+    }
+  },
   "stableErrorCodes": [
+    "route_disabled",
     "auth_unauthorized",
     "auth_missing_scope",
     "access_tenant_denied",
@@ -163,6 +212,8 @@
     "resource_message_not_found",
     "resource_thread_not_found",
     "resource_draft_not_found",
+    "resource_outbound_job_not_found",
+    "resource_suppression_not_found",
     "idempotency_conflict",
     "idempotency_in_progress",
     "tool_internal_error"

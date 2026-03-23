@@ -33,6 +33,7 @@ Current top-level fields:
 - `workflows`
 - `idempotency`
 - `routes`
+- `delivery`
 
 The `api` section includes:
 
@@ -40,6 +41,7 @@ The `api` section includes:
 - `compatibilityPath`
 - `compatibilitySchemaPath`
 - `mcpPath`
+- `adminMcpPath` when admin routes are enabled
 
 For each MCP tool, the metadata includes:
 
@@ -81,6 +83,21 @@ For composite tools that can either draft-only or draft-and-send:
 
 The MCP `initialize` response also includes the same metadata under
 `result.meta`, so agents can discover capabilities from either entry point.
+
+When admin routes are enabled, operator agents can also use `api.adminMcpPath`
+to discover the separate admin MCP surface. That endpoint is authenticated with
+`x-admin-secret` and is intended only for high-trust operator workflows.
+
+Admin MCP `initialize` also returns an `adminMcp` section under `result.meta`.
+That section includes:
+
+- admin auth mode and path
+- admin tool summaries
+- admin workflow packs with `goal`, `categories`,
+  `recommendedToolSequence`, `sideEffects`, and `stopConditions`
+
+This allows operator agents to discover not just which tools exist, but also
+which multi-step workflows the runtime expects them to use.
 
 For clients that need a narrower and more backward-compatible contract, see
 [docs/runtime-compatibility.md](../docs/runtime-compatibility.md).
