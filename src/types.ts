@@ -15,6 +15,7 @@ export type PaymentReceiptStatus = "pending" | "verified" | "settled" | "failed"
 export type DidBindingStatus = "pending" | "verified" | "revoked";
 export type TenantOutboundStatus = "internal_only" | "external_review" | "external_enabled" | "suspended";
 export type OutboundProvider = "ses" | "resend";
+export type SendLimitWindowModel = "rolling";
 
 export interface MailboxRecord {
   id: string;
@@ -214,6 +215,9 @@ export interface TenantSendPolicyRecord {
   internalDomainAllowlist: string[];
   externalSendEnabled: boolean;
   reviewRequired: boolean;
+  effectiveDailySendLimit: number | null;
+  effectiveHourlySendLimit: number | null;
+  limitWindowModel: SendLimitWindowModel | null;
   updatedAt: string;
 }
 

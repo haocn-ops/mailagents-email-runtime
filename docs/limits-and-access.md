@@ -36,6 +36,8 @@ New tenants start in a conservative policy state.
 Treat these paths as limited until the tenant has credits and a send policy that
 explicitly enables external delivery:
 
+- ordinary free-tier tenants can send up to 10 outbound emails in a rolling 24-hour window
+- ordinary free-tier tenants can send up to 1 outbound email in a rolling 1-hour window
 - sending to arbitrary external recipients
 - welcome email to arbitrary external operator inboxes
 - public token reissue email to arbitrary external operator inboxes
@@ -80,6 +82,7 @@ The main states to expect are:
 - default tenant:
   - billing `pricingTier = free`
   - send policy `outboundStatus = internal_only`
+  - effective outbound cap `10 per rolling 24h` and `1 per rolling 1h`
 - upgrade requested:
   - billing may move to `paid_review`
   - send policy may move to `external_review`

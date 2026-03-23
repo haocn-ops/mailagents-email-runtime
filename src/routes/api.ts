@@ -372,7 +372,8 @@ async function validateDraftOutboundPolicy(env: Env, draft: {
   });
 
   if (!decision.ok) {
-    throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
+    const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+    throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", status);
   }
 }
 
@@ -3184,7 +3185,8 @@ async function createAndSendDraft(env: Env, input: {
       bcc: input.payload.bcc,
     });
     if (!decision.ok) {
-      throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", 403);
+      const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+      throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", status);
     }
 
     const creditCheck = await checkOutboundCreditRequirement(env, {

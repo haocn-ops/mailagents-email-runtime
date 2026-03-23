@@ -114,6 +114,11 @@ interface MailboxAddressRow {
   status: string;
 }
 
+interface TenantOutboundUsageCountsRow {
+  sent_last_hour: number | null;
+  sent_last_day: number | null;
+}
+
 interface IdempotencyRow {
   operation: string;
   tenant_id: string;
@@ -879,6 +884,42 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   return {
     outboundJobId,
     status: "queued",
+  };
+}
+
+export async function getTenantOutboundUsageWindowCounts(env: Env, input: {
+  tenantId: string;
+  sinceHour: string;
+  sinceDay: string;
+}): Promise<{
+  sentLastHour: number;
+  sentLastDay: number;
+}> {
+  const row = await firstRow<TenantOutboundUsageCountsRow>(
+    env.D1_DB.prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN m.created_at >= ? THEN 1 ELSE 0 END), 0) AS sent_last_hour,
+         COALESCE(SUM(CASE WHEN m.created_at >= ? THEN 1 ELSE 0 END), 0) AS sent_last_day
+       FROM messages m
+       LEFT JOIN outbound_jobs o
+         ON o.message_id = m.id
+       LEFT JOIN drafts d
+         ON d.draft_r2_key = o.draft_r2_key
+       WHERE m.tenant_id = ?
+         AND m.direction = 'outbound'
+         AND m.created_at >= ?
+         AND COALESCE(d.created_via, '') NOT LIKE 'system:%'`
+    ).bind(
+      input.sinceHour,
+      input.sinceDay,
+      input.tenantId,
+      input.sinceDay,
+    )
+  );
+
+  return {
+    sentLastHour: Number(row?.sent_last_hour ?? 0),
+    sentLastDay: Number(row?.sent_last_day ?? 0),
   };
 }
 

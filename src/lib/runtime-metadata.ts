@@ -273,6 +273,18 @@ export const MCP_ERROR_CODE_CATALOG = [
     description: "The tenant does not have enough credits to send to external recipients.",
   },
   {
+    code: "daily_quota_exceeded",
+    category: "policy",
+    retryable: true,
+    description: "The tenant has reached its rolling 24-hour outbound send limit.",
+  },
+  {
+    code: "hourly_quota_exceeded",
+    category: "policy",
+    retryable: true,
+    description: "The tenant has reached its rolling 1-hour outbound send limit.",
+  },
+  {
     code: "resource_agent_not_found",
     category: "resource",
     retryable: false,

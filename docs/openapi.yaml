@@ -2068,7 +2068,7 @@ components:
     TenantSendPolicy:
       type: object
       required:
-        [tenantId, pricingTier, outboundStatus, internalDomainAllowlist, externalSendEnabled, reviewRequired, updatedAt]
+        [tenantId, pricingTier, outboundStatus, internalDomainAllowlist, externalSendEnabled, reviewRequired, effectiveDailySendLimit, effectiveHourlySendLimit, limitWindowModel, updatedAt]
       properties:
         tenantId:
           type: string
@@ -2086,6 +2086,16 @@ components:
           type: boolean
         reviewRequired:
           type: boolean
+        effectiveDailySendLimit:
+          type: integer
+          nullable: true
+        effectiveHourlySendLimit:
+          type: integer
+          nullable: true
+        limitWindowModel:
+          type: string
+          nullable: true
+          enum: [rolling]
         updatedAt:
           type: string
           format: date-time

@@ -10,6 +10,8 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
+import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
+import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { badRequest, InvalidJsonBodyError, json, readJson } from "../lib/http";
 import { Router } from "../lib/router";
@@ -699,6 +701,34 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         sourceMessageId: body.sourceMessageId,
       });
 
+      const policyDecision = await evaluateOutboundPolicy(env, {
+        tenantId,
+        agentId: "admin_console",
+        to: body.to ?? [],
+        cc: body.cc ?? [],
+        bcc: body.bcc ?? [],
+      });
+      if (!policyDecision.ok) {
+        const status = policyDecision.code === "daily_quota_exceeded" || policyDecision.code === "hourly_quota_exceeded"
+          ? 429
+          : 403;
+        return json({ error: policyDecision.message ?? "Outbound policy denied this send request" }, { status });
+      }
+
+      const creditCheck = await checkOutboundCreditRequirement(env, {
+        tenantId,
+        to: body.to ?? [],
+        cc: body.cc ?? [],
+        bcc: body.bcc ?? [],
+        sourceMessageId: body.sourceMessageId,
+        createdVia: "site:admin_send",
+      });
+      if (!creditCheck.hasSufficientCredits) {
+        return json({
+          error: `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
+        }, { status: 402 });
+      }
+
       return null;
     };
 
@@ -1187,6 +1217,7 @@ function renderHome(url: URL): string {
 <ul>
   <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
+  <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
   <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
   <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
@@ -1553,6 +1584,8 @@ function renderLimits(): string {
       <h2>What Is Limited By Default</h2>
       <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has both usable credits and an outbound policy that allows external sending.</p>
       <ul>
+        <li>Ordinary free-tier tenants can send up to <strong>10 outbound emails per rolling 24 hours</strong>.</li>
+        <li>Ordinary free-tier tenants can send up to <strong>1 outbound email per rolling 1 hour</strong>.</li>
         <li>Welcome email to arbitrary external operator inboxes should be treated as best-effort, not the primary access path.</li>
         <li>Public token reissue email to arbitrary external operator inboxes is not guaranteed while the tenant is still on the default constrained path.</li>
         <li>External-recipient sending is not considered unlocked until the tenant send policy reports external delivery as enabled.</li>
@@ -1582,7 +1615,7 @@ function renderLimits(): string {
     <section>
       <h2>States You Will See</h2>
       <ul>
-        <li><strong>Default path:</strong> billing is typically <code>free</code> and outbound policy is <code>internal_only</code>.</li>
+        <li><strong>Default path:</strong> billing is typically <code>free</code>, outbound policy is <code>internal_only</code>, and the ordinary-user send cap is <code>10/day</code> plus <code>1/hour</code> on rolling windows.</li>
         <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
         <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
         <li><strong>Restricted again:</strong> outbound policy can become <code>suspended</code> if abuse, payment, or deliverability controls require it.</li>

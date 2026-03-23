@@ -269,6 +269,9 @@ Current codes include:
 - `access_agent_denied`
 - `access_mailbox_denied`
 - `invalid_arguments`
+- `insufficient_credits`
+- `daily_quota_exceeded`
+- `hourly_quota_exceeded`
 - `resource_agent_not_found`
 - `resource_mailbox_not_found`
 - `resource_message_not_found`

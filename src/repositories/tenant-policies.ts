@@ -1,4 +1,5 @@
 import { execute, firstRow, requireRow } from "../lib/db";
+import { getEffectiveSendLimits } from "../lib/send-limits";
 import { nowIso } from "../lib/time";
 import type { Env, PricingTier, TenantOutboundStatus, TenantSendPolicyRecord } from "../types";
 
@@ -32,6 +33,7 @@ function parseJsonArray(value: string | null): string[] {
 }
 
 function mapTenantSendPolicyRow(row: TenantSendPolicyRow): TenantSendPolicyRecord {
+  const limits = getEffectiveSendLimits(row.pricing_tier);
   return {
     tenantId: row.tenant_id,
     pricingTier: row.pricing_tier,
@@ -39,6 +41,9 @@ function mapTenantSendPolicyRow(row: TenantSendPolicyRow): TenantSendPolicyRecor
     internalDomainAllowlist: parseJsonArray(row.internal_domain_allowlist_json),
     externalSendEnabled: Boolean(row.external_send_enabled),
     reviewRequired: Boolean(row.review_required),
+    effectiveDailySendLimit: limits.dailySendLimit,
+    effectiveHourlySendLimit: limits.hourlySendLimit,
+    limitWindowModel: limits.windowModel,
     updatedAt: row.updated_at,
   };
 }

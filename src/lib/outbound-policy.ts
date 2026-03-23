@@ -1,10 +1,16 @@
 import { getAgentPolicy } from "../repositories/agents";
+import { getTenantOutboundUsageWindowCounts } from "../repositories/mail";
 import { ensureTenantSendPolicy } from "../repositories/tenant-policies";
 import type { Env } from "../types";
 
 export interface OutboundPolicyDecision {
   ok: boolean;
-  code?: "access_mailbox_denied" | "external_send_not_enabled" | "recipient_domain_not_allowed";
+  code?:
+    | "access_mailbox_denied"
+    | "external_send_not_enabled"
+    | "recipient_domain_not_allowed"
+    | "daily_quota_exceeded"
+    | "hourly_quota_exceeded";
   message?: string;
   recipientDomains?: string[];
   externalDomains?: string[];
@@ -32,6 +38,10 @@ function collectRecipientDomains(input: { to: string[]; cc: string[]; bcc: strin
       .map((item) => normalizeDomain(item))
       .filter((item): item is string => Boolean(item))
   ));
+}
+
+function rollingWindowStart(hours: number): string {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 }
 
 export async function classifyOutboundRecipients(env: Env, input: {
@@ -99,6 +109,40 @@ export async function evaluateOutboundPolicy(env: Env, input: {
         ok: false,
         code: "recipient_domain_not_allowed",
         message: `Recipient domains are not allowed for this agent: ${disallowed.join(", ")}`,
+        recipientDomains,
+        externalDomains,
+      };
+    }
+  }
+
+  if (tenantPolicy.effectiveDailySendLimit !== null || tenantPolicy.effectiveHourlySendLimit !== null) {
+    const usage = await getTenantOutboundUsageWindowCounts(env, {
+      tenantId: input.tenantId,
+      sinceHour: rollingWindowStart(1),
+      sinceDay: rollingWindowStart(24),
+    });
+
+    if (
+      tenantPolicy.effectiveDailySendLimit !== null &&
+      usage.sentLastDay >= tenantPolicy.effectiveDailySendLimit
+    ) {
+      return {
+        ok: false,
+        code: "daily_quota_exceeded",
+        message: `Free-tier daily send limit reached. Ordinary users can send up to ${tenantPolicy.effectiveDailySendLimit} email${tenantPolicy.effectiveDailySendLimit === 1 ? "" : "s"} in a rolling 24-hour window.`,
+        recipientDomains,
+        externalDomains,
+      };
+    }
+
+    if (
+      tenantPolicy.effectiveHourlySendLimit !== null &&
+      usage.sentLastHour >= tenantPolicy.effectiveHourlySendLimit
+    ) {
+      return {
+        ok: false,
+        code: "hourly_quota_exceeded",
+        message: `Free-tier hourly send limit reached. Ordinary users can send up to ${tenantPolicy.effectiveHourlySendLimit} email${tenantPolicy.effectiveHourlySendLimit === 1 ? "" : "s"} in a rolling 1-hour window.`,
         recipientDomains,
         externalDomains,
       };
