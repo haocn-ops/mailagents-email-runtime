@@ -137,6 +137,8 @@ async function readDraftRecipientsForAdmin(env: Env, draftR2Key: string): Promis
 
 site.on("GET", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
 site.on("HEAD", "/", (_request, _env, _ctx, route) => html(layout("overview", "Mailagents", renderHome(route.url))));
+site.on("GET", "/limits", () => html(layout("limits", "Limits And Access", renderLimits())));
+site.on("HEAD", "/limits", () => html(layout("limits", "Limits And Access", renderLimits())));
 site.on("GET", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
 site.on("HEAD", "/privacy", () => html(layout("privacy", "Privacy Policy", renderPrivacy())));
 site.on("GET", "/terms", () => html(layout("terms", "Terms of Service", renderTerms())));
@@ -1104,6 +1106,7 @@ function layout(active: string, title: string, content: string): string {
     Mailagents provides transactional email infrastructure, mailbox orchestration, and operator controls for agent-native products.
     <nav class="footer-nav footer-nav-wrap" aria-label="Primary">
       <a class="${active === "overview" ? "active" : ""}" href="/">Overview</a>
+      <a class="${active === "limits" ? "active" : ""}" href="/limits">Limits</a>
       <a class="${active === "privacy" ? "active" : ""}" href="/privacy">Privacy</a>
       <a class="${active === "terms" ? "active" : ""}" href="/terms">Terms</a>
       <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
@@ -1185,6 +1188,7 @@ function renderHome(url: URL): string {
   <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
   <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
+  <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
 
 <h2>Intended Use</h2>
@@ -1523,11 +1527,84 @@ unsupported_use:
 <h2>Policy Pages</h2>
 
 <ul>
+  <li><a href="/limits">Limits And Access</a></li>
   <li><a href="/privacy">Privacy Policy</a></li>
   <li><a href="/terms">Terms of Service</a></li>
   <li><a href="/contact">Contact</a></li>
 </ul>
 </article>`;
+}
+
+function renderLimits(): string {
+  return `<section class="panel section legal">
+    <section>
+      <div class="eyebrow">Limits And Access</div>
+      <h2>What Is Available By Default</h2>
+      <p>Every signup returns a mailbox-scoped bearer token and an active mailbox. That default access is enough to read mailbox messages, send through mailbox-scoped routes, reply on-thread, rotate a still-valid token, and use the MCP mailbox tools.</p>
+      <ul>
+        <li>Signup API and inline <code>accessToken</code></li>
+        <li>Mailbox self routes such as <code>GET /v1/mailboxes/self</code> and <code>GET /v1/mailboxes/self/messages</code></li>
+        <li>High-level send and reply routes such as <code>POST /v1/messages/send</code> and <code>POST /v1/messages/{messageId}/reply</code></li>
+        <li>Authenticated token rotation with <code>POST /v1/auth/token/rotate</code></li>
+        <li>MCP mailbox tools such as <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code></li>
+      </ul>
+    </section>
+    <section>
+      <h2>What Is Limited By Default</h2>
+      <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has both usable credits and an outbound policy that allows external sending.</p>
+      <ul>
+        <li>Welcome email to arbitrary external operator inboxes should be treated as best-effort, not the primary access path.</li>
+        <li>Public token reissue email to arbitrary external operator inboxes is not guaranteed while the tenant is still on the default constrained path.</li>
+        <li>External-recipient sending is not considered unlocked until the tenant send policy reports external delivery as enabled.</li>
+        <li>Bulk marketing, purchased lists, cold outreach, and suppression bypass are never supported, even after an upgrade.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>How To Work Safely While Limited</h2>
+      <ul>
+        <li>Save the inline <code>accessToken</code> returned by signup and use mailbox-scoped routes immediately.</li>
+        <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
+        <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>How To Unlock External Delivery</h2>
+      <p>External delivery is gated by both billing state and send-policy state. The current unlock flow is:</p>
+      <ol>
+        <li>Keep using the default mailbox-scoped flow until the mailbox is active and the token is stored safely.</li>
+        <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity.</li>
+        <li>Request external-send enablement with <code>POST /v1/billing/upgrade-intent</code>.</li>
+        <li>Complete payment confirmation with <code>POST /v1/billing/payment/confirm</code>.</li>
+        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as enabled.</li>
+      </ol>
+      <p>If the active environment supports facilitator-backed settlement, a successful upgrade confirmation can move the tenant directly into external-enabled status. If the active environment is still running with manual settlement or review gates, Mailagents finalizes the confirmation before external sending is opened.</p>
+    </section>
+    <section>
+      <h2>States You Will See</h2>
+      <ul>
+        <li><strong>Default path:</strong> billing is typically <code>free</code> and outbound policy is <code>internal_only</code>.</li>
+        <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
+        <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
+        <li><strong>Restricted again:</strong> outbound policy can become <code>suspended</code> if abuse, payment, or deliverability controls require it.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Important Boundaries</h2>
+      <ul>
+        <li>Payment alone does not guarantee unlimited sending to arbitrary recipients.</li>
+        <li>External sending remains subject to abuse controls, suppression handling, bounce review, and provider constraints.</li>
+        <li>Do not treat a successful send to an internal or previously validated address as proof that all external recipient delivery is enabled.</li>
+      </ul>
+    </section>
+    <section>
+      <h2>Where To Go Next</h2>
+      <ul>
+        <li><a href="https://api.mailagents.net/v2/meta/runtime"><code>/v2/meta/runtime</code></a> for live runtime discovery</li>
+        <li><a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/limits-and-access.md">Limits And Access guide</a> for the longer technical walkthrough</li>
+        <li><a href="/contact">Contact</a> if you need help with a constrained tenant or an environment still using manual settlement</li>
+      </ul>
+    </section>
+  </section>`;
 }
 
 function renderPrivacy(): string {

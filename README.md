@@ -137,6 +137,7 @@ Recommended by persona:
 - product integrator: [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/openapi.yaml`](docs/openapi.yaml)
 - agent developer: [`docs/mcp-local.md`](docs/mcp-local.md), [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md), [`docs/runtime-metadata.md`](docs/runtime-metadata.md)
 - advanced operator: [`docs/deployment.md`](docs/deployment.md), [`docs/testing.md`](docs/testing.md), [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md)
+- users who need current limits and external-delivery unlock steps: [`docs/limits-and-access.md`](docs/limits-and-access.md)
 
 Recommended entry points:
 
@@ -148,6 +149,7 @@ Recommended entry points:
 - [`docs/archive/README.md`](docs/archive/README.md) for dated rollout and verification records
 - [`docs/runtime-metadata.md`](docs/runtime-metadata.md) and [`docs/runtime-compatibility.md`](docs/runtime-compatibility.md) for discovery and stable integration contracts
 - [`docs/agent-sdk-examples.md`](docs/agent-sdk-examples.md) and [`docs/agent-client-helper.md`](docs/agent-client-helper.md) for copyable integration examples and the TypeScript helper
+- [`docs/limits-and-access.md`](docs/limits-and-access.md) for the current default restrictions, unlock flow, and tenant send-policy states
 - [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) and [`docs/production-operator-bootstrap.md`](docs/production-operator-bootstrap.md) for production rollout and operator bootstrap
 
 ## Project Layout

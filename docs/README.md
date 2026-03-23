@@ -39,6 +39,7 @@ against the runtime:
 - [docs/ai-onboarding.md](./ai-onboarding.md) — runtime model, safety rules, and call sequence
 - [docs/ai-auth.md](./ai-auth.md) — bearer tokens, scopes, signup tokens, and rotation
 - [docs/ai-mail-workflows.md](./ai-mail-workflows.md) — mailbox read, send, reply, replay, and draft flows
+- [docs/limits-and-access.md](./limits-and-access.md) — current usage limits and how external delivery gets enabled
 - [docs/agent-sdk-examples.md](./agent-sdk-examples.md) — copyable HTTP and MCP examples
 - [docs/mcp-local.md](./mcp-local.md) — local MCP usage and tool examples
 
@@ -117,6 +118,9 @@ If you are trying to:
 - prepare a real x402 payment test
   - [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md)
   - [docs/x402-did-architecture-plan.md](./x402-did-architecture-plan.md)
+- understand current limits or unlock external delivery
+  - [docs/limits-and-access.md](./limits-and-access.md)
+  - [docs/openapi.yaml](./openapi.yaml)
 - bootstrap or repair production
   - [docs/production-rollout-checklist.md](./production-rollout-checklist.md)
   - [docs/production-operator-bootstrap.md](./production-operator-bootstrap.md)
