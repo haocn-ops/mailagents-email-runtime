@@ -11,8 +11,6 @@ AGENT_ID="${AGENT_ID:-agt_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 SUCCESS_TO_EMAIL="${SUCCESS_TO_EMAIL:-credit-success-$(date +%s)@example.com}"
 BLOCKED_TO_EMAIL="${BLOCKED_TO_EMAIL:-credit-blocked-$(date +%s)@example.com}"
-RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
-PAYMENT_SIGNATURE="${X402_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-credit-smoke-%s"}' "$RUN_ID" | base64 | tr -d '\n')}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -104,6 +102,23 @@ assert_status() {
   fi
 }
 
+exec_sql() {
+  local sql="$1"
+  wrangler d1 execute mailagents-local --local --command "$sql" >/dev/null
+}
+
+seed_available_credits() {
+  local credits="$1"
+  local timestamp
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  exec_sql "
+UPDATE tenant_billing_accounts
+SET available_credits = available_credits + $credits,
+    updated_at = '$timestamp'
+WHERE tenant_id = '$TENANT_ID';"
+}
+
 wait_for_job_status() {
   local outbound_job_id="$1"
   local expected_status="$2"
@@ -124,6 +139,7 @@ wait_for_job_status() {
 
 require_cmd curl
 require_cmd jq
+require_cmd wrangler
 
 trap cleanup EXIT
 
@@ -158,23 +174,16 @@ assert_status "200"
 STARTING_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
 STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 
-echo "Top up demo tenant credits..."
-capture_request "POST" "/v1/billing/topup" '{"credits":5}' \
-  "authorization: Bearer $TOKEN" \
-  "payment-signature: $PAYMENT_SIGNATURE"
-assert_status "202"
-TOPUP_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
+echo "Seeding demo tenant credits directly for reservation smoke..."
+seed_available_credits 5
 
-capture_request "POST" "/v1/billing/payment/confirm" "{
-  \"receiptId\": \"$TOPUP_RECEIPT_ID\",
-  \"settlementReference\": \"smoke-credit-topup-$TENANT_ID-$RUN_ID\"
-}" "authorization: Bearer $TOKEN" "x-admin-secret: $ADMIN_SECRET"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-TOPUP_AVAILABLE_CREDITS="$(jq -r '.account.availableCredits' "$LAST_BODY")"
-TOPUP_RESERVED_CREDITS="$(jq -r '.account.reservedCredits' "$LAST_BODY")"
+TOPUP_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
+TOPUP_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 jq -e --argjson start_available "$STARTING_AVAILABLE_CREDITS" --argjson start_reserved "$STARTING_RESERVED_CREDITS" '
-  .account.availableCredits == ($start_available + 5) and
-  .account.reservedCredits == $start_reserved
+  .availableCredits == ($start_available + 5) and
+  .reservedCredits == $start_reserved
 ' "$LAST_BODY" >/dev/null
 
 echo "Enabling external sending for the demo tenant..."
