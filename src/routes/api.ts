@@ -149,7 +149,7 @@ async function findPaymentReceiptReplay(
   env: Env,
   tenantId: string,
   paymentProofFingerprint: string,
-): Promise<Response | null> {
+): Promise<TypedPaymentReceiptRecord | Response | null> {
   const existingReceipt = await getTypedPaymentReceiptByProofFingerprint(env, paymentProofFingerprint);
   if (!existingReceipt) {
     return null;
@@ -159,9 +159,13 @@ async function findPaymentReceiptReplay(
     return badRequest("payment proof has already been submitted");
   }
 
+  return existingReceipt;
+}
+
+function paymentReceiptReplayResponse(receipt: TypedPaymentReceiptRecord): Response {
   return accepted({
-    receipt: existingReceipt,
-    verificationStatus: existingReceipt.status,
+    receipt,
+    verificationStatus: receipt.status,
     message: "Payment proof already captured. Reusing the existing receipt.",
   });
 }
@@ -698,9 +702,18 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   }
 
   const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
-  const replayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
-  if (replayResponse) {
-    return replayResponse;
+  const replayReceipt = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+  if (replayReceipt instanceof Response) {
+    return replayReceipt;
+  }
+  if (replayReceipt) {
+    if (getX402FacilitatorConfig(env) && (replayReceipt.status === "pending" || replayReceipt.status === "verified")) {
+      const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, replayReceipt);
+      if (autoSettlementResponse) {
+        return autoSettlementResponse;
+      }
+    }
+    return paymentReceiptReplayResponse(replayReceipt);
   }
 
   let receipt: TypedPaymentReceiptRecord;
@@ -723,9 +736,18 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
       }),
     });
   } catch (error) {
-    const retryReplayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
-    if (retryReplayResponse) {
-      return retryReplayResponse;
+    const retryReplayReceipt = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+    if (retryReplayReceipt instanceof Response) {
+      return retryReplayReceipt;
+    }
+    if (retryReplayReceipt) {
+      if (getX402FacilitatorConfig(env) && (retryReplayReceipt.status === "pending" || retryReplayReceipt.status === "verified")) {
+        const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, retryReplayReceipt);
+        if (autoSettlementResponse) {
+          return autoSettlementResponse;
+        }
+      }
+      return paymentReceiptReplayResponse(retryReplayReceipt);
     }
     throw error;
   }
@@ -788,9 +810,18 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   }
 
   const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
-  const replayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
-  if (replayResponse) {
-    return replayResponse;
+  const replayReceipt = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+  if (replayReceipt instanceof Response) {
+    return replayReceipt;
+  }
+  if (replayReceipt) {
+    if (getX402FacilitatorConfig(env) && (replayReceipt.status === "pending" || replayReceipt.status === "verified")) {
+      const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, replayReceipt);
+      if (autoSettlementResponse) {
+        return autoSettlementResponse;
+      }
+    }
+    return paymentReceiptReplayResponse(replayReceipt);
   }
 
   let receipt: TypedPaymentReceiptRecord;
@@ -813,9 +844,18 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
       }),
     });
   } catch (error) {
-    const retryReplayResponse = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
-    if (retryReplayResponse) {
-      return retryReplayResponse;
+    const retryReplayReceipt = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
+    if (retryReplayReceipt instanceof Response) {
+      return retryReplayReceipt;
+    }
+    if (retryReplayReceipt) {
+      if (getX402FacilitatorConfig(env) && (retryReplayReceipt.status === "pending" || retryReplayReceipt.status === "verified")) {
+        const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, retryReplayReceipt);
+        if (autoSettlementResponse) {
+          return autoSettlementResponse;
+        }
+      }
+      return paymentReceiptReplayResponse(retryReplayReceipt);
     }
     throw error;
   }
