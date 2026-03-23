@@ -72,6 +72,9 @@ Update [wrangler.toml](../wrangler.toml):
 - set `ADMIN_ROUTES_ENABLED` and `DEBUG_ROUTES_ENABLED` appropriately
 - set `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_EMAIL_DOMAIN`, and `CLOUDFLARE_EMAIL_WORKER`
   for environments that should expose contact inbox and alias-management features
+- optionally set `SELF_SERVE_REQUIRE_CONFIGURED_ROUTING = "false"` only in
+  non-production environments when signup should continue even if routing
+  automation cannot reconcile Cloudflare Email Routing in that environment
 - keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED` disabled unless that runtime is
   intended to automatically own and reconcile managed contact aliases
 - confirm the hourly cron trigger is enabled for idempotency cleanup

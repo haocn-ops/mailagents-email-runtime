@@ -134,7 +134,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   }
 
   const routing = await ensureSignupRouting(env);
-  if (routing.status === "failed") {
+  if (routing.status === "failed" && shouldRequireConfiguredSignupRouting(env)) {
     throw new SignupError(
       routing.error ?? "Self-serve signup is temporarily unavailable because inbound routing could not be configured.",
       503,
@@ -317,6 +317,11 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
 }
 
 function shouldRequireConfiguredSignupRouting(env: Env): boolean {
+  const explicit = env.SELF_SERVE_REQUIRE_CONFIGURED_ROUTING?.trim().toLowerCase();
+  if (explicit) {
+    return ["1", "true", "yes", "on"].includes(explicit);
+  }
+
   const domain = (env.CLOUDFLARE_EMAIL_DOMAIN ?? "").trim().toLowerCase();
   if (!domain) {
     return false;
