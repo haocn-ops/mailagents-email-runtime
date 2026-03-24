@@ -1,12 +1,32 @@
 import { badRequest, json } from "./http";
 import type { AccessTokenClaims, Env } from "../types";
 
+const PROTECTED_PUBLIC_HOSTS = new Set(["mailagents.net"]);
+
 function parseEnabledFlag(value: string | undefined, fallback = false): boolean {
   if (value === undefined) {
     return fallback;
   }
 
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function isProtectedPublicHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return PROTECTED_PUBLIC_HOSTS.has(normalized) || normalized.endsWith(".mailagents.net");
+}
+
+function allowFlagOnRequest(request: Request, enabledFlag: string | undefined, publicHostOverrideFlag: string | undefined): boolean {
+  if (!parseEnabledFlag(enabledFlag, false)) {
+    return false;
+  }
+
+  const hostname = new URL(request.url).hostname;
+  if (!isProtectedPublicHostname(hostname)) {
+    return true;
+  }
+
+  return parseEnabledFlag(publicHostOverrideFlag, false);
 }
 
 function toBase64Url(input: Uint8Array): string {
@@ -144,16 +164,24 @@ export function requireAdminSecret(request: Request, env: Env): Response | null 
   return null;
 }
 
-export function requireAdminRoutesEnabled(env: Env): Response | null {
-  if (!parseEnabledFlag(env.ADMIN_ROUTES_ENABLED, false)) {
+export function areAdminRoutesEnabled(request: Request, env: Env): boolean {
+  return allowFlagOnRequest(request, env.ADMIN_ROUTES_ENABLED, env.ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS);
+}
+
+export function areDebugRoutesEnabled(request: Request, env: Env): boolean {
+  return allowFlagOnRequest(request, env.DEBUG_ROUTES_ENABLED, env.DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS);
+}
+
+export function requireAdminRoutesEnabled(request: Request, env: Env): Response | null {
+  if (!areAdminRoutesEnabled(request, env)) {
     return json({ error: "Admin routes are disabled" }, { status: 404 });
   }
 
   return null;
 }
 
-export function requireDebugRoutesEnabled(env: Env): Response | null {
-  if (!parseEnabledFlag(env.DEBUG_ROUTES_ENABLED, false)) {
+export function requireDebugRoutesEnabled(request: Request, env: Env): Response | null {
+  if (!areDebugRoutesEnabled(request, env)) {
     return json({ error: "Debug routes are disabled" }, { status: 404 });
   }
 

@@ -38,6 +38,8 @@ wrangler secret put X402_PAY_TO --env ${ENVIRONMENT}
 # - dev: ADMIN_ROUTES_ENABLED=true, DEBUG_ROUTES_ENABLED=true
 # - staging: ADMIN_ROUTES_ENABLED=false, DEBUG_ROUTES_ENABLED=false
 # - production: ADMIN_ROUTES_ENABLED=false, DEBUG_ROUTES_ENABLED=false
+# - keep ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS=false and DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS=false
+#   unless a tightly controlled public-host bootstrap window explicitly needs them
 #
 # Runtime site/admin vars to confirm in wrangler.toml:
 # - OUTBOUND_PROVIDER
@@ -45,6 +47,8 @@ wrangler secret put X402_PAY_TO --env ${ENVIRONMENT}
 # - CLOUDFLARE_ZONE_ID
 # - CLOUDFLARE_EMAIL_DOMAIN
 # - CLOUDFLARE_EMAIL_WORKER
+# - ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS
+# - DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS
 # - X402_FACILITATOR_URL
 # - X402_FACILITATOR_VERIFY_PATH
 # - X402_FACILITATOR_SETTLE_PATH

@@ -1155,18 +1155,18 @@ router.on("GET", "/did/tenants/:tenantId/did.json", async (request, env, _ctx, r
   return json(buildDidWebDocument(new URL(request.url).origin, binding));
 });
 
-router.on("GET", "/v2/meta/runtime", async (_request, env) => {
-  return json(buildRuntimeMetadata(env));
+router.on("GET", "/v2/meta/runtime", async (request, env) => {
+  return json(buildRuntimeMetadata(request, env));
 });
-router.on("HEAD", "/v2/meta/runtime", async (_request, env) => {
-  return json(buildRuntimeMetadata(env));
+router.on("HEAD", "/v2/meta/runtime", async (request, env) => {
+  return json(buildRuntimeMetadata(request, env));
 });
 
-router.on("GET", "/v2/meta/compatibility", async (_request, env) => {
-  return json(buildCompatibilityContract(env));
+router.on("GET", "/v2/meta/compatibility", async (request, env) => {
+  return json(buildCompatibilityContract(request, env));
 });
-router.on("HEAD", "/v2/meta/compatibility", async (_request, env) => {
-  return json(buildCompatibilityContract(env));
+router.on("HEAD", "/v2/meta/compatibility", async (request, env) => {
+  return json(buildCompatibilityContract(request, env));
 });
 
 router.on("GET", "/v2/meta/compatibility/schema", async (_request, _env) => {
@@ -1437,7 +1437,7 @@ router.on("POST", "/v1/messages/send", async (request, env) => {
 });
 
 router.on("GET", "/v1/debug/agents/:agentId", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1455,7 +1455,7 @@ router.on("GET", "/v1/debug/agents/:agentId", async (request, env, _ctx, route) 
 });
 
 router.on("GET", "/v1/debug/mailboxes/:mailboxId", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1473,7 +1473,7 @@ router.on("GET", "/v1/debug/mailboxes/:mailboxId", async (request, env, _ctx, ro
 });
 
 router.on("GET", "/v1/debug/messages/:messageId", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1495,7 +1495,7 @@ router.on("GET", "/v1/debug/messages/:messageId", async (request, env, _ctx, rou
 });
 
 router.on("GET", "/v1/debug/drafts/:draftId", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1517,7 +1517,7 @@ router.on("GET", "/v1/debug/drafts/:draftId", async (request, env, _ctx, route) 
 });
 
 router.on("GET", "/v1/debug/outbound-jobs/:outboundJobId", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1535,7 +1535,7 @@ router.on("GET", "/v1/debug/outbound-jobs/:outboundJobId", async (request, env, 
 });
 
 router.on("GET", "/v1/debug/suppressions/:email", async (request, env, _ctx, route) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1553,7 +1553,7 @@ router.on("GET", "/v1/debug/suppressions/:email", async (request, env, _ctx, rou
 });
 
 router.on("POST", "/v1/debug/suppressions", async (request, env) => {
-  const routeError = requireDebugRoutesEnabled(env);
+  const routeError = requireDebugRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
@@ -1588,7 +1588,7 @@ router.on("POST", "/v1/debug/suppressions", async (request, env) => {
 });
 
 router.on("POST", "/v1/auth/tokens", async (request, env) => {
-  const routeError = requireAdminRoutesEnabled(env);
+  const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }

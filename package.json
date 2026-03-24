@@ -46,6 +46,8 @@
     "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh",
     "smoke:mcp:local:auto": "bash ./scripts/run_local_smoke_with_worker.sh ./scripts/mcp_smoke.sh",
     "smoke:production:readonly": "bash ./scripts/production_readonly_smoke.sh",
+    "diagnose:production:live": "bash ./scripts/production_live_drift_check.sh",
+    "verify:production:readonly": "bash ./scripts/production_postdeploy_verify.sh",
     "backfill:subjects:dev": "node ./scripts/backfill_message_subjects.mjs --env dev",
     "backfill:subjects:production": "node ./scripts/backfill_message_subjects.mjs --env production",
     "example:agent:discover": "node ./examples/discover_agent_capabilities.mjs",

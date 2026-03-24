@@ -20,6 +20,8 @@ agent integrations.
 
 - uses `x-admin-secret`, not bearer auth
 - is gated by `ADMIN_ROUTES_ENABLED`
+- requires `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS=true` in addition to
+  `ADMIN_ROUTES_ENABLED=true` when the request host is on `mailagents.net`
 - exposes high-trust operator and forensic capabilities
 - should not appear in default mailbox-agent workflow planning
 
@@ -56,6 +58,7 @@ including:
 Auth requirements:
 
 - `ADMIN_ROUTES_ENABLED=true`
+- `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS=true` as well when the request host is on `mailagents.net`
 - header: `x-admin-secret: ...`
 
 `initialize` returns the normal runtime metadata under `result.meta` plus an

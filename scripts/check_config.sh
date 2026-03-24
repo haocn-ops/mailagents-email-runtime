@@ -45,13 +45,17 @@ case "$TARGET_ENV" in
     check_no_placeholder "$WRANGLER_TOML" "REPLACE_WITH_STAGING_D1_DATABASE_ID" "wrangler.toml staging environment"
     check_no_placeholder "$WRANGLER_TOML" '^SES_FROM_DOMAIN = "staging\.mail\.example\.com"$' "wrangler.toml staging SES_FROM_DOMAIN"
     rg -n 'ADMIN_ROUTES_ENABLED = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "staging ADMIN_ROUTES_ENABLED should be false"
+    rg -n 'ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "staging ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS should be false"
     rg -n 'DEBUG_ROUTES_ENABLED = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "staging DEBUG_ROUTES_ENABLED should be false"
+    rg -n 'DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "staging DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS should be false"
     ;;
   production|prod)
     check_no_placeholder "$WRANGLER_TOML" "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID" "wrangler.toml production environment"
     check_no_placeholder "$WRANGLER_TOML" '^SES_FROM_DOMAIN = "mail\.example\.com"$' "wrangler.toml production SES_FROM_DOMAIN"
     rg -n 'ADMIN_ROUTES_ENABLED = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "production ADMIN_ROUTES_ENABLED should be false"
+    rg -n 'ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "production ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS should be false"
     rg -n 'DEBUG_ROUTES_ENABLED = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "production DEBUG_ROUTES_ENABLED should be false"
+    rg -n 'DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"' "$WRANGLER_TOML" >/dev/null 2>&1 || fail "production DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS should be false"
     ;;
   *)
     fail "unknown environment: $TARGET_ENV"

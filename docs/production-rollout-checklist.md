@@ -66,7 +66,9 @@ Recommended:
 
 - use production-unique values for all three app secrets
 - keep `ADMIN_ROUTES_ENABLED=false`
+- keep `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS=false`
 - keep `DEBUG_ROUTES_ENABLED=false`
+- keep `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS=false`
 
 ## 3. Repo Config Confirmation
 
@@ -121,7 +123,8 @@ After deploy:
 - verify `/v2/meta/compatibility`
 - verify MCP `initialize`
 - verify admin/debug routes are disabled
-- run `npm run smoke:production:readonly`
+- run `npm run verify:production:readonly`
+- if the combined verification is red, rerun `npm run diagnose:production:live` to separate live route-exposure drift from transient network failures
 - verify at least one real inbound mailbox path end to end
 - verify at least one controlled outbound reply path end to end using a verified recipient while SES remains sandbox-limited
 

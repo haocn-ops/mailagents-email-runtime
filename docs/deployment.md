@@ -70,6 +70,9 @@ Update [wrangler.toml](../wrangler.toml):
 - set `OUTBOUND_PROVIDER` to the active provider (`ses` or `resend`)
 - set `RESEND_API_BASE_URL` when using Resend (default `https://api.resend.com`)
 - set `ADMIN_ROUTES_ENABLED` and `DEBUG_ROUTES_ENABLED` appropriately
+- keep `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS` and `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS`
+  unset or `"false"` unless a controlled public-host bootstrap window
+  explicitly needs them
 - set `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_EMAIL_DOMAIN`, and `CLOUDFLARE_EMAIL_WORKER`
   for environments that should expose contact inbox and alias-management features
 - keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED` disabled unless that runtime is
@@ -97,12 +100,18 @@ Recommended route exposure:
 - `dev`
   - `ADMIN_ROUTES_ENABLED = "true"`
   - `DEBUG_ROUTES_ENABLED = "true"`
+  - keep `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"` unless `dev` is intentionally exposed on a `mailagents.net` host
+  - keep `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"` unless `dev` is intentionally exposed on a `mailagents.net` host
 - `staging`
   - `ADMIN_ROUTES_ENABLED = "false"`
   - `DEBUG_ROUTES_ENABLED = "false"`
+  - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
+  - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
 - `production`
   - `ADMIN_ROUTES_ENABLED = "false"`
   - `DEBUG_ROUTES_ENABLED = "false"`
+  - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
+  - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
   - `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED = "false"` until production should own alias routing
 
 Runtime/site note:

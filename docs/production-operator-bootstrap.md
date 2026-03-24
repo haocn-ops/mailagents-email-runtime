@@ -7,7 +7,8 @@ Use this only after:
 
 - production deploy is complete
 - [docs/production-rollout-checklist.md](../docs/production-rollout-checklist.md) is green
-- [scripts/production_readonly_smoke.sh](../scripts/production_readonly_smoke.sh) passes
+- `npm run verify:production:readonly` passes
+- if the combined verification is red, `npm run diagnose:production:live` explains whether live route exposure drifted from repo expectations
 
 ## Goal
 
@@ -67,6 +68,8 @@ SES production access has been granted for arbitrary outbound mail.
 ## Safety Notes
 
 - keep `ADMIN_ROUTES_ENABLED=false` in production outside the exact bootstrap window
+- keep `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS=false` in production outside the exact bootstrap window
+- keep `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS=false` in production outside the exact bootstrap window
 - prefer a short-lived operator token with one mailbox in `mailboxIds`
 - use a dedicated operator mailbox or verified test recipient for first outbound validation
 - continue using verified recipients for external outbound validation while SES remains sandbox-limited

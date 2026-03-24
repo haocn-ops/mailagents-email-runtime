@@ -5,6 +5,7 @@ import {
   ADMIN_MCP_PATH,
   ADMIN_WORKFLOW_PACKS,
 } from "./admin-mcp-contract";
+import { areAdminRoutesEnabled, areDebugRoutesEnabled } from "./auth";
 import type { Env } from "../types";
 
 export const RUNTIME_SERVER_INFO = {
@@ -593,12 +594,8 @@ function serializeToolCatalog() {
   }));
 }
 
-function isEnabled(value: string | undefined): boolean {
-  return value !== undefined && ["1", "true", "yes", "on"].includes(value.toLowerCase());
-}
-
-export function buildRuntimeMetadata(env: Env) {
-  const adminEnabled = isEnabled(env.ADMIN_ROUTES_ENABLED);
+export function buildRuntimeMetadata(request: Request, env: Env) {
+  const adminEnabled = areAdminRoutesEnabled(request, env);
   return {
     server: RUNTIME_SERVER_INFO,
     api: {
@@ -629,7 +626,7 @@ export function buildRuntimeMetadata(env: Env) {
     },
     routes: {
       adminEnabled,
-      debugEnabled: isEnabled(env.DEBUG_ROUTES_ENABLED),
+      debugEnabled: areDebugRoutesEnabled(request, env),
     },
     delivery: {
       outboundProvider: getOutboundProvider(env),
@@ -637,8 +634,8 @@ export function buildRuntimeMetadata(env: Env) {
   };
 }
 
-export function buildCompatibilityContract(env: Env) {
-  const runtime = buildRuntimeMetadata(env);
+export function buildCompatibilityContract(request: Request, env: Env) {
+  const runtime = buildRuntimeMetadata(request, env);
   const admin = runtime.routes.adminEnabled
     ? {
       mcp: {
