@@ -1,7 +1,8 @@
 {
   "snapshot": {
     "name": "mailagents-agent-capabilities",
-    "generatedFrom": "runtime metadata and compatibility contract",
+    "generatedFrom": "pinned example fixture derived from runtime metadata and compatibility contract",
+    "fixtureProfile": "admin-enabled example snapshot",
     "compatibilityVersion": "2026-03-17",
     "stability": "beta"
   },

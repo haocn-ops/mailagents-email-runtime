@@ -29,6 +29,9 @@ paths:
         Supports `initialize`, `tools/list`, and `tools/call`.
         Tool availability is filtered by bearer-token scopes.
         High-level mailbox tools now include `list_messages`, `send_email`, and `reply_to_message`.
+        Transport-level auth failures return JSON-RPC error bodies with HTTP
+        `401`, while tool-level authorization failures can still return `200`
+        with `result.isError = true`.
       requestBody:
         required: true
         content:
@@ -48,6 +51,12 @@ paths:
                   - $ref: '#/components/schemas/McpInitializeResponse'
                   - $ref: '#/components/schemas/McpToolsListResponse'
                   - $ref: '#/components/schemas/McpToolsCallResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcErrorResponse'
   /admin/mcp:
     post:
       tags: [Admin, MCP]
@@ -65,6 +74,9 @@ paths:
         This surface is separate from `/mcp`, is gated by `ADMIN_ROUTES_ENABLED`,
         and is intended for operator-only workflows such as token minting,
         send-policy review, suppression management, and forensic inspection.
+        Transport-level auth failures return JSON-RPC error bodies with HTTP
+        `401`, and disabled admin routes return JSON-RPC error bodies with HTTP
+        `404`.
       requestBody:
         required: true
         content:
@@ -84,6 +96,18 @@ paths:
                   - $ref: '#/components/schemas/McpInitializeResponse'
                   - $ref: '#/components/schemas/AdminMcpToolsListResponse'
                   - $ref: '#/components/schemas/McpToolsCallResponse'
+        '401':
+          description: Invalid or missing admin secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcErrorResponse'
+        '404':
+          description: Admin routes are disabled in the current environment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcErrorResponse'
   /public/signup:
     get:
       tags: [Auth]
@@ -2526,6 +2550,28 @@ components:
         result:
           type: object
           additionalProperties: true
+    JsonRpcErrorResponse:
+      type: object
+      required: [jsonrpc, id, error]
+      properties:
+        jsonrpc:
+          type: string
+        id:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+            data:
+              type: object
+              additionalProperties: true
     AgentPolicy:
       type: object
       required:

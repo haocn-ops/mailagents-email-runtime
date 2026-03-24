@@ -36,12 +36,11 @@ Verified environments:
 - shared `dev` has been verified end to end for agent registration, inbound mail, outbound SES send, and deployment-aware agent execution traces
 - production has been verified end to end for `support@mailagents.net`, including mailbox bootstrap, Cloudflare Email Routing, inbound task creation, version-aware execution traces, and a controlled outbound reply with a recorded `provider_message_id`
 
-Current SES limitation as of 2026-03-18:
+Current outbound provider note as of 2026-03-24:
 
-- treat external outbound SES delivery as sandbox-limited unless production access is explicitly reapproved in the active AWS account and region
-- internal mailbox routing and internal operator verification flows can still work within the current setup
-- for SES-backed outbound validation, only send to verified identities or verified test recipients
-- successful runtime delivery to `support@mailagents.net` or other verified inboxes does not imply unrestricted outbound sending to arbitrary external customer addresses
+- shared `dev` currently uses SES
+- production currently uses Resend
+- historical March 2026 SES rollout caveats still matter for SES-backed environments and remain documented in the rollout and archive notes
 
 Preferred migration path away from SES sandbox:
 
@@ -207,7 +206,7 @@ Template scripts:
 ## Deploy
 
 - See [`docs/deployment.md`](docs/deployment.md) for the shared deployment checklist and environment wiring details
-- See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) for the live production rollout record and SES caveats
+- See [`docs/production-rollout-checklist.md`](docs/production-rollout-checklist.md) for the live production rollout record and historical provider caveats
 - `wrangler.toml` contains a mix of intentionally public, non-secret runtime config and placeholders for not-yet-provisioned environments
 - keep secrets in Cloudflare Worker secrets or local `.dev.vars`, not in git
 - `npm run deploy:dev` updates the existing shared `dev` environment at `https://mailagents-dev.izhenghaocn.workers.dev`

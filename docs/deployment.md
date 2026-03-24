@@ -37,13 +37,15 @@ Important:
 - full remote smoke depends on the current remote `ADMIN_API_SECRET`,
   `API_SIGNING_SECRET`, and `WEBHOOK_SHARED_SECRET` matching the smoke inputs
 
-Current production status as of 2026-03-18:
+Current production status as of 2026-03-24:
 
 - `mailagents-production` Worker is now deployed
 - `env.production` in [wrangler.toml](../wrangler.toml)
   now points at the real production D1 database
-- production route is attached as `api.mailagents.net/*`
-- `api.mailagents.net` responds successfully
+- production routes are attached for `api.mailagents.net/*`,
+  `mailagents.net/*`, and `www.mailagents.net/*`
+- production currently uses `OUTBOUND_PROVIDER = "resend"`
+- `api.mailagents.net` and `mailagents.net` respond successfully
 - see [docs/production-rollout-checklist.md](../docs/production-rollout-checklist.md)
   for the rollout record, production sequence, and remaining operational caveats
 
@@ -111,7 +113,7 @@ Recommended route exposure:
   - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
   - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
 - `production`
-  - `ADMIN_ROUTES_ENABLED = "true"`
+  - `ADMIN_ROUTES_ENABLED = "false"`
   - `DEBUG_ROUTES_ENABLED = "false"`
   - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
   - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
@@ -141,6 +143,13 @@ Recommended:
 - verify the same domain used by mailbox `from` addresses for the shortest path
 - keep `RESEND_API_BASE_URL = "https://api.resend.com"` unless you intentionally proxy the API
 
+Current live note:
+
+- production currently uses Resend for outbound delivery
+- if you are reading older rollout notes that mention SES-specific outbound
+  behavior, treat those as historical context unless the target environment is
+  explicitly configured back to `OUTBOUND_PROVIDER = "ses"`
+
 ### AWS SES
 
 You need:
@@ -158,7 +167,7 @@ Recommended:
 - a dedicated subdomain for outbound mail
 - keep admin/debug APIs disabled outside local or tightly controlled environments
 
-Current SES restriction as of 2026-03-18:
+Current SES restriction as of 2026-03-18 for SES-backed environments:
 
 - assume the project is still operating under SES sandbox constraints for external-recipient planning
 - internal mailbox routing and internal operator inbox flows are not blocked by that SES production-access decision

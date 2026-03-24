@@ -42,7 +42,7 @@ Recommended usage:
 - use `/v2/meta/compatibility` for long-lived branching logic
 - when admin routes are enabled, read `admin.mcp` from `/v2/meta/compatibility` for stable operator-workflow discovery
 - use `/v2/meta/compatibility/schema` in CI or SDK validation
-- use `docs/agent-capabilities.json` as a fixed example fixture when live calls are not desirable
+- use `docs/agent-capabilities.json` as a fixed admin-enabled example fixture when live calls are not desirable
 
 ## 2. Obtain a Scoped Bearer Token
 
