@@ -1034,7 +1034,7 @@ router.on("POST", ADMIN_MCP_PATH, async (request, env) => {
     return jsonRpcError(rpc.id ?? null, -32600, "Invalid Request");
   }
 
-  const routeError = requireAdminRoutesEnabled(env);
+  const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return await adminJsonRpcError(rpc.id ?? null, routeError, "Admin routes are disabled");
   }
@@ -1049,7 +1049,7 @@ router.on("POST", ADMIN_MCP_PATH, async (request, env) => {
   }
 
   if (rpc.method === "initialize") {
-    const runtime = buildRuntimeMetadata(env);
+    const runtime = buildRuntimeMetadata(request, env);
     return jsonRpcResult(rpc.id ?? null, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       serverInfo: RUNTIME_SERVER_INFO,

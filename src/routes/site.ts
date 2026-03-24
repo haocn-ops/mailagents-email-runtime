@@ -163,7 +163,7 @@ site.on("HEAD", "/favicon.ico", () => text(FAVICON_SVG, "image/svg+xml"));
 site.on("GET", "/signup", () => redirect("/"));
 site.on("HEAD", "/signup", () => redirect("/"));
 site.on("GET", "/admin", (_request, env, _ctx, route) => {
-  const routeError = requireAdminRoutesEnabled(env);
+  const routeError = requireAdminRoutesEnabled(_request, env);
   if (routeError) {
     return routeError;
   }
@@ -171,7 +171,7 @@ site.on("GET", "/admin", (_request, env, _ctx, route) => {
   return html(layout("admin", "Admin Dashboard", renderAdmin(route.url)));
 });
 site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
-  const routeError = requireAdminRoutesEnabled(env);
+  const routeError = requireAdminRoutesEnabled(_request, env);
   if (routeError) {
     return routeError;
   }
@@ -184,7 +184,7 @@ site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
     return accessError;
   }
 
-  return json(buildRuntimeMetadata(env));
+  return json(buildRuntimeMetadata(request, env));
 });
 
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
@@ -905,7 +905,7 @@ export async function handleSiteRequest(request: Request, env: Env, ctx: Executi
 }
 
 function requireSiteAdminAccess(request: Request, env: Env): Response | null {
-  const routeError = requireAdminRoutesEnabled(env);
+  const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }

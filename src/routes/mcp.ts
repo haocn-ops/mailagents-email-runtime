@@ -2087,7 +2087,7 @@ router.on("POST", "/mcp", async (request, env) => {
   }
 
   if (rpc.method === "initialize") {
-    const runtime = buildRuntimeMetadata(env);
+    const runtime = buildRuntimeMetadata(request, env);
     return jsonRpcResult(rpc.id ?? null, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       serverInfo: RUNTIME_SERVER_INFO,
