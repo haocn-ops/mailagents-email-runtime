@@ -95,8 +95,9 @@ Do not send when:
 - there is evidence of a prior successful send that might make the action a
   duplicate
 
-If a draft includes reply headers or attachments, expect the runtime to use SES
-raw MIME send rather than the simpler SES payload.
+If a draft includes reply headers or attachments, expect the runtime to switch
+to the richer provider-specific send path rather than the simplest payload
+shape. For SES-backed environments that usually means raw MIME send.
 
 ## 8. Replay Decisions
 

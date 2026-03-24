@@ -155,7 +155,7 @@ Recommended entry points:
 
 - [`docs/llms-agent-guide.md`](docs/llms-agent-guide.md) for the fastest agent-integrator overview
 - [`docs/local-dev.md`](docs/local-dev.md) for local setup, migrations, seeds, and demo API calls
-- [`docs/deployment.md`](docs/deployment.md) for Cloudflare and SES environment wiring
+- [`docs/deployment.md`](docs/deployment.md) for Cloudflare and outbound-provider environment wiring
 - [`docs/testing.md`](docs/testing.md) for smoke flows, fixtures, and current coverage guidance
 - [`docs/x402-real-payment-checklist.md`](docs/x402-real-payment-checklist.md) for the first real Base Sepolia + USDC payment run
 - [`docs/archive/README.md`](docs/archive/README.md) for dated rollout and verification records
@@ -175,7 +175,7 @@ Key repo locations:
 - `fixtures/ses/delivery.json` and `fixtures/ses/bounce.json` — webhook fixtures
 - `packages/mailagents-agent-client/` — publishable client package skeleton
 - `docs/openapi.yaml` — HTTP API draft
-- `docs/agent-capabilities.json` — pinned capability snapshot
+- `docs/agent-capabilities.json` — pinned example capability fixture
 - `llms-full.txt` — combined LLM-facing runtime guidance
 - `wrangler.toml` — local and remote environment bindings
 

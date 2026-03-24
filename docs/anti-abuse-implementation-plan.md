@@ -15,12 +15,12 @@ Mailagents runtime codebase.
 
 The current runtime already has useful building blocks:
 
-- agent policy storage in [migrations/0001_initial.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/migrations/0001_initial.sql)
-- policy read/write logic in [src/repositories/agents.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/repositories/agents.ts)
-- agent policy API in [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
-- signup defaults in [src/lib/provisioning/signup.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/lib/provisioning/signup.ts)
-- high-level send entry points in [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
-- high-level mailbox MCP send/reply entry points in [src/routes/mcp.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/mcp.ts)
+- agent policy storage in [migrations/0001_initial.sql](../migrations/0001_initial.sql)
+- policy read/write logic in [src/repositories/agents.ts](../src/repositories/agents.ts)
+- agent policy API in [src/routes/api.ts](../src/routes/api.ts)
+- signup defaults in [src/lib/provisioning/signup.ts](../src/lib/provisioning/signup.ts)
+- high-level send entry points in [src/routes/api.ts](../src/routes/api.ts)
+- high-level mailbox MCP send/reply entry points in [src/routes/mcp.ts](../src/routes/mcp.ts)
 
 Existing `agent_policies` fields already include:
 
@@ -43,14 +43,14 @@ Goal:
 
 Changes:
 
-1. change signup defaults in [src/lib/provisioning/signup.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/lib/provisioning/signup.ts)
+1. change signup defaults in [src/lib/provisioning/signup.ts](../src/lib/provisioning/signup.ts)
    - set `allowedRecipientDomains` to `["mailagents.net"]`
    - keep `allowedTools` unchanged unless product intentionally wants to disable
      send for some plans
 
 2. add a central outbound policy validator
    - create a new helper such as
-     [src/lib/outbound-policy.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/lib/outbound-policy.ts)
+     [src/lib/outbound-policy.ts](../src/lib/outbound-policy.ts)
    - validate:
      - normalized recipient domains from `to`, `cc`, `bcc`
      - policy allowlist
@@ -60,10 +60,10 @@ Changes:
      - `external_send_not_enabled`
 
 3. call the validator from all send paths
-   - HTTP self send in [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
-   - HTTP message send/reply paths in [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
+   - HTTP self send in [src/routes/api.ts](../src/routes/api.ts)
+   - HTTP message send/reply paths in [src/routes/api.ts](../src/routes/api.ts)
    - MCP `send_email` and `reply_to_message` in
-     [src/routes/mcp.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/mcp.ts)
+     [src/routes/mcp.ts](../src/routes/mcp.ts)
    - shared helpers `createAndSendDraft` and `createAndSendDraftForMcp` are the
      best choke points
 
@@ -87,7 +87,7 @@ table. To model free versus paid safely, add a tenant-level send policy table.
 Recommended schema:
 
 - new migration:
-  [migrations/0006_tenant_send_policies.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/migrations/0006_tenant_send_policies.sql)
+  [migrations/0006_tenant_send_policies.sql](../migrations/0006_tenant_send_policies.sql)
 
 Suggested table:
 
@@ -120,16 +120,16 @@ Why tenant-level instead of agent-only:
 Repository changes:
 
 - add repository functions in
-  [src/repositories/agents.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/repositories/agents.ts)
+  [src/repositories/agents.ts](../src/repositories/agents.ts)
   or a new repo file such as
-  [src/repositories/tenant-policies.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/repositories/tenant-policies.ts)
+  [src/repositories/tenant-policies.ts](../src/repositories/tenant-policies.ts)
   - `getTenantSendPolicy`
   - `upsertTenantSendPolicy`
 
 API changes:
 
 - add tenant send policy admin routes in
-  [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
+  [src/routes/api.ts](../src/routes/api.ts)
   - `GET /v1/tenants/:tenantId/send-policy`
   - `PUT /v1/tenants/:tenantId/send-policy`
 
@@ -146,7 +146,7 @@ stronger if we also enforce rate and volume caps.
 Recommended schema:
 
 - new migration:
-  [migrations/0007_outbound_usage_counters.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/migrations/0007_outbound_usage_counters.sql)
+  [migrations/0007_outbound_usage_counters.sql](../migrations/0007_outbound_usage_counters.sql)
 
 Suggested tables:
 
@@ -190,9 +190,9 @@ Enforcement:
 
 Best integration points:
 
-- [src/routes/api.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/api.ts)
+- [src/routes/api.ts](../src/routes/api.ts)
   `createAndSendDraft`
-- [src/routes/mcp.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/routes/mcp.ts)
+- [src/routes/mcp.ts](../src/routes/mcp.ts)
   `createAndSendDraftForMcp`
 
 Recommended first limits:
@@ -212,7 +212,7 @@ Recommended first limits:
 Recommended schema:
 
 - new migration:
-  [migrations/0008_risk_events.sql](/Users/zh/Documents/codeX/mailagents_cloudflare2/migrations/0008_risk_events.sql)
+  [migrations/0008_risk_events.sql](../migrations/0008_risk_events.sql)
 
 Suggested table:
 
@@ -254,9 +254,9 @@ connect those signals back into account posture.
 Touch points:
 
 - suppression handling in
-  [src/repositories/mail.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/repositories/mail.ts)
+  [src/repositories/mail.ts](../src/repositories/mail.ts)
 - SES event ingestion routes already documented in
-  [docs/openapi.yaml](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/openapi.yaml)
+  [docs/openapi.yaml](./openapi.yaml)
 
 Recommended behavior:
 

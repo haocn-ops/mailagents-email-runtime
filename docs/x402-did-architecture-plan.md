@@ -10,7 +10,7 @@ asynchronous email delivery pipeline.
 - use `did:web` for tenant identity and key discovery
 - keep outbound email authorization under Mailagents policy control
 - support the anti-abuse rollout documented in
-  [docs/anti-abuse-implementation-plan.md](/Users/zh/Documents/codeX/mailagents_cloudflare2/docs/anti-abuse-implementation-plan.md)
+  [docs/anti-abuse-implementation-plan.md](./anti-abuse-implementation-plan.md)
 - avoid charging per outbound message at the transport layer in the first phase
 
 ## Recommended Product Model
@@ -339,7 +339,7 @@ Recommended first phase:
 
 - keep the Mailagents billing API structured so it can support either mode
 - use a small adapter layer such as
-  [src/lib/payments/x402.ts](/Users/zh/Documents/codeX/mailagents_cloudflare2/src/lib/payments/x402.ts)
+  [src/lib/payments/x402.ts](../src/lib/payments/x402.ts)
 
 ## Recommended Runtime Flow
 

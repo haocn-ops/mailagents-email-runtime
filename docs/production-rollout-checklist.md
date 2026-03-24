@@ -6,6 +6,13 @@ for future production changes to the live environment and custom domain.
 For dated runtime verification evidence and March 2026 record IDs, see
 [docs/archive/2026-03-runtime-verification.md](./archive/2026-03-runtime-verification.md).
 
+Important current-state note:
+
+- the verified SES-specific steps below are preserved as historical rollout
+  evidence from the March 2026 bootstrap window
+- the current production config in [wrangler.toml](../wrangler.toml) now uses
+  `OUTBOUND_PROVIDER = "resend"`
+
 Resolved during this rollout:
 
 - production D1 database created: `mailagents-production`
@@ -13,12 +20,14 @@ Resolved during this rollout:
 - production queues created
 - `mailagents-production` Worker deployed
 - production secrets installed
-- production route attached: `api.mailagents.net/*`
+- production routes attached for `api.mailagents.net/*`, `mailagents.net/*`,
+  and `www.mailagents.net/*`
 - production read-only smoke passed
 - production support mailbox routing verified through a real inbound message
-- production support outbound reply verified through SES with a stored `provider_message_id`
+- production support outbound reply historically verified through SES with a
+  stored `provider_message_id`
 
-Current SES access limitation:
+Current SES access limitation for SES-backed environments:
 
 - treat external outbound delivery as sandbox-limited until SES production access is explicitly approved for the live AWS account and region
 - production verification so far proves internal mailbox handling and verified-recipient validation paths
@@ -36,8 +45,9 @@ Provide or create:
 Observed current state:
 
 - root site `mailagents.net` is live
-- production Worker route is attached to `api.mailagents.net/*`
-- `api.mailagents.net` responds successfully
+- production Worker routes are attached to `api.mailagents.net/*`,
+  `mailagents.net/*`, and `www.mailagents.net/*`
+- `api.mailagents.net` and `mailagents.net` respond successfully
 - `support@mailagents.net` now has a Cloudflare Email Routing rule targeting `mailagents-production`
 - public contact aliases (`hello`, `security`, `privacy`, `dmarc`) are intended to be owned by `mailagents-production`
 

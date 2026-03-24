@@ -7,7 +7,7 @@ understand how to work with the Mailagents Email Runtime safely.
 
 Mailagents is an email-first AI agent runtime built on Cloudflare Workers,
 Cloudflare Email Routing, Cloudflare Queues, Cloudflare R2, Cloudflare D1, and
-Amazon SES.
+a configurable outbound provider such as Amazon SES or Resend.
 
 Core runtime flow:
 
@@ -16,7 +16,7 @@ Core runtime flow:
 3. a queue job normalizes the email, finds or creates a thread, stores
    attachments, and creates a task
 4. an assigned agent can read mailbox messages and tasks through mailbox-scoped APIs or MCP tools
-5. high-level send and reply calls create drafts internally and enqueue outbound delivery through SES
+5. high-level send and reply calls create drafts internally and enqueue outbound delivery through the configured provider
 6. delivery or bounce events are mapped back to the message
 
 ## Core Objects
@@ -28,7 +28,7 @@ Core runtime flow:
 - `thread`: conversation grouping for messages
 - `task`: work item created from inbound mail
 - `draft`: proposed outbound email payload before send
-- `outbound_job`: async send lifecycle record for SES delivery
+- `outbound_job`: async send lifecycle record for provider delivery
 
 ## Authentication Model
 

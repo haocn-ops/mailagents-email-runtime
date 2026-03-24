@@ -72,16 +72,16 @@ Three discovery layers are available:
 3. compatibility schema
    Path: `/v2/meta/compatibility/schema`
    Use for CI validation, SDK fixtures, and contract snapshot testing.
-4. agent capabilities snapshot
+4. agent capabilities example fixture
    Path: `docs/agent-capabilities.json`
-   Use as a repository-pinned example response and integration fixture.
+   Use as a repository-pinned admin-enabled example response and integration fixture.
 
 Current shared `dev` URLs:
 
 - [runtime metadata](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/runtime)
 - [compatibility contract](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility)
 - [compatibility schema](https://mailagents-dev.izhenghaocn.workers.dev/v2/meta/compatibility/schema)
-- [agent capabilities snapshot](../docs/agent-capabilities.json)
+- [agent capabilities example fixture](../docs/agent-capabilities.json)
 
 ## Authentication
 

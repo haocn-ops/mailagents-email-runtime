@@ -182,7 +182,8 @@ Important send rules:
 
 - sending is asynchronous
 - accepted does not mean delivered
-- if reply headers or attachments are present, the runtime uses SES raw MIME send
+- if reply headers or attachments are present, the runtime uses the richer
+  provider-specific send path; in SES-backed environments that usually means raw MIME send
 - when send state is uncertain, inspect job and message state before trying again
 
 ## Replay a Message

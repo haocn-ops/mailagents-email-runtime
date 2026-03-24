@@ -51,7 +51,7 @@ Use this set when you are running the project locally or changing runtime code:
 - [docs/testing.md](./testing.md) — local and remote smoke flows
 - [docs/x402-real-payment-checklist.md](./x402-real-payment-checklist.md) — first real Base Sepolia + USDC payment run
 - [docs/dev-bootstrap.md](./dev-bootstrap.md) — first real `dev` environment bootstrap
-- [docs/deployment.md](./deployment.md) — Cloudflare and SES environment wiring
+- [docs/deployment.md](./deployment.md) — Cloudflare and outbound-provider environment wiring
 - [docs/mvp-spec.md](./mvp-spec.md) — product and architecture baseline
 
 ## Runtime Discovery And Contracts
@@ -65,7 +65,7 @@ Use these docs when you need stable machine-readable integration points:
 - [docs/admin-workflow-packs.json](./admin-workflow-packs.json) — machine-readable admin workflow pack data
 - [docs/runtime-compatibility.schema.json](./runtime-compatibility.schema.json) — compatibility schema
 - [docs/openapi.yaml](./openapi.yaml) — HTTP API surface
-- [docs/agent-capabilities.json](./agent-capabilities.json) — pinned capability snapshot
+- [docs/agent-capabilities.json](./agent-capabilities.json) — pinned admin-enabled example fixture
 - [docs/mcp-tools.schema.json](./mcp-tools.schema.json) — MCP tool metadata schema
 
 ## AI Agent Behavior And Safety
