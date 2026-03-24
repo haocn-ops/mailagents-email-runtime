@@ -75,6 +75,9 @@ Update [wrangler.toml](../wrangler.toml):
   explicitly needs them
 - set `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_EMAIL_DOMAIN`, and `CLOUDFLARE_EMAIL_WORKER`
   for environments that should expose contact inbox and alias-management features
+- optionally set `SELF_SERVE_REQUIRE_CONFIGURED_ROUTING = "false"` only in
+  non-production environments when signup should continue even if routing
+  automation cannot reconcile Cloudflare Email Routing in that environment
 - keep `CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED` disabled unless that runtime is
   intended to automatically own and reconcile managed contact aliases
 - confirm the hourly cron trigger is enabled for idempotency cleanup
@@ -108,7 +111,7 @@ Recommended route exposure:
   - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
   - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
 - `production`
-  - `ADMIN_ROUTES_ENABLED = "false"`
+  - `ADMIN_ROUTES_ENABLED = "true"`
   - `DEBUG_ROUTES_ENABLED = "false"`
   - `ADMIN_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
   - `DEBUG_ROUTES_ALLOW_PUBLIC_HOSTS = "false"`
@@ -117,7 +120,7 @@ Recommended route exposure:
 Runtime/site note:
 
 - the main runtime Worker (`src/index.ts`) now includes the public site and admin dashboard routes
-- the standalone profile in [wrangler.site.toml](../wrangler.site.toml) can still be used for a separate site Worker
+- production routing should attach `api.mailagents.net`, `mailagents.net`, and `www.mailagents.net` to the same Worker
 - do not enable automatic alias bootstrap in more than one live Worker for the same domain unless you intentionally want them to compete for ownership
 
 ## Outbound Provider Setup

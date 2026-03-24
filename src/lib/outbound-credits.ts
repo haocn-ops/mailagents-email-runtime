@@ -13,6 +13,15 @@ export interface OutboundCreditRequirement {
 }
 
 const DEFAULT_OUTBOUND_CREDITS_PER_SEND = 1;
+const CREDIT_EXEMPT_CREATED_VIA = new Set([
+  "system:signup_welcome",
+  "system:token_reissue_operator_email",
+  "system:token_reissue_self_mailbox",
+]);
+
+function isCreditExemptCreatedVia(createdVia: string | undefined): boolean {
+  return CREDIT_EXEMPT_CREATED_VIA.has(createdVia?.toLowerCase() ?? "");
+}
 
 export function classifyOutboundUsageEntryType(input: {
   sourceMessageId?: string;
@@ -50,6 +59,16 @@ export async function getOutboundCreditRequirement(env: Env, input: {
   });
 
   const entryType = classifyOutboundUsageEntryType(input);
+  if (isCreditExemptCreatedVia(input.createdVia)) {
+    return {
+      entryType,
+      creditsRequired: 0,
+      requiresCredits: false,
+      recipientDomains: classification.recipientDomains,
+      externalDomains: classification.externalDomains,
+    };
+  }
+
   return {
     entryType,
     creditsRequired: getOutboundCreditsRequired(entryType),

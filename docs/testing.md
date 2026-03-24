@@ -17,6 +17,15 @@ The smoke flow exercises:
 - persisted outbound job assertion
 - SES webhook ingestion
 
+The signup + site smoke flow exercises:
+
+- merged runtime worker serving the public site at `/`
+- merged runtime worker serving the admin dashboard at `/admin`
+- reserved self-serve aliases rejected at `POST /public/signup`
+- successful self-serve signup against the local `.test` domain when routing bootstrap is intentionally skipped
+- mailbox-scoped access token usability after signup
+- welcome-email delivery without creating billing reservations or debit ledger entries
+
 The MCP smoke flow exercises:
 
 - MCP `initialize`
@@ -232,11 +241,64 @@ Notes:
   small mock delay so the script can assert the intermediate
   `availableCredits/reservedCredits` reservation state before capture. The flag is
   currently reused as the generic outbound mock toggle even when `OUTBOUND_PROVIDER=resend`.
-- The script tops up the seeded demo tenant, enables external sending, verifies
-  one successful external send captures a reserved credit, then verifies one
-  suppressed-recipient send releases its reservation without adding a debit
-  ledger entry.
+- The script seeds additional local credits into the demo tenant, enables
+  external sending, verifies one successful external send captures a reserved
+  credit, then verifies one suppressed-recipient send releases its reservation
+  without adding a debit ledger entry.
 - Run `npm run d1:seed:local` first if the demo tenant or mailbox is missing.
+
+## Run the signup + site smoke script
+
+This smoke focuses on the merged-worker setup and self-serve signup regressions.
+
+```bash
+chmod +x scripts/signup_site_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+SES_MOCK_SEND=true \
+SES_MOCK_SEND_DELAY_MS=1500 \
+./scripts/signup_site_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:signup:local
+npm run smoke:signup:local:auto
+```
+
+Notes:
+
+- `smoke:signup:local:auto` starts the local worker with mocked outbound delivery
+  so the welcome email can complete deterministically.
+- The script verifies the same local worker serves `/`, `/admin`, and
+  `/public/signup`, which is the intended post-merge deployment model.
+- It rejects the reserved `hello` alias, creates a new self-serve mailbox, then
+  verifies the welcome send does not create any billing reservation or ledger debit.
+
+## Run the outbound uncertain-resolution smoke script
+
+This smoke focuses on the admin manual-resolution path for uncertain sends.
+
+```bash
+chmod +x scripts/outbound_uncertain_resolution_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+./scripts/outbound_uncertain_resolution_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:uncertain:local
+npm run smoke:uncertain:local:auto
+```
+
+Notes:
+
+- The script covers `not_sent`, `sent`, and delivery-evidence conflict handling.
+- It now also verifies that a missing draft payload causes manual resolution to
+  fail closed instead of settling or releasing billing with empty recipients.
+- For local setup, it seeds credits directly into the demo tenant so the smoke
+  stays focused on uncertain-send resolution rather than the separate x402 topup flow.
 
 ## Run Against Deployed `dev`
 

@@ -9,7 +9,6 @@ TENANT_ID="${TENANT_ID:-t_demo}"
 AGENT_ID="${AGENT_ID:-agt_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
-TOPUP_PAYMENT_SIGNATURE="${X402_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"manual-resolution-%s"}' "$RUN_ID" | base64 | tr -d '\n')}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -212,23 +211,20 @@ assert_status "200"
 STARTING_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
 STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 
-echo "Top up demo tenant credits..."
-capture_request "POST" "/v1/billing/topup" '{"credits":5}' \
-  "authorization: Bearer $TOKEN" \
-  "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
-assert_status "202"
-TOPUP_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
+echo "Seeding demo tenant credits directly for uncertain-send smoke..."
+exec_sql "
+UPDATE tenant_billing_accounts
+SET available_credits = available_credits + 5,
+    updated_at = '$(date -u +"%Y-%m-%dT%H:%M:%SZ")'
+WHERE tenant_id = '$TENANT_ID';"
 
-capture_request "POST" "/v1/billing/payment/confirm" "{
-  \"receiptId\": \"$TOPUP_RECEIPT_ID\",
-  \"settlementReference\": \"smoke-uncertain-topup-$TENANT_ID-$RUN_ID\"
-}" "authorization: Bearer $TOKEN" "x-admin-secret: $ADMIN_SECRET"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-TOPUP_AVAILABLE_CREDITS="$(jq -r '.account.availableCredits' "$LAST_BODY")"
-TOPUP_RESERVED_CREDITS="$(jq -r '.account.reservedCredits' "$LAST_BODY")"
+TOPUP_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
+TOPUP_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 jq -e --argjson start_available "$STARTING_AVAILABLE_CREDITS" --argjson start_reserved "$STARTING_RESERVED_CREDITS" '
-  .account.availableCredits == ($start_available + 5) and
-  .account.reservedCredits == $start_reserved
+  .availableCredits == ($start_available + 5) and
+  .reservedCredits == $start_reserved
 ' "$LAST_BODY" >/dev/null
 
 echo "Enabling external sending for the demo tenant..."
@@ -350,9 +346,41 @@ jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reser
   .reservedCredits == $topup_reserved
 ' "$LAST_BODY" >/dev/null
 
+echo "Creating uncertain job with a missing draft payload to verify manual resolution fails closed..."
+RECIPIENT_MISSING="uncertain-missing-$RUN_ID@example.com"
+SUBJECT_MISSING="Uncertain manual resolution missing payload"
+create_manual_resolution_draft "$RECIPIENT_MISSING" "$SUBJECT_MISSING"
+MISSING_DRAFT_ID="$(jq -r '.id' "$LAST_BODY")"
+MISSING_DRAFT_R2_KEY="$(jq -r '.draftR2Key' "$LAST_BODY")"
+MISSING_MESSAGE_ID="msg_uncertain_missing_${RUN_ID}"
+MISSING_JOB_ID="obj_uncertain_missing_${RUN_ID}"
+MISSING_R2_KEY="drafts/missing-payload/${MISSING_DRAFT_ID}.json"
+seed_uncertain_job "$MISSING_DRAFT_ID" "$MISSING_DRAFT_R2_KEY" "$RECIPIENT_MISSING" "$SUBJECT_MISSING" "$MISSING_MESSAGE_ID" "$MISSING_JOB_ID"
+
+exec_sql "
+BEGIN TRANSACTION;
+UPDATE drafts
+SET draft_r2_key = '$MISSING_R2_KEY'
+WHERE id = '$MISSING_DRAFT_ID';
+UPDATE outbound_jobs
+SET draft_r2_key = '$MISSING_R2_KEY'
+WHERE id = '$MISSING_JOB_ID';
+COMMIT;"
+
+capture_request "POST" "/admin/api/outbound-jobs/$MISSING_JOB_ID/manual-resolution" '{
+  "resolution": "sent"
+}' "x-admin-secret: $ADMIN_SECRET"
+assert_status "502"
+jq -e '.error == "Draft payload not found"' "$LAST_BODY" >/dev/null
+
+capture_request "GET" "/v1/debug/outbound-jobs/$MISSING_JOB_ID" "" "x-admin-secret: $ADMIN_SECRET"
+assert_status "200"
+jq -e '.status == "failed" and .lastError == "send_attempt_uncertain_manual_review_required"' "$LAST_BODY" >/dev/null
+
 echo "Outbound uncertain manual resolution smoke flow completed."
 echo "Tenant ID: $TENANT_ID"
 echo "Mailbox ID: $MAILBOX_ID"
 echo "Released uncertain job: $NOT_SENT_JOB_ID"
 echo "Settled uncertain job: $SENT_JOB_ID"
 echo "Evidence uncertain job: $EVIDENCE_JOB_ID"
+echo "Missing-payload uncertain job: $MISSING_JOB_ID"

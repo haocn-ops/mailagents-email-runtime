@@ -42,6 +42,9 @@ export async function ensureManagedContactAliasMailbox(env: Env, address: string
     if (!existing) {
       throw error;
     }
+    if (existing.tenant_id !== CONTACT_ALIAS_TENANT_ID) {
+      throw new Error(`Managed contact alias ${address} is already owned by tenant ${existing.tenant_id}`);
+    }
 
     return {
       id: existing.id,
