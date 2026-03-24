@@ -437,7 +437,7 @@ function jsonRpcResult(id: JsonRpcId, result: unknown): Response {
   });
 }
 
-function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown): Response {
+function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown, status = 400): Response {
   return json({
     jsonrpc: "2.0",
     id,
@@ -446,7 +446,7 @@ function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unkno
       message,
       data,
     },
-  }, { status: 400 });
+  }, { status });
 }
 
 function toToolContent(payload: unknown) {
@@ -539,15 +539,31 @@ async function adminJsonRpcError(id: JsonRpcId, response: Response, fallbackMess
     status: response.status,
     errorCode,
     error: payload?.error ?? fallbackMessage,
-  });
+  }, response.status);
 }
 
-function withAdminMcpCors(response: Response): Response {
+function sameOriginAdminCorsOrigin(request: Request): string | null {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    return null;
+  }
+
+  return origin === new URL(request.url).origin ? origin : null;
+}
+
+function withAdminMcpCors(request: Request, response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
   headers.set("access-control-allow-methods", ADMIN_MCP_ALLOW_METHODS);
   headers.set("access-control-allow-headers", ADMIN_MCP_ALLOW_HEADERS);
   headers.set("access-control-max-age", "86400");
+
+  const allowedOrigin = sameOriginAdminCorsOrigin(request);
+  if (allowedOrigin) {
+    headers.set("access-control-allow-origin", allowedOrigin);
+    headers.set("vary", "origin");
+  } else {
+    headers.delete("access-control-allow-origin");
+  }
 
   return new Response(response.body, {
     status: response.status,
@@ -1124,9 +1140,9 @@ router.on("POST", ADMIN_MCP_PATH, async (request, env) => {
   return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
 });
 
-router.on("OPTIONS", ADMIN_MCP_PATH, async () => withAdminMcpCors(new Response(null, { status: 204 })));
+router.on("OPTIONS", ADMIN_MCP_PATH, async (request) => withAdminMcpCors(request, new Response(null, { status: 204 })));
 
 export async function handleAdminMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   const response = await router.handle(request, env, ctx);
-  return response ? withAdminMcpCors(response) : null;
+  return response ? withAdminMcpCors(request, response) : null;
 }

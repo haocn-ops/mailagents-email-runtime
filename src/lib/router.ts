@@ -40,4 +40,20 @@ export class Router<Env> {
 
     return null;
   }
+
+  allowedMethodsForPath(pathname: string): string[] {
+    const methods = new Set<string>();
+
+    for (const route of this.routes) {
+      const match = route.pattern.exec({ pathname });
+      if (!match) {
+        continue;
+      }
+
+      methods.add(route.method);
+    }
+
+    const orderedMethods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+    return orderedMethods.filter((method) => methods.has(method));
+  }
 }

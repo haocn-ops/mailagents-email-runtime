@@ -588,7 +588,7 @@ function jsonRpcResult(id: JsonRpcId, result: unknown): Response {
   });
 }
 
-function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown): Response {
+function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown, status = 400): Response {
   return json({
     jsonrpc: "2.0",
     id,
@@ -597,7 +597,7 @@ function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unkno
       message,
       data,
     },
-  }, { status: 400 });
+  }, { status });
 }
 
 function toToolContent(payload: unknown) {
@@ -2105,7 +2105,7 @@ router.on("POST", "/mcp", async (request, env) => {
       return jsonRpcError(rpc.id ?? null, -32001, "Unauthorized", {
         errorCode: "auth_unauthorized",
         details: authPayload,
-      });
+      }, auth.status);
     }
 
     return jsonRpcResult(rpc.id ?? null, {

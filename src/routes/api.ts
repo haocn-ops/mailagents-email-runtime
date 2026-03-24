@@ -171,8 +171,8 @@ function paymentReceiptReplayResponse(receipt: TypedPaymentReceiptRecord): Respo
 }
 const PUBLIC_SELF_SERVE_ALLOW_METHODS = "POST, OPTIONS";
 const PUBLIC_SELF_SERVE_ALLOW_HEADERS = "content-type";
-const AUTHENTICATED_API_ALLOW_METHODS = "GET, HEAD, POST, OPTIONS";
-const AUTHENTICATED_API_ALLOW_HEADERS = "authorization, content-type, x-admin-secret";
+const AUTHENTICATED_API_DEFAULT_ALLOW_HEADERS = "authorization, content-type, x-admin-secret";
+const AUTHENTICATED_API_METADATA_ALLOW_HEADERS = "content-type";
 
 class RouteRequestError extends Error {
   readonly status: number;
@@ -2899,33 +2899,33 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return publicSelfServePreflight();
     }
     if (isAuthenticatedApiCorsRequest(request)) {
-      return authenticatedApiPreflight();
+      return authenticatedApiPreflight(request) ?? withAuthenticatedApiCors(request, notFound());
     }
   }
 
   try {
     const response = await router.handle(request, env, ctx);
     if (!response) {
-      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(notFound()) : null;
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, notFound()) : null;
     }
     if (isPublicSelfServeRequest(request)) {
       return withPublicSelfServeCors(response);
     }
-    return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
+    return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
       const response = badRequest(error.message);
       if (isPublicSelfServeRequest(request)) {
         return withPublicSelfServeCors(response);
       }
-      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
     }
     if (error instanceof RouteRequestError) {
       const response = json({ error: error.message }, { status: error.status });
       if (isPublicSelfServeRequest(request)) {
         return withPublicSelfServeCors(response);
       }
-      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(response) : response;
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
     }
 
     throw error;
@@ -3779,17 +3779,39 @@ function publicSelfServePreflight(): Response {
   });
 }
 
-function authenticatedApiCorsHeaders(): Headers {
+function authenticatedApiAllowHeadersForPath(pathname: string): string {
+  return pathname.startsWith("/v2/meta/")
+    ? AUTHENTICATED_API_METADATA_ALLOW_HEADERS
+    : AUTHENTICATED_API_DEFAULT_ALLOW_HEADERS;
+}
+
+function authenticatedApiAllowMethodsForRequest(request: Request): string[] {
+  const pathname = new URL(request.url).pathname;
+  const allowedMethods = router.allowedMethodsForPath(pathname).filter((method) => method !== "OPTIONS");
+  if (allowedMethods.length === 0) {
+    return [];
+  }
+
+  return [...allowedMethods, "OPTIONS"];
+}
+
+function authenticatedApiCorsHeaders(request: Request): Headers | null {
+  const pathname = new URL(request.url).pathname;
+  const allowedMethods = authenticatedApiAllowMethodsForRequest(request);
+  if (allowedMethods.length === 0) {
+    return null;
+  }
+
   return new Headers({
     "access-control-allow-origin": "*",
-    "access-control-allow-methods": AUTHENTICATED_API_ALLOW_METHODS,
-    "access-control-allow-headers": AUTHENTICATED_API_ALLOW_HEADERS,
+    "access-control-allow-methods": allowedMethods.join(", "),
+    "access-control-allow-headers": authenticatedApiAllowHeadersForPath(pathname),
     "access-control-max-age": "86400",
   });
 }
 
-function withAuthenticatedApiCors(response: Response): Response {
-  const headers = authenticatedApiCorsHeaders();
+function withAuthenticatedApiCors(request: Request, response: Response): Response {
+  const headers = authenticatedApiCorsHeaders(request) ?? new Headers();
   for (const [key, value] of response.headers.entries()) {
     headers.set(key, value);
   }
@@ -3801,10 +3823,15 @@ function withAuthenticatedApiCors(response: Response): Response {
   });
 }
 
-function authenticatedApiPreflight(): Response {
+function authenticatedApiPreflight(request: Request): Response | null {
+  const headers = authenticatedApiCorsHeaders(request);
+  if (!headers) {
+    return null;
+  }
+
   return new Response(null, {
     status: 204,
-    headers: authenticatedApiCorsHeaders(),
+    headers,
   });
 }
 
