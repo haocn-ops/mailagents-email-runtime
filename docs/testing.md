@@ -28,6 +28,9 @@ The signup + site smoke flow exercises:
 
 The MCP smoke flow exercises:
 
+- MCP transport `OPTIONS` and placeholder `GET` handling
+- MCP JSON-RPC notifications, batches, parse errors, and empty-batch rejection
+- MCP same-origin `Origin` enforcement for browser-style callers
 - MCP `initialize`
 - MCP `tools/list`
 - `/v2/meta/compatibility`
@@ -88,12 +91,17 @@ Or:
 
 ```bash
 npm run smoke:mcp:local
+npm run smoke:mcp:dev
 ```
 
 The MCP smoke script expects the demo seed to include:
 
 - seeded inbound message `msg_demo_inbound`
 - seeded thread `thr_demo_inbound`
+
+When targeting deployed `dev`, the script defaults to the admin secret in
+`.dev.vars`. Override `ADMIN_API_SECRET_FOR_SMOKE` explicitly if the deployed
+environment uses a different admin secret.
 
 ## Run the billing + DID smoke script
 

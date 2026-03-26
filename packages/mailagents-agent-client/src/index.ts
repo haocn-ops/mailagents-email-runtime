@@ -1594,6 +1594,7 @@ export class MailagentsAgentClient {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: {
+        accept: "application/json, text/event-stream",
         "content-type": "application/json",
         ...extraHeaders,
       },

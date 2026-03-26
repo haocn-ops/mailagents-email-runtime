@@ -4,8 +4,17 @@ import {
   enforceTenantAccess,
   requireAuth,
 } from "../lib/auth";
-import { accepted, badRequest, json } from "../lib/http";
+import { badRequest } from "../lib/http";
 import { createId } from "../lib/ids";
+import {
+  type JsonRpcRequest,
+  jsonRpcError,
+  jsonRpcResult,
+  handleMcpTransportGet,
+  handleMcpTransportOptions,
+  handleMcpTransportPost,
+  toToolContent,
+} from "../lib/mcp-transport";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import {
@@ -47,18 +56,10 @@ import {
 } from "../repositories/mail";
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
-type JsonRpcId = string | number | null;
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
-const MCP_ALLOW_METHODS = "POST, OPTIONS";
-const MCP_ALLOW_HEADERS = "authorization, content-type";
-
-interface JsonRpcRequest {
-  jsonrpc?: string;
-  id?: JsonRpcId;
-  method?: string;
-  params?: unknown;
-}
+const MCP_ALLOW_METHODS = "GET, POST, OPTIONS";
+const MCP_ALLOW_HEADERS = "accept, authorization, content-type, mcp-protocol-version, mcp-session-id";
 
 interface ToolDescriptor {
   name: string;
@@ -580,38 +581,6 @@ const TOOL_DEFINITIONS: ToolDescriptor[] = [
   },
 ];
 
-function jsonRpcResult(id: JsonRpcId, result: unknown): Response {
-  return json({
-    jsonrpc: "2.0",
-    id,
-    result,
-  });
-}
-
-function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown): Response {
-  return json({
-    jsonrpc: "2.0",
-    id,
-    error: {
-      code,
-      message,
-      data,
-    },
-  }, { status: 400 });
-}
-
-function toToolContent(payload: unknown) {
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(payload, null, 2),
-      },
-    ],
-    structuredContent: payload,
-  };
-}
-
 function getToolByName(name: string): ToolDescriptor | undefined {
   return TOOL_DEFINITIONS.find((tool) => tool.name === name);
 }
@@ -736,20 +705,6 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
       details,
     },
   };
-}
-
-function withMcpCors(response: Response): Response {
-  const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-methods", MCP_ALLOW_METHODS);
-  headers.set("access-control-allow-headers", MCP_ALLOW_HEADERS);
-  headers.set("access-control-max-age", "86400");
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
 }
 
 async function validateBindingResources(
@@ -2071,115 +2026,116 @@ async function resolveReplayAgentTarget(
 }
 
 router.on("POST", "/mcp", async (request, env) => {
-  let rpc: JsonRpcRequest;
-  try {
-    rpc = await request.json<JsonRpcRequest>();
-  } catch {
-    return jsonRpcError(null, -32700, "Parse error");
-  }
+  return await handleMcpTransportPost(request, {
+    allowMethods: MCP_ALLOW_METHODS,
+    allowHeaders: MCP_ALLOW_HEADERS,
+  }, async (rpc) => {
+    if (rpc.method === "notifications/initialized") {
+      return null;
+    }
 
-  if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
-    return jsonRpcError(rpc.id ?? null, -32600, "Invalid Request");
-  }
-
-  if (rpc.method === "notifications/initialized") {
-    return accepted({ ok: true });
-  }
-
-  if (rpc.method === "initialize") {
-    const runtime = buildRuntimeMetadata(request, env);
-    return jsonRpcResult(rpc.id ?? null, {
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      serverInfo: RUNTIME_SERVER_INFO,
-      capabilities: {
-        tools: {},
-      },
-      meta: runtime,
-    });
-  }
-
-  if (rpc.method === "tools/list") {
-    const auth = await requireAuth(request, env, []);
-    if (auth instanceof Response) {
-      const authPayload = await auth.clone().json().catch(() => ({ error: "Unauthorized" }));
-      return jsonRpcError(rpc.id ?? null, -32001, "Unauthorized", {
-        errorCode: "auth_unauthorized",
-        details: authPayload,
+    if (rpc.method === "initialize") {
+      const runtime = buildRuntimeMetadata(request, env);
+      return jsonRpcResult(rpc.id ?? null, {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        serverInfo: RUNTIME_SERVER_INFO,
+        capabilities: {
+          tools: {},
+        },
+        meta: runtime,
       });
     }
 
-    return jsonRpcResult(rpc.id ?? null, {
-      tools: filterToolsForClaims(auth).map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: {
-          riskLevel: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.riskLevel ?? "read",
-          sideEffecting: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sideEffecting ?? false,
-          humanReviewRequired: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.humanReviewRequired ?? false,
-          composite: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.composite),
-          supportsPartialAuthorization: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.supportsPartialAuthorization),
-          sendAdditionalScopes: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sendAdditionalScopes ?? [],
-          category: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.category ?? "mail_read",
-          recommendedForMailboxAgents: Boolean(
-            RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.recommendedForMailboxAgents
-          ),
-        },
-      })),
-    });
-  }
-
-  if (rpc.method === "tools/call") {
-    const params: Record<string, unknown> | Error = (() => {
-      try {
-        return asObject(rpc.params);
-      } catch (error) {
-        return error instanceof Error ? error : new Error("Invalid params");
-      }
-    })();
-
-    if (params instanceof Error) {
-      return jsonRpcError(rpc.id ?? null, -32602, params.message);
-    }
-
-    const toolName = params.name;
-    if (toolName === undefined) {
-      return jsonRpcError(rpc.id ?? null, -32602, "Missing required parameter: name");
-    }
-    if (typeof toolName !== "string" || !toolName.trim()) {
-      return jsonRpcError(rpc.id ?? null, -32602, "name must be a non-empty string");
-    }
-    if (!getToolByName(toolName)) {
-      return jsonRpcError(rpc.id ?? null, -32602, "Unknown tool");
-    }
-
-    try {
-      const result = await callTool(request, env, toolName, asObject(params.arguments ?? {}));
-      return jsonRpcResult(rpc.id ?? null, toToolContent(result));
-    } catch (error) {
-      if (error instanceof McpToolError) {
-        return jsonRpcResult(rpc.id ?? null, {
-          isError: true,
-          ...toToolContent(toolErrorPayload(error.errorCode, error.message, error.data)),
+    if (rpc.method === "tools/list") {
+      const auth = await requireAuth(request, env, []);
+      if (auth instanceof Response) {
+        const authPayload = await auth.clone().json().catch(() => ({ error: "Unauthorized" }));
+        return jsonRpcError(rpc.id ?? null, -32001, "Unauthorized", {
+          errorCode: "auth_unauthorized",
+          details: authPayload,
         });
       }
 
       return jsonRpcResult(rpc.id ?? null, {
-        isError: true,
-        ...toToolContent(toolErrorPayload(
-          "tool_internal_error",
-          error instanceof Error ? error.message : "Tool call failed"
-        )),
+        tools: filterToolsForClaims(auth).map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          annotations: {
+            riskLevel: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.riskLevel ?? "read",
+            sideEffecting: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sideEffecting ?? false,
+            humanReviewRequired: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.humanReviewRequired ?? false,
+            composite: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.composite),
+            supportsPartialAuthorization: Boolean(RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.supportsPartialAuthorization),
+            sendAdditionalScopes: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.sendAdditionalScopes ?? [],
+            category: RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.category ?? "mail_read",
+            recommendedForMailboxAgents: Boolean(
+              RUNTIME_TOOL_CATALOG.find((item) => item.name === tool.name)?.recommendedForMailboxAgents
+            ),
+          },
+        })),
       });
     }
-  }
 
-  return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
+    if (rpc.method === "tools/call") {
+      const params: Record<string, unknown> | Error = (() => {
+        try {
+          return asObject(rpc.params);
+        } catch (error) {
+          return error instanceof Error ? error : new Error("Invalid params");
+        }
+      })();
+
+      if (params instanceof Error) {
+        return jsonRpcError(rpc.id ?? null, -32602, params.message);
+      }
+
+      const toolName = params.name;
+      if (toolName === undefined) {
+        return jsonRpcError(rpc.id ?? null, -32602, "Missing required parameter: name");
+      }
+      if (typeof toolName !== "string" || !toolName.trim()) {
+        return jsonRpcError(rpc.id ?? null, -32602, "name must be a non-empty string");
+      }
+      if (!getToolByName(toolName)) {
+        return jsonRpcError(rpc.id ?? null, -32602, "Unknown tool");
+      }
+
+      try {
+        const result = await callTool(request, env, toolName, asObject(params.arguments ?? {}));
+        return jsonRpcResult(rpc.id ?? null, toToolContent(result));
+      } catch (error) {
+        if (error instanceof McpToolError) {
+          return jsonRpcResult(rpc.id ?? null, {
+            isError: true,
+            ...toToolContent(toolErrorPayload(error.errorCode, error.message, error.data)),
+          });
+        }
+
+        return jsonRpcResult(rpc.id ?? null, {
+          isError: true,
+          ...toToolContent(toolErrorPayload(
+            "tool_internal_error",
+            error instanceof Error ? error.message : "Tool call failed"
+          )),
+        });
+      }
+    }
+
+    return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
+  });
 });
 
-router.on("OPTIONS", "/mcp", async () => withMcpCors(new Response(null, { status: 204 })));
+router.on("GET", "/mcp", async (request) => handleMcpTransportGet(request, {
+  allowMethods: MCP_ALLOW_METHODS,
+  allowHeaders: MCP_ALLOW_HEADERS,
+}));
+
+router.on("OPTIONS", "/mcp", async (request) => handleMcpTransportOptions(request, {
+  allowMethods: MCP_ALLOW_METHODS,
+  allowHeaders: MCP_ALLOW_HEADERS,
+}));
 
 export async function handleMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  const response = await router.handle(request, env, ctx);
-  return response ? withMcpCors(response) : null;
+  return await router.handle(request, env, ctx);
 }

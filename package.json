@@ -47,6 +47,7 @@
     "smoke:uncertain:local:auto": "bash ./scripts/run_local_smoke_with_worker.sh ./scripts/outbound_uncertain_resolution_smoke.sh",
     "smoke:mcp:local": "bash ./scripts/mcp_smoke.sh",
     "smoke:mcp:local:auto": "bash ./scripts/run_local_smoke_with_worker.sh ./scripts/mcp_smoke.sh",
+    "smoke:mcp:dev": "BASE_URL=https://mailagents-dev.izhenghaocn.workers.dev bash ./scripts/mcp_smoke.sh",
     "smoke:production:readonly": "bash ./scripts/production_readonly_smoke.sh",
     "diagnose:production:live": "bash ./scripts/production_live_drift_check.sh",
     "verify:production:readonly": "bash ./scripts/production_postdeploy_verify.sh",
