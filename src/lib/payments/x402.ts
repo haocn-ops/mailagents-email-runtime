@@ -10,6 +10,7 @@ const DEFAULT_X402_NETWORK_ID = "eip155:84532";
 const DEFAULT_X402_ASSET = "usdc";
 const DEFAULT_X402_PRICE_PER_CREDIT_USD = 0.01;
 const DEFAULT_X402_UPGRADE_PRICE_USD = 10;
+const DEFAULT_X402_UPGRADE_INCLUDED_CREDITS = 10000;
 const DEFAULT_X402_TIMEOUT_SECONDS = 300;
 const BASE_SEPOLIA_USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
@@ -70,6 +71,7 @@ export interface X402UpgradeQuote {
   asset: string;
   assetSymbol: string;
   targetPricingTier: string;
+  includedCredits: number;
   amountUsd: string;
   amountAtomic: string;
   description: string;
@@ -96,6 +98,19 @@ function parsePositiveNumber(value: string | undefined): number | undefined {
   }
 
   const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return undefined;
   }
@@ -195,6 +210,7 @@ export function getX402Defaults(env: {
   X402_PAY_TO?: string;
   X402_PRICE_PER_CREDIT_USD?: string;
   X402_UPGRADE_PRICE_USD?: string;
+  X402_UPGRADE_INCLUDED_CREDITS?: string;
 }) {
   return {
     scheme: env.X402_DEFAULT_SCHEME?.trim() || DEFAULT_X402_SCHEME,
@@ -203,6 +219,7 @@ export function getX402Defaults(env: {
     payTo: env.X402_PAY_TO?.trim() || undefined,
     pricePerCreditUsd: parsePositiveNumber(env.X402_PRICE_PER_CREDIT_USD) ?? DEFAULT_X402_PRICE_PER_CREDIT_USD,
     upgradePriceUsd: parsePositiveNumber(env.X402_UPGRADE_PRICE_USD) ?? DEFAULT_X402_UPGRADE_PRICE_USD,
+    upgradeIncludedCredits: parsePositiveInteger(env.X402_UPGRADE_INCLUDED_CREDITS) ?? DEFAULT_X402_UPGRADE_INCLUDED_CREDITS,
   };
 }
 
@@ -274,6 +291,7 @@ export function buildX402UpgradeQuote(env: {
   X402_PAY_TO?: string;
   X402_PRICE_PER_CREDIT_USD?: string;
   X402_UPGRADE_PRICE_USD?: string;
+  X402_UPGRADE_INCLUDED_CREDITS?: string;
 }, input: {
   targetPricingTier: string;
   tenantId: string;
@@ -287,7 +305,7 @@ export function buildX402UpgradeQuote(env: {
   });
   const amountUsdFormatted = formatUsd(defaults.upgradePriceUsd);
   const amountAtomic = usdToAtomicSixDecimals(defaults.upgradePriceUsd);
-  const description = `Upgrade tenant ${input.tenantId} to ${input.targetPricingTier}`;
+  const description = `Upgrade tenant ${input.tenantId} to ${input.targetPricingTier} and grant ${defaults.upgradeIncludedCredits} Mailagents credits`;
   const resource = {
     url: `${input.apiBaseUrl}/v1/billing/upgrade-intent`,
     description,
@@ -306,6 +324,7 @@ export function buildX402UpgradeQuote(env: {
       tenantId: input.tenantId,
       tenantDid: input.tenantDid,
       targetPricingTier: input.targetPricingTier,
+      includedCredits: defaults.upgradeIncludedCredits,
       quotedAt: nowIso(),
     },
   });
@@ -316,6 +335,7 @@ export function buildX402UpgradeQuote(env: {
     asset: assetDefaults.asset,
     assetSymbol: assetDefaults.assetSymbol,
     targetPricingTier: input.targetPricingTier,
+    includedCredits: defaults.upgradeIncludedCredits,
     amountUsd: amountUsdFormatted,
     amountAtomic,
     description,

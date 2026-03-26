@@ -5,6 +5,7 @@ import {
   type OutboundUsageLedgerMetadata,
   type TopupSettlementLedgerMetadata,
   type TypedCreditLedgerEntryRecord,
+  type UpgradeCreditGrantLedgerMetadata,
 } from "../lib/payments/ledger-metadata";
 import {
   parseTypedPaymentReceipt,
@@ -694,6 +695,41 @@ export async function appendTopupSettlementLedgerEntry(env: Env, input: {
     : await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId ?? "");
   if (!entry) {
     throw new Error("Failed to append typed topup settlement ledger entry");
+  }
+  return entry;
+}
+
+export async function appendUpgradeCreditGrantLedgerEntry(env: Env, input: {
+  tenantId: string;
+  creditsDelta: number;
+  reason: string;
+  paymentReceiptId?: string;
+  referenceId?: string;
+  metadata: UpgradeCreditGrantLedgerMetadata;
+}): Promise<TypedCreditLedgerEntryRecord> {
+  const id = createId("led");
+  const createdAt = nowIso();
+  await execute(env.D1_DB.prepare(
+    `INSERT OR IGNORE INTO tenant_credit_ledger (
+       id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+       reference_id, metadata_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    "adjustment",
+    input.creditsDelta,
+    input.reason,
+    input.paymentReceiptId ?? null,
+    input.referenceId ?? null,
+    JSON.stringify(input.metadata),
+    createdAt,
+  ));
+  const entry = input.paymentReceiptId
+    ? await getTypedCreditLedgerEntryByPaymentReceiptId(env, input.tenantId, input.paymentReceiptId)
+    : await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId ?? "");
+  if (!entry) {
+    throw new Error("Failed to append typed upgrade credit grant ledger entry");
   }
   return entry;
 }

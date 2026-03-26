@@ -180,7 +180,7 @@ function extractFilename(contentDisposition?: string, contentType?: string): str
   return contentType?.match(/name="?([^";]+)"?/i)?.[1];
 }
 
-function normalizeSubject(subject?: string): string {
+export function normalizeSubject(subject?: string): string {
   return (subject ?? "")
     .replace(/^(re|fwd|fw):\s*/gi, "")
     .trim()

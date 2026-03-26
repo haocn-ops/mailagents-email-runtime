@@ -105,6 +105,68 @@ exec_sql() {
   wrangler d1 execute mailagents-local --local --command "$sql" >/dev/null
 }
 
+reset_demo_outbound_state() {
+  exec_sql "
+BEGIN TRANSACTION;
+DELETE FROM delivery_events
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM outbound_jobs
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM drafts
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM messages
+WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound';
+DELETE FROM threads
+WHERE tenant_id = '$TENANT_ID' AND id != 'thr_demo_inbound';
+DELETE FROM tenant_credit_ledger
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM tenant_payment_receipts
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM tenant_billing_accounts
+WHERE tenant_id = '$TENANT_ID';
+COMMIT;"
+}
+
+seed_available_credits() {
+  local credits="$1"
+  local timestamp
+  local ledger_id
+  local reference_id
+  local metadata_json
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  ledger_id="led_smoke_${TENANT_ID}_$(date +%s)_$RANDOM"
+  reference_id="smoke-credit-topup-${TENANT_ID}-$(date +%s)-$RANDOM"
+  metadata_json="$(jq -cn --argjson credits "$credits" '{
+    entryType: "topup",
+    receiptType: "topup",
+    confirmationMode: "manual_admin",
+    creditsRequested: $credits
+  }')"
+
+  exec_sql "
+BEGIN TRANSACTION;
+UPDATE tenant_billing_accounts
+SET available_credits = available_credits + $credits,
+    updated_at = '$timestamp'
+WHERE tenant_id = '$TENANT_ID';
+INSERT INTO tenant_credit_ledger (
+  id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+  reference_id, metadata_json, created_at
+) VALUES (
+  '$ledger_id', '$TENANT_ID', 'topup', $credits, 'smoke_credit_topup', NULL,
+  '$reference_id', '$metadata_json', '$timestamp'
+);
+COMMIT;"
+}
+
 seed_uncertain_job() {
   local draft_id="$1"
   local draft_r2_key="$2"
@@ -205,6 +267,9 @@ assert_status "200"
 MAILBOX_ADDRESS="$(jq -r '.address' "$LAST_BODY")"
 jq -e --arg mailbox "$MAILBOX_ID" '.id == $mailbox and .status == "active"' "$LAST_BODY" >/dev/null
 
+echo "Resetting demo tenant outbound and billing state..."
+reset_demo_outbound_state
+
 echo "Capturing starting billing balance..."
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
@@ -212,11 +277,7 @@ STARTING_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
 STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 
 echo "Seeding demo tenant credits directly for uncertain-send smoke..."
-exec_sql "
-UPDATE tenant_billing_accounts
-SET available_credits = available_credits + 5,
-    updated_at = '$(date -u +"%Y-%m-%dT%H:%M:%SZ")'
-WHERE tenant_id = '$TENANT_ID';"
+seed_available_credits 5
 
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"

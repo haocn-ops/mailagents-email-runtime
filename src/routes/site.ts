@@ -1,4 +1,4 @@
-import { requireAdminRoutesEnabled, requireAdminSecret } from "../lib/auth";
+import { requireAdminRoutesEnabled } from "../lib/auth";
 import {
   CONTACT_ALIAS_LOCALPARTS,
   CONTACT_ALIAS_TENANT_ID,
@@ -12,6 +12,7 @@ import {
 } from "../lib/cloudflare-email";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
+import { allRows, firstRow } from "../lib/db";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { badRequest, InvalidJsonBodyError, json, readJson } from "../lib/http";
 import { Router } from "../lib/router";
@@ -54,6 +55,7 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
   <rect width="64" height="64" rx="16" fill="#22493d" />
   <path d="M14 45V19h8l10 13 10-13h8v26h-7V29L32 41 21 29v16z" fill="#f6f0e7" />
 </svg>`;
+const SITE_ADMIN_SESSION_COOKIE = "mailagents_admin_session";
 
 class SiteRequestError extends Error {
   readonly status: number;
@@ -62,6 +64,1001 @@ class SiteRequestError extends Error {
     super(message);
     this.name = "SiteRequestError";
     this.status = status;
+  }
+}
+
+interface AdminCountRow {
+  count: number | string | null;
+}
+
+interface AdminTenantSummaryRow {
+  registered_users: number | string | null;
+  latest_registration_at: string | null;
+}
+
+interface AdminMailboxSummaryRow {
+  user_mailboxes: number | string | null;
+  active_mailboxes: number | string | null;
+}
+
+interface AdminMessageSummaryRow {
+  inbound_messages: number | string | null;
+  outbound_messages: number | string | null;
+  latest_inbound_at: string | null;
+  latest_outbound_at: string | null;
+}
+
+interface AdminOutboundSummaryRow {
+  queued_jobs: number | string | null;
+  sending_jobs: number | string | null;
+  retry_jobs: number | string | null;
+  sent_jobs: number | string | null;
+  failed_jobs: number | string | null;
+}
+
+interface AdminDeliverySummaryRow {
+  delivered_events: number | string | null;
+  unsuccessful_events: number | string | null;
+  bounce_events: number | string | null;
+  complaint_events: number | string | null;
+  reject_events: number | string | null;
+  latest_delivery_at: string | null;
+}
+
+interface AdminDraftSummaryRow {
+  pending_drafts: number | string | null;
+}
+
+interface AdminStatusCountRow {
+  status: string | null;
+  count: number | string | null;
+}
+
+interface AdminRegistrationTrendRow {
+  day: string | null;
+  count: number | string | null;
+}
+
+interface AdminMessageTrendRow {
+  day: string | null;
+  inbound_count: number | string | null;
+  outbound_count: number | string | null;
+}
+
+interface AdminOutboundTrendRow {
+  day: string | null;
+  sent_count: number | string | null;
+  failed_count: number | string | null;
+}
+
+interface AdminTopMailboxRow {
+  address: string | null;
+  total_messages: number | string | null;
+  inbound_messages: number | string | null;
+  outbound_messages: number | string | null;
+}
+
+interface AdminRecentFailureRow {
+  id: string;
+  message_id: string | null;
+  last_error: string | null;
+  updated_at: string | null;
+}
+
+interface AdminRecentActivityRow {
+  id: string;
+  mailbox_id: string | null;
+  mailbox_address: string | null;
+  direction: string | null;
+  to_addr: string | null;
+  from_addr: string | null;
+  subject: string | null;
+  message_status: string | null;
+  outbound_status: string | null;
+  delivery_event: string | null;
+  occurred_at: string | null;
+}
+
+interface AdminOverviewSnapshot {
+  generatedAt: string;
+  domain: string | null;
+  counts: {
+    registeredUsers: number;
+    newUsers7d: number;
+    userMailboxes: number;
+    activeMailboxes: number;
+    contactMailboxes: number;
+    inboundMessages: number;
+    outboundMessages: number;
+    sentJobs: number;
+    failedJobs: number;
+    queuedJobs: number;
+    sendingJobs: number;
+    retryJobs: number;
+    pendingQueue: number;
+    pendingDrafts: number;
+    pendingIdempotency: number;
+    deliveredEvents: number;
+    unsuccessfulEvents: number;
+    bounceEvents: number;
+    complaintEvents: number;
+    rejectEvents: number;
+  };
+  rates: {
+    sendSuccessRate: number | null;
+    deliverySuccessRate: number | null;
+  };
+  latest: {
+    registrationAt: string | null;
+    inboundAt: string | null;
+    outboundAt: string | null;
+    deliveryAt: string | null;
+  };
+  distributions: {
+    messageStatuses: Array<{ key: string; label: string; count: number }>;
+    outboundStatuses: Array<{ key: string; label: string; count: number }>;
+    deliveryEvents: Array<{ key: string; label: string; count: number }>;
+  };
+  trend: Array<{
+    date: string;
+    registrations: number;
+    inbound: number;
+    outbound: number;
+    sent: number;
+    failed: number;
+  }>;
+  topMailboxes: Array<{
+    address: string;
+    totalMessages: number;
+    inboundMessages: number;
+    outboundMessages: number;
+  }>;
+  recentFailures: Array<{
+    id: string;
+    messageId: string | null;
+    lastError: string | null;
+    updatedAt: string | null;
+  }>;
+  recentActivity: Array<{
+    id: string;
+    mailboxId: string | null;
+    mailboxAddress: string | null;
+    direction: string | null;
+    toAddr: string | null;
+    fromAddr: string | null;
+    subject: string | null;
+    messageStatus: string | null;
+    outboundStatus: string | null;
+    deliveryEvent: string | null;
+    occurredAt: string | null;
+  }>;
+}
+
+type AdminRuntimeMetadata = ReturnType<typeof buildRuntimeMetadata>;
+
+interface AdminAliasSummary {
+  address: string;
+  configured: boolean;
+  mode: "internal" | "forward" | null;
+  destination: string | null;
+  worker: string | null;
+}
+
+interface AdminPageBootstrap {
+  overviewSnapshot: AdminOverviewSnapshot | null;
+  runtimeMetadata: AdminRuntimeMetadata | null;
+  aliases: AdminAliasSummary[];
+  aliasAdminAvailable: boolean;
+  aliasAdminMessage: string | null;
+}
+
+function isMissingTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table/i.test(error.message);
+}
+
+function toCount(value: unknown): number {
+  const numericValue = Number(value ?? 0);
+  return Number.isFinite(numericValue) ? numericValue : 0;
+}
+
+function toOptionalString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function optionalFirstRow<T>(statement: D1PreparedStatement): Promise<T | null> {
+  try {
+    return await firstRow<T>(statement);
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function optionalAllRows<T>(statement: D1PreparedStatement): Promise<T[]> {
+  try {
+    return await allRows<T>(statement);
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function buildManagedAliasAddresses(env: Env): string[] {
+  const domain = (env.CLOUDFLARE_EMAIL_DOMAIN ?? "mailagents.net").toLowerCase();
+  return CONTACT_ALIAS_LOCALPARTS.map((alias) => `${alias}@${domain}`);
+}
+
+function buildMailboxAddressWhereClause(column: string, addresses: string[], negate = false): { clause: string; bindings: string[] } {
+  if (!addresses.length) {
+    return {
+      clause: negate ? "" : "WHERE 1 = 0",
+      bindings: [],
+    };
+  }
+
+  return {
+    clause: `WHERE LOWER(${column}) ${negate ? "NOT IN" : "IN"} (${addresses.map(() => "?").join(", ")})`,
+    bindings: addresses.map((address) => address.toLowerCase()),
+  };
+}
+
+function buildRecentUtcDays(totalDays: number): string[] {
+  const days: string[] = [];
+  const now = new Date();
+  const anchor = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
+    const day = new Date(anchor);
+    day.setUTCDate(anchor.getUTCDate() - offset);
+    days.push(day.toISOString().slice(0, 10));
+  }
+
+  return days;
+}
+
+function normalizeStatusCounts(rows: AdminStatusCountRow[], preferredOrder: readonly string[]): Array<{ key: string; label: string; count: number }> {
+  const countsByKey = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.status) {
+      continue;
+    }
+    countsByKey.set(row.status, toCount(row.count));
+  }
+
+  const orderedKeys = [
+    ...preferredOrder.filter((key) => countsByKey.has(key)),
+    ...Array.from(countsByKey.keys()).filter((key) => !preferredOrder.includes(key)).sort(),
+  ];
+
+  return orderedKeys.map((key) => ({
+    key,
+    label: key,
+    count: countsByKey.get(key) ?? 0,
+  }));
+}
+
+async function getAdminOverviewSnapshot(env: Env): Promise<AdminOverviewSnapshot> {
+  const managedAliasAddresses = buildManagedAliasAddresses(env);
+  const userMailboxScope = buildMailboxAddressWhereClause("address", managedAliasAddresses, true);
+  const aliasMailboxScope = buildMailboxAddressWhereClause("address", managedAliasAddresses, false);
+  const recentDays = buildRecentUtcDays(7);
+  const trendFloor = recentDays[0];
+
+  const tenantSummaryRow = await optionalFirstRow<AdminTenantSummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT COUNT(*) AS registered_users,
+              MAX(first_created_at) AS latest_registration_at
+       FROM (
+         SELECT tenant_id, MIN(created_at) AS first_created_at
+         FROM mailboxes
+         ${userMailboxScope.clause}
+         GROUP BY tenant_id
+       )`
+    ).bind(...userMailboxScope.bindings)
+  );
+
+  const newUsersRow = await optionalFirstRow<AdminCountRow>(
+    env.D1_DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM (
+         SELECT tenant_id, MIN(created_at) AS first_created_at
+         FROM mailboxes
+         ${userMailboxScope.clause}
+         GROUP BY tenant_id
+       )
+       WHERE first_created_at >= ?`
+    ).bind(...userMailboxScope.bindings, trendFloor)
+  );
+
+  const userMailboxRow = await optionalFirstRow<AdminMailboxSummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT COUNT(*) AS user_mailboxes,
+              SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_mailboxes
+       FROM mailboxes
+       ${userMailboxScope.clause}`
+    ).bind(...userMailboxScope.bindings)
+  );
+
+  const contactMailboxRow = await optionalFirstRow<AdminCountRow>(
+    env.D1_DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM mailboxes
+       ${aliasMailboxScope.clause}`
+    ).bind(...aliasMailboxScope.bindings)
+  );
+
+  const messageSummaryRow = await optionalFirstRow<AdminMessageSummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_messages,
+              SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_messages,
+              MAX(CASE WHEN direction = 'inbound' THEN COALESCE(received_at, created_at) END) AS latest_inbound_at,
+              MAX(CASE WHEN direction = 'outbound' THEN COALESCE(sent_at, created_at) END) AS latest_outbound_at
+       FROM messages`
+    )
+  );
+
+  const outboundSummaryRow = await optionalFirstRow<AdminOutboundSummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_jobs,
+              SUM(CASE WHEN status = 'sending' THEN 1 ELSE 0 END) AS sending_jobs,
+              SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END) AS retry_jobs,
+              SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent_jobs,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_jobs
+       FROM outbound_jobs`
+    )
+  );
+
+  const deliverySummaryRow = await optionalFirstRow<AdminDeliverySummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT SUM(CASE WHEN event_type = 'delivery' THEN 1 ELSE 0 END) AS delivered_events,
+              SUM(CASE WHEN event_type IN ('bounce', 'complaint', 'reject') THEN 1 ELSE 0 END) AS unsuccessful_events,
+              SUM(CASE WHEN event_type = 'bounce' THEN 1 ELSE 0 END) AS bounce_events,
+              SUM(CASE WHEN event_type = 'complaint' THEN 1 ELSE 0 END) AS complaint_events,
+              SUM(CASE WHEN event_type = 'reject' THEN 1 ELSE 0 END) AS reject_events,
+              MAX(created_at) AS latest_delivery_at
+       FROM delivery_events`
+    )
+  );
+
+  const draftSummaryRow = await optionalFirstRow<AdminDraftSummaryRow>(
+    env.D1_DB.prepare(
+      `SELECT SUM(CASE WHEN status IN ('draft', 'approved', 'queued') THEN 1 ELSE 0 END) AS pending_drafts
+       FROM drafts`
+    )
+  );
+
+  const pendingIdempotencyRow = await optionalFirstRow<AdminCountRow>(
+    env.D1_DB.prepare(
+      `SELECT SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS count
+       FROM idempotency_keys`
+    )
+  );
+
+  const messageStatusRows = await optionalAllRows<AdminStatusCountRow>(
+    env.D1_DB.prepare(
+      `SELECT status, COUNT(*) AS count
+       FROM messages
+       GROUP BY status`
+    )
+  );
+
+  const outboundStatusRows = await optionalAllRows<AdminStatusCountRow>(
+    env.D1_DB.prepare(
+      `SELECT status, COUNT(*) AS count
+       FROM outbound_jobs
+       GROUP BY status`
+    )
+  );
+
+  const deliveryEventRows = await optionalAllRows<AdminStatusCountRow>(
+    env.D1_DB.prepare(
+      `SELECT event_type AS status, COUNT(*) AS count
+       FROM delivery_events
+       GROUP BY event_type`
+    )
+  );
+
+  const registrationTrendRows = await optionalAllRows<AdminRegistrationTrendRow>(
+    env.D1_DB.prepare(
+      `SELECT day, COUNT(*) AS count
+       FROM (
+         SELECT tenant_id, SUBSTR(MIN(created_at), 1, 10) AS day
+         FROM mailboxes
+         ${userMailboxScope.clause}
+         GROUP BY tenant_id
+       )
+       WHERE day >= ?
+       GROUP BY day
+       ORDER BY day ASC`
+    ).bind(...userMailboxScope.bindings, trendFloor)
+  );
+
+  const messageTrendRows = await optionalAllRows<AdminMessageTrendRow>(
+    env.D1_DB.prepare(
+      `SELECT day,
+              SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_count,
+              SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_count
+       FROM (
+         SELECT direction, SUBSTR(COALESCE(received_at, sent_at, created_at), 1, 10) AS day
+         FROM messages
+       )
+       WHERE day >= ?
+       GROUP BY day
+       ORDER BY day ASC`
+    ).bind(trendFloor)
+  );
+
+  const outboundTrendRows = await optionalAllRows<AdminOutboundTrendRow>(
+    env.D1_DB.prepare(
+      `SELECT SUBSTR(updated_at, 1, 10) AS day,
+              SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+              SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+       FROM outbound_jobs
+       WHERE SUBSTR(updated_at, 1, 10) >= ?
+       GROUP BY SUBSTR(updated_at, 1, 10)
+       ORDER BY day ASC`
+    ).bind(trendFloor)
+  );
+
+  const topMailboxRows = await optionalAllRows<AdminTopMailboxRow>(
+    env.D1_DB.prepare(
+      `SELECT mailboxes.address AS address,
+              COUNT(messages.id) AS total_messages,
+              SUM(CASE WHEN messages.direction = 'inbound' THEN 1 ELSE 0 END) AS inbound_messages,
+              SUM(CASE WHEN messages.direction = 'outbound' THEN 1 ELSE 0 END) AS outbound_messages
+       FROM mailboxes
+       LEFT JOIN messages ON messages.mailbox_id = mailboxes.id
+       GROUP BY mailboxes.id, mailboxes.address
+       HAVING COUNT(messages.id) > 0
+       ORDER BY total_messages DESC, mailboxes.address ASC
+       LIMIT 5`
+    )
+  );
+
+  const recentFailureRows = await optionalAllRows<AdminRecentFailureRow>(
+    env.D1_DB.prepare(
+      `SELECT id, message_id, last_error, updated_at
+       FROM outbound_jobs
+       WHERE status = 'failed'
+       ORDER BY updated_at DESC
+       LIMIT 5`
+    )
+  );
+
+  const recentActivityRows = await optionalAllRows<AdminRecentActivityRow>(
+    env.D1_DB.prepare(
+      `SELECT messages.id,
+              messages.mailbox_id,
+              mailboxes.address AS mailbox_address,
+              messages.direction,
+              messages.to_addr,
+              messages.from_addr,
+              messages.subject,
+              messages.status AS message_status,
+              (
+                SELECT outbound_jobs.status
+                FROM outbound_jobs
+                WHERE outbound_jobs.message_id = messages.id
+                ORDER BY outbound_jobs.updated_at DESC
+                LIMIT 1
+              ) AS outbound_status,
+              (
+                SELECT delivery_events.event_type
+                FROM delivery_events
+                WHERE delivery_events.message_id = messages.id
+                ORDER BY delivery_events.created_at DESC
+                LIMIT 1
+              ) AS delivery_event,
+              COALESCE(messages.sent_at, messages.received_at, messages.created_at) AS occurred_at
+       FROM messages
+       LEFT JOIN mailboxes ON mailboxes.id = messages.mailbox_id
+       ORDER BY COALESCE(messages.sent_at, messages.received_at, messages.created_at) DESC
+       LIMIT 18`
+    )
+  );
+
+  const trend = recentDays.map((date) => ({
+    date,
+    registrations: 0,
+    inbound: 0,
+    outbound: 0,
+    sent: 0,
+    failed: 0,
+  }));
+  const trendByDate = new Map(trend.map((item) => [item.date, item]));
+
+  for (const row of registrationTrendRows) {
+    if (!row.day) {
+      continue;
+    }
+    const bucket = trendByDate.get(row.day);
+    if (bucket) {
+      bucket.registrations = toCount(row.count);
+    }
+  }
+
+  for (const row of messageTrendRows) {
+    if (!row.day) {
+      continue;
+    }
+    const bucket = trendByDate.get(row.day);
+    if (bucket) {
+      bucket.inbound = toCount(row.inbound_count);
+      bucket.outbound = toCount(row.outbound_count);
+    }
+  }
+
+  for (const row of outboundTrendRows) {
+    if (!row.day) {
+      continue;
+    }
+    const bucket = trendByDate.get(row.day);
+    if (bucket) {
+      bucket.sent = toCount(row.sent_count);
+      bucket.failed = toCount(row.failed_count);
+    }
+  }
+
+  const sentJobs = toCount(outboundSummaryRow?.sent_jobs);
+  const failedJobs = toCount(outboundSummaryRow?.failed_jobs);
+  const deliveredEvents = toCount(deliverySummaryRow?.delivered_events);
+  const unsuccessfulEvents = toCount(deliverySummaryRow?.unsuccessful_events);
+  const sendTerminalCount = sentJobs + failedJobs;
+  const deliveryTerminalCount = deliveredEvents + unsuccessfulEvents;
+  const pendingQueue = toCount(outboundSummaryRow?.queued_jobs) + toCount(outboundSummaryRow?.sending_jobs) + toCount(outboundSummaryRow?.retry_jobs);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    domain: env.CLOUDFLARE_EMAIL_DOMAIN ?? null,
+    counts: {
+      registeredUsers: toCount(tenantSummaryRow?.registered_users),
+      newUsers7d: toCount(newUsersRow?.count),
+      userMailboxes: toCount(userMailboxRow?.user_mailboxes),
+      activeMailboxes: toCount(userMailboxRow?.active_mailboxes),
+      contactMailboxes: toCount(contactMailboxRow?.count),
+      inboundMessages: toCount(messageSummaryRow?.inbound_messages),
+      outboundMessages: toCount(messageSummaryRow?.outbound_messages),
+      sentJobs,
+      failedJobs,
+      queuedJobs: toCount(outboundSummaryRow?.queued_jobs),
+      sendingJobs: toCount(outboundSummaryRow?.sending_jobs),
+      retryJobs: toCount(outboundSummaryRow?.retry_jobs),
+      pendingQueue,
+      pendingDrafts: toCount(draftSummaryRow?.pending_drafts),
+      pendingIdempotency: toCount(pendingIdempotencyRow?.count),
+      deliveredEvents,
+      unsuccessfulEvents,
+      bounceEvents: toCount(deliverySummaryRow?.bounce_events),
+      complaintEvents: toCount(deliverySummaryRow?.complaint_events),
+      rejectEvents: toCount(deliverySummaryRow?.reject_events),
+    },
+    rates: {
+      sendSuccessRate: sendTerminalCount > 0 ? sentJobs / sendTerminalCount : null,
+      deliverySuccessRate: deliveryTerminalCount > 0 ? deliveredEvents / deliveryTerminalCount : null,
+    },
+    latest: {
+      registrationAt: toOptionalString(tenantSummaryRow?.latest_registration_at),
+      inboundAt: toOptionalString(messageSummaryRow?.latest_inbound_at),
+      outboundAt: toOptionalString(messageSummaryRow?.latest_outbound_at),
+      deliveryAt: toOptionalString(deliverySummaryRow?.latest_delivery_at),
+    },
+    distributions: {
+      messageStatuses: normalizeStatusCounts(messageStatusRows, ["received", "normalized", "tasked", "replied", "ignored", "failed"]),
+      outboundStatuses: normalizeStatusCounts(outboundStatusRows, ["queued", "sending", "retry", "sent", "failed"]),
+      deliveryEvents: normalizeStatusCounts(deliveryEventRows, ["delivery", "bounce", "complaint", "reject", "unknown"]),
+    },
+    trend,
+    topMailboxes: topMailboxRows.map((row) => ({
+      address: row.address ?? "unknown",
+      totalMessages: toCount(row.total_messages),
+      inboundMessages: toCount(row.inbound_messages),
+      outboundMessages: toCount(row.outbound_messages),
+    })),
+    recentFailures: recentFailureRows.map((row) => ({
+      id: row.id,
+      messageId: row.message_id,
+      lastError: row.last_error,
+      updatedAt: row.updated_at,
+    })),
+    recentActivity: recentActivityRows.map((row) => ({
+      id: row.id,
+      mailboxId: row.mailbox_id,
+      mailboxAddress: row.mailbox_address,
+      direction: row.direction,
+      toAddr: row.to_addr,
+      fromAddr: row.from_addr,
+      subject: row.subject,
+      messageStatus: row.message_status,
+      outboundStatus: row.outbound_status,
+      deliveryEvent: row.delivery_event,
+      occurredAt: row.occurred_at,
+    })),
+  };
+}
+
+function formatAdminNumber(value: unknown): string {
+  return new Intl.NumberFormat().format(Number(value ?? 0));
+}
+
+function formatAdminPercent(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "n/a";
+  }
+
+  const percentage = value * 100;
+  const digits = percentage >= 10 || percentage === 0 ? 0 : 1;
+  return `${percentage.toFixed(digits)}%`;
+}
+
+function formatAdminDateTime(value: string | null | undefined): string {
+  if (!value) {
+    return "n/a";
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+}
+
+function formatAdminRelativeTime(value: string | null | undefined): string {
+  if (!value) {
+    return "n/a";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+
+  const diffMs = parsed.getTime() - Date.now();
+  const diffMinutes = Math.round(diffMs / 60000);
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+  if (Math.abs(diffMinutes) < 60) {
+    return formatter.format(diffMinutes, "minute");
+  }
+
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 48) {
+    return formatter.format(diffHours, "hour");
+  }
+
+  const diffDays = Math.round(diffHours / 24);
+  return formatter.format(diffDays, "day");
+}
+
+function formatAdminDayLabel(value: string): string {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime())
+    ? value.slice(5)
+    : parsed.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+}
+
+function humanizeAdminLabel(value: string): string {
+  const dictionary: Record<string, string> = {
+    received: "Received",
+    normalized: "Normalized",
+    tasked: "Tasked",
+    replied: "Replied",
+    ignored: "Ignored",
+    failed: "Failed",
+    queued: "Queued",
+    sending: "Sending",
+    retry: "Retry",
+    sent: "Sent",
+    delivery: "Delivered",
+    bounce: "Bounced",
+    complaint: "Complaint",
+    reject: "Rejected",
+    unknown: "Unknown",
+  };
+
+  return dictionary[value] || value.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+}
+
+function adminStatusTone(value: string): string {
+  if (["inbound", "received"].includes(value)) {
+    return "inbound";
+  }
+  if (["outbound"].includes(value)) {
+    return "outbound";
+  }
+  if (["delivery", "replied", "sent"].includes(value)) {
+    return "sent";
+  }
+  if (["failed", "bounce", "reject"].includes(value)) {
+    return "failed";
+  }
+  if (["retry", "complaint"].includes(value)) {
+    return "warning";
+  }
+  return value;
+}
+
+function getAdminOverviewActivityStatus(item: AdminOverviewSnapshot["recentActivity"][number]): { label: string; tone: string } {
+  if (item.direction === "outbound") {
+    if (item.deliveryEvent === "delivery") {
+      return { label: "Delivered", tone: "delivered" };
+    }
+    if (item.deliveryEvent === "bounce") {
+      return { label: "Bounced", tone: "bounced" };
+    }
+    if (item.deliveryEvent === "complaint") {
+      return { label: "Complaint", tone: "complaint" };
+    }
+    if (item.deliveryEvent === "reject") {
+      return { label: "Rejected", tone: "rejected" };
+    }
+    if (item.outboundStatus === "sent") {
+      return { label: "Sent", tone: "sent" };
+    }
+    if (item.outboundStatus === "failed") {
+      return { label: "Failed", tone: "failed" };
+    }
+    if (item.outboundStatus === "retry") {
+      return { label: "Retry", tone: "retry" };
+    }
+    if (item.outboundStatus === "sending") {
+      return { label: "Sending", tone: "sending" };
+    }
+    if (item.outboundStatus === "queued") {
+      return { label: "Queued", tone: "queued" };
+    }
+  }
+
+  if (item.messageStatus === "received") {
+    return { label: "Received", tone: "received" };
+  }
+  if (item.messageStatus === "normalized") {
+    return { label: "Normalized", tone: "normalized" };
+  }
+  if (item.messageStatus === "tasked") {
+    return { label: "Tasked", tone: "tasked" };
+  }
+  if (item.messageStatus === "replied") {
+    return { label: "Replied", tone: "replied" };
+  }
+  if (item.messageStatus === "ignored") {
+    return { label: "Ignored", tone: "ignored" };
+  }
+  if (item.messageStatus === "failed") {
+    return { label: "Failed", tone: "failed" };
+  }
+
+  return { label: "Processed", tone: "processed" };
+}
+
+function renderAdminBreakdown(
+  items: Array<{ key: string; label: string; count: number }>,
+  emptyText: string
+): string {
+  if (!items.length) {
+    return `<div class="admin-empty-state">${escapeHtml(emptyText)}</div>`;
+  }
+
+  const max = Math.max(...items.map((item) => Number(item.count) || 0), 0);
+  return `<div class="admin-breakdown-list">${items.map((item) => {
+    const count = Number(item.count) || 0;
+    const width = max > 0 ? Math.max(count > 0 ? 6 : 0, (count / max) * 100) : 0;
+    const tone = adminStatusTone(String(item.key || item.label || "").toLowerCase());
+    return `<div class="admin-breakdown-row">
+      <div class="admin-breakdown-meta">
+        <span>${escapeHtml(humanizeAdminLabel(item.label || item.key || ""))}</span>
+        <span>${escapeHtml(formatAdminNumber(count))}</span>
+      </div>
+      <div class="admin-breakdown-track">
+        <span class="admin-breakdown-fill ${escapeHtml(tone)}" style="width:${width}%;"></span>
+      </div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function renderAdminTrendChart(points: AdminOverviewSnapshot["trend"]): string {
+  if (!points.length) {
+    return `<div class="admin-empty-state">No recent trend data available.</div>`;
+  }
+
+  const max = Math.max(
+    ...points.flatMap((point) => [
+      point.registrations || 0,
+      point.inbound || 0,
+      point.outbound || 0,
+      point.sent || 0,
+      point.failed || 0,
+    ]),
+    0
+  );
+
+  const legend = [
+    ["registrations", "新增"],
+    ["inbound", "收信"],
+    ["outbound", "發信"],
+    ["sent", "成功"],
+    ["failed", "失敗"],
+  ].map(([key, label]) =>
+    `<span class="admin-legend-item ${key}"><span class="admin-legend-dot"></span>${escapeHtml(label)}</span>`
+  ).join("");
+
+  const chart = points.map((point) => {
+    const series: Array<[string, number, string]> = [
+      ["registrations", point.registrations || 0, "新增"],
+      ["inbound", point.inbound || 0, "收信"],
+      ["outbound", point.outbound || 0, "發信"],
+      ["sent", point.sent || 0, "成功"],
+      ["failed", point.failed || 0, "失敗"],
+    ];
+    return `<div class="admin-trend-day">
+      <div class="admin-trend-bars">
+        ${series.map(([key, count, label]) => {
+          const height = max > 0 ? Math.max(count > 0 ? 6 : 0, (count / max) * 100) : 0;
+          return `<span class="admin-trend-bar ${escapeHtml(key)}" style="height:${height}%;" title="${escapeHtml(`${label}: ${formatAdminNumber(count)}`)}"></span>`;
+        }).join("")}
+      </div>
+      <div class="admin-trend-label">${escapeHtml(formatAdminDayLabel(point.date))}</div>
+      <div class="admin-trend-total">${escapeHtml(`收 ${formatAdminNumber(point.inbound || 0)} · 發 ${formatAdminNumber(point.outbound || 0)}`)}</div>
+    </div>`;
+  }).join("");
+
+  return `<div class="admin-chart-legend">${legend}</div><div class="admin-trend-chart">${chart}</div>`;
+}
+
+function renderAdminTopMailboxes(items: AdminOverviewSnapshot["topMailboxes"]): string {
+  if (!items.length) {
+    return `<div class="admin-empty-state">No mailbox activity recorded yet.</div>`;
+  }
+
+  return items.map((item) =>
+    `<div class="faq-item">
+      <h3>${escapeHtml(item.address)}</h3>
+      <p>Total: ${escapeHtml(formatAdminNumber(item.totalMessages))}</p>
+      <p>Inbound: ${escapeHtml(formatAdminNumber(item.inboundMessages))} · Outbound: ${escapeHtml(formatAdminNumber(item.outboundMessages))}</p>
+    </div>`
+  ).join("");
+}
+
+function renderAdminRecentFailures(items: AdminOverviewSnapshot["recentFailures"]): string {
+  if (!items.length) {
+    return `<div class="faq-item"><h3>All clear</h3><p>No failed outbound jobs recorded.</p></div>`;
+  }
+
+  return items.map((item) =>
+    `<div class="faq-item">
+      <h3>${escapeHtml(item.id)}</h3>
+      <p>Message: ${escapeHtml(item.messageId || "n/a")}</p>
+      <p>Error: ${escapeHtml(item.lastError || "unknown")}</p>
+      <p>Updated: ${escapeHtml(formatAdminDateTime(item.updatedAt))}</p>
+    </div>`
+  ).join("");
+}
+
+function getAdminOverviewHealth(
+  stats: AdminOverviewSnapshot | null,
+  aliases: AdminAliasSummary[],
+  aliasAdminAvailable: boolean
+): { tone: string; label: string } {
+  if (!stats) {
+    return { tone: "neutral", label: "Waiting for runtime metrics" };
+  }
+
+  const hasAliasGap = aliasAdminAvailable && aliases.some((item) => !item.configured);
+  const hasQueuePressure = stats.counts.retryJobs > 0 || stats.counts.pendingQueue > 0;
+  const hasFailures = stats.recentFailures.length > 0 || stats.counts.failedJobs > 0;
+
+  if (hasAliasGap || hasQueuePressure || hasFailures) {
+    return { tone: "warning", label: "Runtime needs attention" };
+  }
+
+  return { tone: "success", label: "Runtime healthy" };
+}
+
+function renderAdminActivityRows(items: AdminOverviewSnapshot["recentActivity"]): string {
+  if (!items.length) {
+    return `<div class="admin-table-row">
+      <div class="admin-empty-state">No recent activity recorded.</div>
+      <div></div><div></div><div></div><div></div>
+    </div>`;
+  }
+
+  return items.map((item) => {
+    const status = getAdminOverviewActivityStatus(item);
+    const recipient = item.direction === "inbound" ? (item.fromAddr || "Unknown sender") : (item.toAddr || "Unknown recipient");
+    const secondary = item.mailboxAddress || (item.direction === "inbound" ? item.toAddr : item.fromAddr) || "mail runtime";
+    return `<div class="admin-table-row">
+      <div class="admin-email-recipient">
+        <div class="admin-email-avatar">M</div>
+        <div class="admin-email-lines">
+          <div class="admin-email-primary">${escapeHtml(recipient)}</div>
+          <div class="admin-email-secondary">${escapeHtml(secondary)}</div>
+        </div>
+      </div>
+      <div><span class="admin-status-badge ${escapeHtml(status.tone.toLowerCase())}">${escapeHtml(status.label)}</span></div>
+      <div class="admin-email-subject"><div class="admin-email-subject-text">${escapeHtml(item.subject || "(No subject)")}</div></div>
+      <div class="admin-time-label">${escapeHtml(formatAdminRelativeTime(item.occurredAt))}</div>
+      <div><span class="admin-empty-state">View</span></div>
+    </div>`;
+  }).join("");
+}
+
+function serializeAdminScriptData(value: unknown): string {
+  const serialized = JSON.stringify(value ?? null);
+  if (typeof serialized !== "string") {
+    return "null";
+  }
+
+  return serialized
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+async function loadAdminPageBootstrap(request: Request, env: Env): Promise<AdminPageBootstrap> {
+  const runtimeMetadata = buildRuntimeMetadata(request, env);
+  const overviewSnapshot = await getAdminOverviewSnapshot(env);
+
+  const configError = requireCloudflareEmailConfig(env);
+  if (configError) {
+    const fallbackDomain = env.CLOUDFLARE_EMAIL_DOMAIN || "mailagents.net";
+    return {
+      overviewSnapshot,
+      runtimeMetadata,
+      aliasAdminAvailable: false,
+      aliasAdminMessage: "Cloudflare email routing admin is not configured in this environment",
+      aliases: CONTACT_ALIAS_LOCALPARTS.map((alias) => ({
+        address: `${alias}@${fallbackDomain}`,
+        configured: false,
+        mode: env.CLOUDFLARE_EMAIL_WORKER ? "internal" : null,
+        destination: null,
+        worker: env.CLOUDFLARE_EMAIL_WORKER ?? null,
+      })),
+    };
+  }
+
+  try {
+    const rules = await listEmailRoutingRules(env);
+    const aliases = CONTACT_ALIAS_LOCALPARTS.map((alias) => {
+      const address = getContactAliasAddress(env, alias);
+      const rule = rules.find((entry) =>
+        entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
+      );
+      const forwardAction = rule?.actions.find((action) => action.type === "forward");
+      const workerAction = rule?.actions.find((action) => action.type === "worker");
+
+      return {
+        address,
+        configured: Boolean(rule),
+        mode: workerAction ? "internal" : forwardAction ? "forward" : null,
+        destination: forwardAction?.value?.[0] ?? null,
+        worker: workerAction?.value?.[0] ?? null,
+      } satisfies AdminAliasSummary;
+    });
+
+    return {
+      overviewSnapshot,
+      runtimeMetadata,
+      aliasAdminAvailable: true,
+      aliasAdminMessage: null,
+      aliases,
+    };
+  } catch (error) {
+    const fallbackDomain = env.CLOUDFLARE_EMAIL_DOMAIN || "mailagents.net";
+    return {
+      overviewSnapshot,
+      runtimeMetadata,
+      aliasAdminAvailable: false,
+      aliasAdminMessage: error instanceof Error ? error.message : "Unable to load aliases",
+      aliases: CONTACT_ALIAS_LOCALPARTS.map((alias) => ({
+        address: `${alias}@${fallbackDomain}`,
+        configured: false,
+        mode: null,
+        destination: null,
+        worker: null,
+      })),
+    };
   }
 }
 
@@ -162,13 +1159,45 @@ site.on("GET", "/favicon.ico", () => text(FAVICON_SVG, "image/svg+xml"));
 site.on("HEAD", "/favicon.ico", () => text(FAVICON_SVG, "image/svg+xml"));
 site.on("GET", "/signup", () => redirect("/"));
 site.on("HEAD", "/signup", () => redirect("/"));
-site.on("GET", "/admin", (_request, env, _ctx, route) => {
+site.on("GET", "/admin", async (_request, env, _ctx, route) => {
   const routeError = requireAdminRoutesEnabled(_request, env);
   if (routeError) {
     return routeError;
   }
 
-  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url)));
+  const requestUrl = new URL(_request.url);
+  const initiallyAuthenticated = hasValidSiteAdminSession(_request, env);
+  const errorCode = requestUrl.searchParams.get("error");
+  const authError = errorCode === "invalid_admin_secret"
+    ? "Invalid admin secret."
+    : errorCode === "session_required"
+      ? "Enter the admin secret."
+      : null;
+  let bootstrap: AdminPageBootstrap | null = null;
+
+  if (initiallyAuthenticated) {
+    try {
+      bootstrap = await loadAdminPageBootstrap(_request, env);
+    } catch (error) {
+      bootstrap = {
+        overviewSnapshot: null,
+        runtimeMetadata: buildRuntimeMetadata(_request, env),
+        aliases: [],
+        aliasAdminAvailable: false,
+        aliasAdminMessage: error instanceof Error ? error.message : "Unable to load admin bootstrap data",
+      };
+    }
+  }
+
+  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url, {
+    initiallyAuthenticated,
+    authError,
+    bootstrap,
+  })), {
+    headers: {
+      "cache-control": "private, no-store, max-age=0",
+    },
+  });
 });
 site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
   const routeError = requireAdminRoutesEnabled(_request, env);
@@ -176,7 +1205,50 @@ site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
     return routeError;
   }
 
-  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url)));
+  return html(layout("admin", "Admin Dashboard", renderAdmin(route.url, {
+    initiallyAuthenticated: hasValidSiteAdminSession(_request, env),
+  })), {
+    headers: {
+      "cache-control": "private, no-store, max-age=0",
+    },
+  });
+});
+site.on("POST", "/admin/login", async (request, env) => {
+  const routeError = requireAdminRoutesEnabled(request, env);
+  if (routeError) {
+    return routeError;
+  }
+
+  if (!env.ADMIN_API_SECRET) {
+    return html(layout("admin", "Admin Dashboard", renderAdmin(new URL(request.url), {
+      authError: "ADMIN_API_SECRET is not configured.",
+    })), {
+      status: 500,
+      headers: {
+        "cache-control": "private, no-store, max-age=0",
+      },
+    });
+  }
+
+  const formData = await request.formData();
+  const providedSecret = String(formData.get("secret") ?? "").trim();
+  if (providedSecret !== env.ADMIN_API_SECRET) {
+    return redirect("/admin?error=invalid_admin_secret", 303);
+  }
+
+  const response = redirect("/admin", 303);
+  response.headers.append("set-cookie", buildSiteAdminSessionCookie(new URL(request.url), env.ADMIN_API_SECRET));
+  return response;
+});
+site.on("POST", "/admin/logout", (request, env) => {
+  const routeError = requireAdminRoutesEnabled(request, env);
+  if (routeError) {
+    return routeError;
+  }
+
+  const response = redirect("/admin", 303);
+  response.headers.append("set-cookie", buildExpiredSiteAdminSessionCookie(new URL(request.url)));
+  return response;
 });
 site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
   const accessError = requireSiteAdminAccess(request, env);
@@ -185,6 +1257,29 @@ site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
   }
 
   return json(buildRuntimeMetadata(request, env));
+});
+site.on("GET", "/admin/api/session/verify", async (request, env) => {
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
+  }
+
+  return json({
+    ok: true,
+    host: new URL(request.url).host,
+  });
+});
+site.on("GET", "/admin/api/overview-stats", async (request, env) => {
+  const accessError = requireSiteAdminAccess(request, env);
+  if (accessError) {
+    return accessError;
+  }
+
+  try {
+    return json(await getAdminOverviewSnapshot(env));
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Unable to load overview stats" }, { status: 502 });
+  }
 });
 
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
@@ -195,7 +1290,23 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
 
   const configError = requireCloudflareEmailConfig(env);
   if (configError) {
-    return configError;
+    const fallbackDomain = env.CLOUDFLARE_EMAIL_DOMAIN || "mailagents.net";
+    return json({
+      available: false,
+      message: "Cloudflare email routing admin is not configured in this environment",
+      domain: fallbackDomain,
+      aliases: CONTACT_ALIAS_LOCALPARTS.map((alias) => ({
+        alias,
+        address: `${alias}@${fallbackDomain}`,
+        configured: false,
+        enabled: false,
+        mode: env.CLOUDFLARE_EMAIL_WORKER ? "internal" : null,
+        destination: null,
+        worker: env.CLOUDFLARE_EMAIL_WORKER ?? null,
+        ruleId: null,
+      })),
+      rules: [],
+    });
   }
 
   try {
@@ -904,19 +2015,98 @@ export async function handleSiteRequest(request: Request, env: Env, ctx: Executi
   }
 }
 
+function readCookie(request: Request, name: string): string | null {
+  const cookieHeader = request.headers.get("cookie");
+  if (!cookieHeader) {
+    return null;
+  }
+
+  for (const entry of cookieHeader.split(";")) {
+    const [rawName, ...rawValueParts] = entry.trim().split("=");
+    if (rawName !== name) {
+      continue;
+    }
+
+    const rawValue = rawValueParts.join("=");
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue || null;
+    }
+  }
+
+  return null;
+}
+
+function hasValidSiteAdminSession(request: Request, env: Env): boolean {
+  if (!env.ADMIN_API_SECRET) {
+    return false;
+  }
+
+  const headerSecret = request.headers.get("x-admin-secret");
+  if (headerSecret === env.ADMIN_API_SECRET) {
+    return true;
+  }
+
+  return readCookie(request, SITE_ADMIN_SESSION_COOKIE) === env.ADMIN_API_SECRET;
+}
+
+function buildSiteAdminSessionCookie(url: URL, secret: string): string {
+  const parts = [
+    `${SITE_ADMIN_SESSION_COOKIE}=${encodeURIComponent(secret)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=604800",
+  ];
+
+  if (url.protocol === "https:") {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function buildExpiredSiteAdminSessionCookie(url: URL): string {
+  const parts = [
+    `${SITE_ADMIN_SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+  ];
+
+  if (url.protocol === "https:") {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
 function requireSiteAdminAccess(request: Request, env: Env): Response | null {
   const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
   }
 
-  return requireAdminSecret(request, env);
+  if (!env.ADMIN_API_SECRET) {
+    return json({ error: "ADMIN_API_SECRET is not configured" }, { status: 500 });
+  }
+
+  if (!hasValidSiteAdminSession(request, env)) {
+    return json({ error: "Invalid admin secret" }, { status: 401 });
+  }
+
+  return null;
 }
 
 function html(markup: string, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "text/html; charset=utf-8");
-  headers.set("cache-control", "public, max-age=300");
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "public, max-age=300");
+  }
 
   return new Response(markup, {
     ...init,
@@ -927,7 +2117,9 @@ function html(markup: string, init: ResponseInit = {}): Response {
 function text(body: string, contentType: string, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", contentType);
-  headers.set("cache-control", "public, max-age=300");
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "public, max-age=300");
+  }
 
   return new Response(body, {
     ...init,
@@ -1759,13 +2951,13 @@ function renderLimits(): string {
     </section>
     <section>
       <h2>What Is Limited By Default</h2>
-      <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has both usable credits and an outbound policy that allows external sending.</p>
+      <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has usable credits or an explicitly enabled external send policy.</p>
       <ul>
         <li>Ordinary free-tier tenants can send up to <strong>10 outbound emails per rolling 24 hours</strong>.</li>
         <li>Ordinary free-tier tenants can send up to <strong>1 outbound email per rolling 1 hour</strong>.</li>
         <li>Welcome email to arbitrary external operator inboxes should be treated as best-effort, not the primary access path.</li>
         <li>Public token reissue email to arbitrary external operator inboxes is not guaranteed while the tenant is still on the default constrained path.</li>
-        <li>External-recipient sending is not considered unlocked until the tenant send policy reports external delivery as enabled.</li>
+        <li>External-recipient sending is still blocked while the tenant has no usable credits and the outbound policy has not been explicitly enabled.</li>
         <li>Bulk marketing, purchased lists, cold outreach, and suppression bypass are never supported, even after an upgrade.</li>
       </ul>
     </section>
@@ -1779,13 +2971,13 @@ function renderLimits(): string {
     </section>
     <section>
       <h2>How To Unlock External Delivery</h2>
-      <p>External delivery is gated by both billing state and send-policy state. The current unlock flow is:</p>
+      <p>External delivery follows a credits-first model. The normal unlock paths are adding credits or moving the tenant to an explicitly enabled outbound policy. A suspended outbound policy still hard-blocks delivery.</p>
       <ol>
         <li>Keep using the default mailbox-scoped flow until the mailbox is active and the token is stored safely.</li>
-        <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity.</li>
-        <li>Request external-send enablement with <code>POST /v1/billing/upgrade-intent</code>.</li>
+        <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity immediately.</li>
+        <li>Or request <code>POST /v1/billing/upgrade-intent</code>; a settled upgrade also grants the configured upgrade credit bundle.</li>
         <li>If a receipt remains <code>pending</code> or <code>verified</code>, retry facilitator settlement with <code>POST /v1/billing/payment/confirm</code>.</li>
-        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as enabled.</li>
+        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as ready.</li>
       </ol>
       <p>Mailagents uses facilitator-backed x402 settlement. In the normal path, proof submission settles immediately. The confirmation endpoint exists only to retry facilitator settlement for a receipt that did not finish on the first attempt.</p>
     </section>
@@ -1793,6 +2985,7 @@ function renderLimits(): string {
       <h2>States You Will See</h2>
       <ul>
         <li><strong>Default path:</strong> billing is typically <code>free</code>, outbound policy is <code>internal_only</code>, and the ordinary-user send cap is <code>10/day</code> plus <code>1/hour</code> on rolling windows.</li>
+        <li><strong>Credits-backed external send:</strong> when <code>availableCredits &gt; 0</code>, external delivery is allowed even if the outbound policy still reports <code>internal_only</code>.</li>
         <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
         <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
         <li><strong>Restricted again:</strong> outbound policy can become <code>suspended</code> if abuse, payment, or deliverability controls require it.</li>
@@ -1801,9 +2994,9 @@ function renderLimits(): string {
     <section>
       <h2>Important Boundaries</h2>
       <ul>
-        <li>Payment alone does not guarantee unlimited sending to arbitrary recipients.</li>
+        <li>Credits unlock external delivery, but they do not guarantee unlimited sending to arbitrary recipients.</li>
         <li>External sending remains subject to abuse controls, suppression handling, bounce review, and provider constraints.</li>
-        <li>Do not treat a successful send to an internal or previously validated address as proof that all external recipient delivery is enabled.</li>
+        <li>Do not treat a successful send to an internal or previously validated address as proof that all external recipient delivery paths are healthy.</li>
       </ul>
     </section>
     <section>
@@ -1942,8 +3135,180 @@ function renderContact(): string {
   </section>`;
 }
 
-function renderAdmin(url: URL): string {
+function renderAdmin(
+  url: URL,
+  options: {
+    initiallyAuthenticated?: boolean;
+    authError?: string | null;
+    bootstrap?: AdminPageBootstrap | null;
+  } = {}
+): string {
   const domain = escapeHtml(url.host);
+  const hostname = escapeHtml(url.hostname);
+  const initiallyAuthenticated = Boolean(options.initiallyAuthenticated);
+  const bootstrap = initiallyAuthenticated ? options.bootstrap ?? null : null;
+  const initialOverviewStats = bootstrap?.overviewSnapshot ?? null;
+  const initialRuntimeMetadata = bootstrap?.runtimeMetadata ?? null;
+  const initialAliases = bootstrap?.aliases ?? [];
+  const initialAliasAdminAvailable = bootstrap?.aliasAdminAvailable ?? false;
+  const initialAliasAdminMessage = bootstrap?.aliasAdminMessage ?? null;
+  const authStatusCopy = escapeHtml(options.authError || (initiallyAuthenticated ? "Dashboard unlocked." : "Dashboard is locked."));
+  const iconOverview = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h7"/><path d="M17 12h3"/><path d="M14 17h6"/></svg>`;
+  const iconMessages = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="m6.5 8.5 5.5 4.5 5.5-4.5"/></svg>`;
+  const iconContact = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="9" r="2.5"/><circle cx="16" cy="8" r="2"/><path d="M3.5 18c.9-2.7 3.1-4 6.5-4s5.6 1.3 6.5 4"/><path d="M14 17c.5-1.8 2-2.8 4.5-2.8 1 0 1.8.2 2.5.6"/></svg>`;
+  const iconThreads = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8h8a4 4 0 1 1 0 8H8"/><path d="m8 12-4 4 4 4"/></svg>`;
+  const iconAliases = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a4 4 0 0 1 0-6l1.5-1.5a4 4 0 0 1 5.7 5.6L16 12"/><path d="M14 11a4 4 0 0 1 0 6L12.5 18.5a4 4 0 0 1-5.7-5.6L8 12"/></svg>`;
+  const iconCompose = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4Z"/><path d="m12.5 7.5 4 4"/></svg>`;
+  const iconIdempotency = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M7.5 9A6 6 0 0 1 18 10"/><path d="M16.5 15A6 6 0 0 1 6 14"/></svg>`;
+  const iconSearch = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
+  const initialRuntimeDomain = initialAliases[0]?.address.split("@")[1] || initialOverviewStats?.domain || hostname;
+  const initialConfiguredAliasCount = initialAliases.filter((item) => item.configured).length;
+  const initialOverviewHealth = getAdminOverviewHealth(initialOverviewStats, initialAliases, initialAliasAdminAvailable);
+  const initialOverviewTab = initialOverviewStats?.recentActivity.some((item) => item.direction === "outbound")
+    ? "sending"
+    : initialOverviewStats?.recentActivity.some((item) => item.direction === "inbound")
+      ? "receiving"
+      : "overview";
+  const initialOverviewRecipientLabel = initialOverviewTab === "receiving"
+    ? "From"
+    : initialOverviewTab === "overview"
+      ? "Participant"
+      : "To";
+  const initialOverviewActivityItems = initialOverviewStats
+    ? initialOverviewTab === "sending"
+      ? initialOverviewStats.recentActivity.filter((item) => item.direction === "outbound")
+      : initialOverviewTab === "receiving"
+        ? initialOverviewStats.recentActivity.filter((item) => item.direction === "inbound")
+        : initialOverviewStats.recentActivity
+    : [];
+  const initialRuntimeStatusTone = initiallyAuthenticated ? initialOverviewHealth.tone : "neutral";
+  const initialRuntimeStatusCopy = initiallyAuthenticated
+    ? `${initialOverviewHealth.label}${initialOverviewStats?.generatedAt ? ` · synced ${formatAdminDateTime(initialOverviewStats.generatedAt)}` : ""}`
+    : "Waiting for authentication";
+  const initialOverviewHeroCopy = initialOverviewStats
+    ? `目前共有 ${formatAdminNumber(initialOverviewStats.counts.registeredUsers)} 位註冊用戶、${formatAdminNumber(initialOverviewStats.counts.activeMailboxes)} 個活躍郵箱，累計收信 ${formatAdminNumber(initialOverviewStats.counts.inboundMessages)} 封、發信 ${formatAdminNumber(initialOverviewStats.counts.outboundMessages)} 封。近 7 天新增 ${formatAdminNumber(initialOverviewStats.counts.newUsers7d)} 位用戶，當前仍有 ${formatAdminNumber(initialOverviewStats.counts.pendingQueue)} 個發信任務在隊列中。`
+    : initiallyAuthenticated
+      ? "正在載入完整運行統計。這個頁面會直接顯示活躍郵箱、收發信量、送達結果與隊列狀態。"
+      : "解鎖後會顯示註冊用戶、收發信總量、成功率、近 7 天趨勢，以及需要關注的隊列與送達狀態。";
+  const initialOverviewHealthPills = initialOverviewStats
+    ? [
+        `<span class="admin-chip ${escapeHtml(initialOverviewHealth.tone)}">${escapeHtml(initialOverviewHealth.label)}</span>`,
+        `<span class="admin-chip neutral">發信成功率 ${escapeHtml(formatAdminPercent(initialOverviewStats.rates.sendSuccessRate))}</span>`,
+        `<span class="admin-chip neutral">送達成功率 ${escapeHtml(formatAdminPercent(initialOverviewStats.rates.deliverySuccessRate))}</span>`,
+        `<span class="admin-chip neutral">${escapeHtml(initialAliasAdminAvailable
+          ? `已配置別名 ${formatAdminNumber(initialConfiguredAliasCount)}/${formatAdminNumber(initialAliases.length || 4)}`
+          : "Alias admin unavailable in local mode")}</span>`,
+      ].join("")
+    : `<span class="admin-chip neutral">${escapeHtml(initiallyAuthenticated ? "Waiting for runtime metrics" : "Enter the admin secret to inspect runtime metrics")}</span>`;
+  const initialOverviewActivityHtml = initialOverviewStats
+    ? renderAdminActivityRows(initialOverviewActivityItems)
+    : `<div class="admin-table-row">
+      <div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for recent activity." : "Unlock the dashboard to inspect recent activity.")}</div>
+      <div></div><div></div><div></div><div></div>
+    </div>`;
+  const initialOverviewMailRuntime = initialOverviewStats
+    ? [
+        `<div class="admin-mini-grid">
+          <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.newUsers7d))}</strong><span>近 7 日新增</span></div>
+          <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.pendingQueue))}</strong><span>發信隊列待處理</span></div>
+          <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.pendingDrafts))}</strong><span>草稿待處理</span></div>
+          <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.pendingIdempotency))}</strong><span>Pending idempotency</span></div>
+        </div>`,
+        `<div class="faq-item"><h3>Active domain</h3><p>${escapeHtml(initialRuntimeDomain)}</p></div>`,
+        `<div class="faq-item"><h3>Latest registration</h3><p>${escapeHtml(formatAdminDateTime(initialOverviewStats.latest.registrationAt))}</p></div>`,
+        `<div class="faq-item"><h3>Latest delivery event</h3><p>${escapeHtml(formatAdminDateTime(initialOverviewStats.latest.deliveryAt))}</p></div>`,
+        `<div class="faq-item"><h3>Reply workflow</h3><p>No quick reply prepared.</p></div>`,
+      ].join("")
+    : initiallyAuthenticated
+      ? [
+          `<div class="faq-item"><h3>Active domain</h3><p>${escapeHtml(initialRuntimeDomain)}</p></div>`,
+          `<div class="faq-item"><h3>Alias coverage</h3><p>${escapeHtml(initialAliasAdminAvailable ? `${formatAdminNumber(initialConfiguredAliasCount)} live public aliases loaded.` : initialAliasAdminMessage || "Alias admin unavailable.")}</p></div>`,
+          `<div class="faq-item"><h3>Reply workflow</h3><p>No quick reply prepared.</p></div>`,
+        ].join("")
+      : "Unlock the dashboard to inspect runtime status.";
+  const initialOverviewTrendHtml = initialOverviewStats
+    ? renderAdminTrendChart(initialOverviewStats.trend)
+    : `<div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for runtime trend metrics." : "Unlock the dashboard to inspect runtime trends.")}</div>`;
+  const initialOverviewQueueHealth = initialOverviewStats
+    ? renderAdminBreakdown(initialOverviewStats.distributions.outboundStatuses, "No outbound queue data yet.") +
+      `<div class="admin-mini-grid" style="margin-top:16px;">
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.retryJobs))}</strong><span>Retry jobs</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.queuedJobs + initialOverviewStats.counts.sendingJobs))}</strong><span>Queued + sending</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.pendingDrafts))}</strong><span>Pending drafts</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.pendingIdempotency))}</strong><span>Pending idempotency</span></div>
+      </div>`
+    : `<div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for queue metrics." : "Unlock the dashboard to inspect queue status.")}</div>`;
+  const initialOverviewDeliveryHealth = initialOverviewStats
+    ? renderAdminBreakdown(initialOverviewStats.distributions.deliveryEvents, "No delivery events yet.") +
+      `<div class="admin-mini-grid" style="margin-top:16px;">
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminPercent(initialOverviewStats.rates.deliverySuccessRate))}</strong><span>Delivery success rate</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminPercent(initialOverviewStats.rates.sendSuccessRate))}</strong><span>Send success rate</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.bounceEvents))}</strong><span>Bounces</span></div>
+        <div class="admin-mini-card"><strong>${escapeHtml(formatAdminNumber(initialOverviewStats.counts.complaintEvents + initialOverviewStats.counts.rejectEvents))}</strong><span>Complaints + rejects</span></div>
+      </div>`
+    : `<div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for delivery metrics." : "Unlock the dashboard to inspect delivery status.")}</div>`;
+  const initialOverviewTopMailboxes = initialOverviewStats
+    ? renderAdminTopMailboxes(initialOverviewStats.topMailboxes)
+    : `<div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for mailbox activity metrics." : "Unlock the dashboard to inspect mailbox activity.")}</div>`;
+  const initialOverviewRecentFailures = initialOverviewStats
+    ? renderAdminRecentFailures(initialOverviewStats.recentFailures)
+    : `<div class="admin-empty-state">${escapeHtml(initiallyAuthenticated ? "Waiting for failure metrics." : "Unlock the dashboard to inspect recent failures.")}</div>`;
+  const initialAliasCards = !initialAliasAdminAvailable
+    ? `<div class="admin-empty-state">${escapeHtml(initialAliasAdminMessage || "Cloudflare email routing admin is not configured in this environment.")}</div>`
+    : initialAliases.length
+      ? initialAliases.map((item) =>
+          `<div class="faq-item">
+            <h3>${escapeHtml(item.address)}</h3>
+            <p>${escapeHtml(item.configured ? "Configured" : "Missing")}</p>
+            <p>${escapeHtml(item.mode === "internal"
+              ? `Internal inbox via worker ${item.worker || "n/a"}`
+              : item.destination || "No inbox rule yet")}</p>
+          </div>`
+        ).join("")
+      : `<div class="admin-empty-state">No public aliases configured yet.</div>`;
+  const initialToolMeta = initialRuntimeMetadata?.mcp?.tools ?? [];
+  const initialHighRiskTools = initialToolMeta.filter((tool) => tool.riskLevel === "high_risk");
+  const initialReviewRequiredTools = initialToolMeta.filter((tool) => tool.humanReviewRequired);
+  const initialCompositeTools = initialToolMeta.filter((tool) => tool.composite);
+  const initialOverviewAiPolicy = initialToolMeta.length
+    ? [
+        `<div class="faq-item"><h3>High-risk tools</h3><p>${escapeHtml(initialHighRiskTools.length ? initialHighRiskTools.map((tool) => tool.name).join(", ") : "None exposed.")}</p></div>`,
+        `<div class="faq-item"><h3>Human review expected</h3><p>${escapeHtml(initialReviewRequiredTools.length ? initialReviewRequiredTools.map((tool) => tool.name).join(", ") : "No tools currently flagged.")}</p></div>`,
+        `<div class="faq-item"><h3>Composite workflows</h3><p>${escapeHtml(initialCompositeTools.length ? initialCompositeTools.map((tool) => tool.name).join(", ") : "No composite tools published.")}</p></div>`,
+        `<div class="faq-item"><h3>Route gates</h3><p>${escapeHtml(`Admin routes: ${initialRuntimeMetadata?.routes?.adminEnabled ? "enabled" : "disabled"} · Debug routes: ${initialRuntimeMetadata?.routes?.debugEnabled ? "enabled" : "disabled"}`)}</p></div>`,
+      ].join("")
+    : initiallyAuthenticated
+      ? `<div class="admin-empty-state">No MCP risk policy metadata published yet.</div>`
+      : "Unlock the dashboard to inspect MCP risk policy.";
+  const initialAliasFormStatus = initiallyAuthenticated
+    ? initialAliasAdminAvailable
+      ? "Loaded live alias routes."
+      : initialAliasAdminMessage || "Alias admin unavailable in this environment."
+    : "No changes submitted yet.";
+  const initialStatUsers = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.registeredUsers) : "0";
+  const initialStatUsersMeta = initialOverviewStats ? `近 7 日新增 ${formatAdminNumber(initialOverviewStats.counts.newUsers7d)}` : "近 7 日新增 0";
+  const initialStatMailboxes = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.activeMailboxes) : "0";
+  const initialStatMailboxesMeta = initialOverviewStats
+    ? `用戶郵箱 ${formatAdminNumber(initialOverviewStats.counts.userMailboxes)} · 公共別名 ${formatAdminNumber(initialOverviewStats.counts.contactMailboxes)}`
+    : "不含公共別名";
+  const initialStatInbound = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.inboundMessages) : "0";
+  const initialStatInboundMeta = initialOverviewStats ? `最近收信 ${formatAdminDateTime(initialOverviewStats.latest.inboundAt)}` : "Inbound messages";
+  const initialStatOutbound = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.outboundMessages) : "0";
+  const initialStatOutboundMeta = initialOverviewStats ? `最近發信 ${formatAdminDateTime(initialOverviewStats.latest.outboundAt)}` : "Outbound messages";
+  const initialStatSent = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.sentJobs) : "0";
+  const initialStatSentMeta = initialOverviewStats ? `發信成功率 ${formatAdminPercent(initialOverviewStats.rates.sendSuccessRate)}` : "Queued and completed sends";
+  const initialStatFailed = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.failedJobs) : "0";
+  const initialStatFailedMeta = initialOverviewStats
+    ? initialOverviewStats.recentFailures.length
+      ? `有 ${formatAdminNumber(initialOverviewStats.recentFailures.length)} 條最近異常`
+      : "最近沒有新異常"
+    : "Failed outbound jobs";
+  const initialStatDelivered = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.deliveredEvents) : "0";
+  const initialStatDeliveredMeta = initialOverviewStats ? `送達成功率 ${formatAdminPercent(initialOverviewStats.rates.deliverySuccessRate)}` : "Delivery webhook events";
+  const initialStatPending = initialOverviewStats ? formatAdminNumber(initialOverviewStats.counts.pendingQueue) : "0";
+  const initialStatPendingMeta = initialOverviewStats
+    ? `草稿待處理 ${formatAdminNumber(initialOverviewStats.counts.pendingDrafts)} · Idempotency ${formatAdminNumber(initialOverviewStats.counts.pendingIdempotency)}`
+    : "Queued / sending / retry";
   return `<style>
     .admin-login-shell {
       min-height: calc(100vh - 220px);
@@ -1987,6 +3352,16 @@ function renderAdmin(url: URL): string {
       margin: 10px 0 0;
       color: var(--muted);
       font-size: 14px;
+    }
+    .admin-tip {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid #ead8b5;
+      background: #fff6e7;
+      color: #86561c;
+      font-size: 13px;
+      line-height: 1.45;
     }
     .admin-app-shell {
       display: none;
@@ -2101,7 +3476,7 @@ function renderAdmin(url: URL): string {
       gap: 18px;
     }
     .admin-kpi-grid {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     }
     .admin-two-column {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2129,6 +3504,12 @@ function renderAdmin(url: URL): string {
     .admin-kpi strong {
       font-size: 32px;
       line-height: 1;
+    }
+    .admin-kpi small {
+      display: block;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
     }
     .admin-card {
       min-width: 0;
@@ -2180,6 +3561,937 @@ function renderAdmin(url: URL): string {
     .admin-hidden {
       display: none;
     }
+    .admin-hero-copy {
+      max-width: 68ch;
+      margin: 0;
+    }
+    .admin-hero-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .admin-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      border-radius: 999px;
+      background: rgba(28, 25, 22, 0.06);
+      color: #3b352e;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .admin-chip::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+    .admin-chip.success {
+      background: rgba(61, 130, 90, 0.12);
+      color: #26573b;
+    }
+    .admin-chip.warning {
+      background: rgba(193, 120, 53, 0.16);
+      color: #8c511f;
+    }
+    .admin-chip.neutral {
+      background: rgba(28, 25, 22, 0.08);
+      color: #635a4f;
+    }
+    .admin-status-pill.warning {
+      background: rgba(193, 120, 53, 0.16);
+      color: #8c511f;
+    }
+    .admin-status-pill.neutral {
+      background: rgba(28, 25, 22, 0.08);
+      color: #635a4f;
+    }
+    .admin-breakdown-list {
+      display: grid;
+      gap: 12px;
+    }
+    .admin-breakdown-row {
+      display: grid;
+      gap: 6px;
+    }
+    .admin-breakdown-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      font-size: 14px;
+    }
+    .admin-breakdown-meta span:last-child {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-breakdown-track {
+      width: 100%;
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(28, 25, 22, 0.08);
+      overflow: hidden;
+    }
+    .admin-breakdown-fill {
+      display: block;
+      height: 100%;
+      min-width: 4px;
+      border-radius: 999px;
+      background: #8a7759;
+    }
+    .admin-breakdown-fill.inbound {
+      background: #4f7a70;
+    }
+    .admin-breakdown-fill.outbound {
+      background: #2d5c8f;
+    }
+    .admin-breakdown-fill.sent,
+    .admin-breakdown-fill.delivery,
+    .admin-breakdown-fill.replied,
+    .admin-breakdown-fill.success {
+      background: #2f7d57;
+    }
+    .admin-breakdown-fill.failed,
+    .admin-breakdown-fill.bounce,
+    .admin-breakdown-fill.reject {
+      background: #b45c45;
+    }
+    .admin-breakdown-fill.retry,
+    .admin-breakdown-fill.warning,
+    .admin-breakdown-fill.complaint {
+      background: #c17835;
+    }
+    .admin-breakdown-fill.queued,
+    .admin-breakdown-fill.sending,
+    .admin-breakdown-fill.pending,
+    .admin-breakdown-fill.normalized,
+    .admin-breakdown-fill.tasked,
+    .admin-breakdown-fill.ignored,
+    .admin-breakdown-fill.unknown {
+      background: #7c6b55;
+    }
+    .admin-chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .admin-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .admin-legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+    .admin-legend-item.registrations {
+      color: #8d6844;
+    }
+    .admin-legend-item.inbound {
+      color: #4f7a70;
+    }
+    .admin-legend-item.outbound {
+      color: #2d5c8f;
+    }
+    .admin-legend-item.sent {
+      color: #2f7d57;
+    }
+    .admin-legend-item.failed {
+      color: #b45c45;
+    }
+    .admin-trend-chart {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 12px;
+      align-items: end;
+      min-height: 180px;
+    }
+    .admin-trend-day {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .admin-trend-bars {
+      height: 132px;
+      display: flex;
+      align-items: end;
+      gap: 4px;
+      padding: 12px 8px 8px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255, 249, 242, 0.96), rgba(255, 255, 255, 0.7));
+      border: 1px solid rgba(28, 25, 22, 0.06);
+    }
+    .admin-trend-bar {
+      flex: 1 1 0;
+      min-height: 4px;
+      border-radius: 999px 999px 0 0;
+      background: #8d6844;
+      opacity: 0.92;
+    }
+    .admin-trend-bar.registrations {
+      background: #8d6844;
+    }
+    .admin-trend-bar.inbound {
+      background: #4f7a70;
+    }
+    .admin-trend-bar.outbound {
+      background: #2d5c8f;
+    }
+    .admin-trend-bar.sent {
+      background: #2f7d57;
+    }
+    .admin-trend-bar.failed {
+      background: #b45c45;
+    }
+    .admin-trend-label {
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-trend-total {
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .admin-mini-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .admin-mini-card {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.74);
+      border: 1px solid rgba(28, 25, 22, 0.08);
+    }
+    .admin-mini-card strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+    .admin-mini-card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .admin-empty-state {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .admin-login-card {
+      border-radius: 30px;
+      border-color: rgba(25, 25, 21, 0.1);
+      background: #ffffff;
+      box-shadow: 0 24px 80px rgba(17, 18, 19, 0.08);
+    }
+    .admin-app-shell {
+      gap: 0;
+      grid-template-columns: 316px minmax(0, 1fr);
+      padding: 0;
+      min-height: calc(100vh - 150px);
+      border: 1px solid rgba(25, 25, 21, 0.12);
+      border-radius: 34px;
+      overflow: hidden;
+      background: #fafaf8;
+      box-shadow: 0 28px 90px rgba(17, 18, 19, 0.08);
+    }
+    .admin-sidebar {
+      position: static;
+      align-self: stretch;
+      gap: 14px;
+      padding: 18px 16px 16px;
+      border: 0;
+      border-right: 1px solid rgba(25, 25, 21, 0.1);
+      border-radius: 0;
+      background: #ffffff;
+      box-shadow: none;
+      grid-template-rows: auto 1fr auto;
+    }
+    .admin-sidebar-brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 10px 12px;
+    }
+    .admin-sidebar-account {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .admin-brand-mark,
+    .admin-footer-avatar {
+      width: 36px;
+      height: 36px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: linear-gradient(145deg, #141414, #6a4cff);
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .admin-sidebar-copy,
+    .admin-footer-copy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .admin-sidebar-copy strong,
+    .admin-footer-copy strong {
+      font-size: 15px;
+    }
+    .admin-sidebar-kicker,
+    .admin-footer-copy span {
+      color: #6a6a63;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .admin-sidebar nav {
+      gap: 4px;
+    }
+    .admin-nav-button {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      font-size: 15px;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+    .admin-nav-button:hover {
+      background: #f5f5f2;
+    }
+    .admin-nav-button.active {
+      background: #f0f0ed;
+      border-color: #e2e2dc;
+      transform: none;
+    }
+    .admin-nav-icon {
+      width: 20px;
+      height: 20px;
+      flex: none;
+      color: #5c5c55;
+    }
+    .admin-nav-copy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+      text-align: left;
+    }
+    .admin-nav-button strong {
+      margin: 0;
+      font-size: 14px;
+      color: #1f1f1d;
+    }
+    .admin-nav-button span {
+      margin: 0;
+      font-size: 12px;
+      color: #74746c;
+    }
+    .admin-sidebar-footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 10px 8px;
+      border-top: 1px solid rgba(25, 25, 21, 0.08);
+    }
+    .admin-footer-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      background: #f1f1ec;
+      color: #343430;
+    }
+    .admin-footer-menu {
+      margin-left: auto;
+      color: #76766d;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .admin-main {
+      gap: 0;
+      background: #fafaf8;
+    }
+    .admin-topbar {
+      padding: 20px 28px;
+      border: 0;
+      border-bottom: 1px solid rgba(25, 25, 21, 0.1);
+      border-radius: 0;
+      background: #ffffff;
+    }
+    .admin-topbar-copy {
+      display: grid;
+      gap: 6px;
+    }
+    .admin-topbar-copy .eyebrow {
+      color: #75756d;
+      letter-spacing: 0.08em;
+    }
+    .admin-topbar-copy h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.05;
+    }
+    .admin-topbar-actions {
+      align-items: center;
+      gap: 14px;
+    }
+    .admin-toolbar-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px;
+      border-radius: 18px;
+      background: #f3f3ef;
+      border: 1px solid #d8d8d1;
+      color: #2c2c29;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .admin-toolbar-keycap {
+      display: inline-grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 10px;
+      background: rgba(25, 25, 21, 0.08);
+      color: #6a6a63;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .admin-toolbar-link {
+      color: #2c2c29;
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .admin-topbar .button.secondary,
+    .admin-view .button.secondary,
+    .admin-view .button.primary {
+      border-radius: 16px;
+      box-shadow: none;
+    }
+    .admin-topbar .button.secondary {
+      border: 1px solid #d8d8d1;
+      background: #f3f3ef;
+      color: #2c2c29;
+    }
+    .admin-view {
+      gap: 18px;
+      padding: 30px 34px 40px;
+      background: #fafaf8;
+    }
+    .admin-page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .admin-page-title {
+      margin: 6px 0 0;
+      font-size: clamp(40px, 5vw, 58px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    .admin-summary-strip {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      padding: 16px 20px;
+      border-radius: 24px;
+      border: 1px solid rgba(25, 25, 21, 0.1);
+      background: #ffffff;
+    }
+    .admin-hero-copy {
+      margin: 0;
+      color: #57574f;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .admin-hero-pills {
+      margin-top: 0;
+      justify-content: flex-end;
+    }
+    .admin-chip,
+    .admin-status-pill {
+      background: #f2f3ef;
+      color: #292926;
+      border: 1px solid #d9dad3;
+      font-size: 13px;
+    }
+    .admin-chip.success,
+    .admin-status-pill.success {
+      background: #e8f6ee;
+      color: #16754b;
+      border-color: #cfe6d8;
+    }
+    .admin-chip.warning,
+    .admin-status-pill.warning {
+      background: #fff3df;
+      color: #94601d;
+      border-color: #efd9af;
+    }
+    .admin-chip.neutral,
+    .admin-status-pill.neutral {
+      background: #f3f3ef;
+      color: #57574f;
+      border-color: #dfdfd7;
+    }
+    .admin-tabs-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .admin-tab {
+      padding: 11px 18px;
+      border-radius: 18px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #31312d;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease;
+    }
+    .admin-tab:hover {
+      background: #f2f2ee;
+    }
+    .admin-tab.active {
+      background: #ecece8;
+      border-color: #ddddd6;
+    }
+    .admin-filter-row {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) repeat(3, minmax(150px, 0.7fr));
+      gap: 12px;
+      align-items: center;
+    }
+    .admin-search-field {
+      position: relative;
+      display: block;
+    }
+    .admin-search-icon {
+      position: absolute;
+      left: 18px;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      color: #6e6e66;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+    .admin-search-field .admin-input {
+      padding-left: 54px;
+    }
+    .admin-input,
+    .admin-select,
+    .admin-textarea {
+      border-radius: 18px;
+      border-color: #d8d8d1;
+      background: #f4f4f1;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    }
+    .admin-table-shell {
+      border-radius: 24px;
+      border: 1px solid #d9d9d3;
+      background: #ffffff;
+      overflow: hidden;
+    }
+    .admin-table-header,
+    .admin-table-row {
+      display: grid;
+      grid-template-columns: minmax(240px, 1.7fr) minmax(120px, 0.7fr) minmax(240px, 1.8fr) minmax(130px, 0.8fr) 44px;
+      gap: 16px;
+      align-items: center;
+      padding: 16px 18px;
+    }
+    .admin-table-header {
+      background: #f4f4f1;
+      color: #4d4d46;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .admin-table-body {
+      display: grid;
+    }
+    .admin-table-row {
+      border-top: 1px solid #efefe9;
+      background: #ffffff;
+    }
+    .admin-table-row:hover {
+      background: #fbfbf9;
+    }
+    .admin-email-recipient,
+    .admin-email-subject {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .admin-email-avatar {
+      width: 48px;
+      height: 48px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      border: 1px solid #d5ddd6;
+      background: linear-gradient(180deg, #ffffff, #f3f8f5);
+      color: #4f8a6b;
+    }
+    .admin-email-avatar svg {
+      width: 26px;
+      height: 26px;
+    }
+    .admin-email-lines {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+    .admin-email-primary,
+    .admin-email-subject-text {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 15px;
+      font-weight: 600;
+      color: #232320;
+    }
+    .admin-email-secondary {
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #76766e;
+      font-size: 12px;
+    }
+    .admin-status-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .admin-status-badge.delivered,
+    .admin-status-badge.sent,
+    .admin-status-badge.replied {
+      background: #e7f7ec;
+      color: #14734a;
+      border-color: #cfe8d7;
+    }
+    .admin-status-badge.received,
+    .admin-status-badge.processed,
+    .admin-status-badge.normalized {
+      background: #edf3ff;
+      color: #295ea1;
+      border-color: #d3e0fb;
+    }
+    .admin-status-badge.failed,
+    .admin-status-badge.bounced,
+    .admin-status-badge.rejected {
+      background: #fdebea;
+      color: #a14236;
+      border-color: #f3cdc8;
+    }
+    .admin-status-badge.retry,
+    .admin-status-badge.warning,
+    .admin-status-badge.complaint,
+    .admin-status-badge.queued,
+    .admin-status-badge.sending {
+      background: #fff4df;
+      color: #9c651d;
+      border-color: #efd8aa;
+    }
+    .admin-status-badge.ignored,
+    .admin-status-badge.tasked {
+      background: #f1f1ee;
+      color: #66665f;
+      border-color: #dfdfd8;
+    }
+    .admin-time-label {
+      color: #4f4f49;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    .admin-icon-button {
+      width: 36px;
+      height: 36px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 14px;
+      border: 1px solid #d8d8d1;
+      background: #f4f4f1;
+      color: #51514b;
+      cursor: pointer;
+    }
+    .admin-icon-button svg {
+      width: 18px;
+      height: 18px;
+    }
+    .admin-kpi-grid {
+      margin-top: 6px;
+    }
+    .admin-kpi {
+      padding: 20px 20px 18px;
+      border-radius: 22px;
+      background: #ffffff;
+      border-color: rgba(25, 25, 21, 0.1);
+    }
+    .admin-kpi .label {
+      color: #72726a;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 11px;
+    }
+    .admin-kpi strong {
+      font-size: 34px;
+      letter-spacing: -0.04em;
+    }
+    .admin-card,
+    .admin-hero-card,
+    .admin-mini-card {
+      background: #ffffff;
+      border-color: rgba(25, 25, 21, 0.1);
+      box-shadow: none;
+    }
+    .admin-hero-card {
+      display: none;
+    }
+    .admin-card {
+      border-radius: 24px;
+    }
+    .admin-card-header h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .admin-card-header p,
+    .admin-note,
+    .admin-muted {
+      color: #72726a;
+    }
+    .admin-list {
+      gap: 10px;
+    }
+    .admin-card .faq-item,
+    .admin-list .faq-item {
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid #ecece5;
+      background: #fcfcfa;
+    }
+    .admin-card .faq-item h3,
+    .admin-list .faq-item h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+    .admin-card .faq-item p,
+    .admin-list .faq-item p {
+      margin: 0;
+      color: #696962;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .admin-card .faq-item p + p,
+    .admin-list .faq-item p + p {
+      margin-top: 6px;
+    }
+    .admin-view .code {
+      border-radius: 16px;
+      border: 1px solid #ecece5;
+      background: #f7f7f4;
+      color: #40403b;
+      white-space: pre-wrap;
+    }
+    .admin-login-card {
+      border-color: rgba(110, 93, 255, 0.18);
+      background:
+        radial-gradient(circle at top right, rgba(107, 92, 255, 0.22), transparent 34%),
+        linear-gradient(180deg, #ffffff 0%, #f7f7ff 100%);
+      box-shadow: 0 28px 90px rgba(60, 48, 130, 0.12);
+    }
+    .admin-app-shell {
+      background: #f5f6ff;
+      border-color: #d8dcf8;
+      box-shadow: 0 30px 100px rgba(55, 49, 120, 0.12);
+    }
+    .admin-sidebar {
+      background:
+        radial-gradient(circle at top, rgba(255, 255, 255, 0.12), transparent 22%),
+        linear-gradient(180deg, #1b1d3f 0%, #382782 48%, #5d45d8 100%);
+      border-right-color: rgba(255, 255, 255, 0.12);
+    }
+    .admin-brand-mark {
+      background: linear-gradient(145deg, #ffffff, #d9d8ff);
+      color: #4338ca;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+    }
+    .admin-sidebar-copy strong,
+    .admin-footer-copy strong,
+    .admin-sidebar .admin-nav-button strong,
+    .admin-sidebar .admin-nav-icon {
+      color: #f8f8ff;
+    }
+    .admin-sidebar-kicker,
+    .admin-footer-copy span,
+    .admin-sidebar .admin-nav-button span,
+    .admin-sidebar .admin-footer-menu {
+      color: rgba(234, 237, 255, 0.7);
+    }
+    .admin-sidebar .admin-nav-button:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .admin-sidebar .admin-nav-button.active {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.16);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+    .admin-sidebar-footer {
+      border-top-color: rgba(255, 255, 255, 0.14);
+    }
+    .admin-footer-avatar {
+      background: rgba(255, 255, 255, 0.14);
+      color: #f8f8ff;
+    }
+    .admin-topbar {
+      background: rgba(255, 255, 255, 0.94);
+      border-bottom-color: #dde1f8;
+      box-shadow: 0 10px 30px rgba(69, 64, 142, 0.05);
+    }
+    .admin-toolbar-pill {
+      background: #eef0ff;
+      border-color: #d9defb;
+      color: #2f3472;
+    }
+    .admin-toolbar-keycap {
+      background: rgba(72, 64, 168, 0.12);
+      color: #5750b6;
+    }
+    .admin-toolbar-link {
+      color: #353b83;
+    }
+    .admin-topbar .button.secondary,
+    .admin-view .button.secondary {
+      border-color: #d7ddfb;
+      background: #eef1ff;
+      color: #353b83;
+    }
+    .admin-view .button.primary {
+      border-color: #5d45d8;
+      background: linear-gradient(180deg, #6b5cff 0%, #5743da 100%);
+      color: #ffffff;
+    }
+    .admin-summary-strip {
+      border-color: #dce0fb;
+      background:
+        radial-gradient(circle at right top, rgba(108, 93, 255, 0.14), transparent 30%),
+        linear-gradient(180deg, #ffffff 0%, #f7f8ff 100%);
+    }
+    .admin-chip,
+    .admin-status-pill {
+      background: #eef1ff;
+      color: #353b83;
+      border-color: #d7ddfb;
+    }
+    .admin-chip.success,
+    .admin-status-pill.success {
+      background: #e6fbf1;
+      color: #0f7b4b;
+      border-color: #c7efd9;
+    }
+    .admin-chip.warning,
+    .admin-status-pill.warning {
+      background: #fff3df;
+      color: #9b6218;
+      border-color: #f2dbb2;
+    }
+    .admin-chip.neutral,
+    .admin-status-pill.neutral {
+      background: #eef1ff;
+      color: #5a61a6;
+      border-color: #d7ddfb;
+    }
+    .admin-tab:hover {
+      background: #f1f3ff;
+    }
+    .admin-tab.active {
+      background: #edf0ff;
+      border-color: #d6dbfb;
+      color: #2f3472;
+    }
+    .admin-input,
+    .admin-select,
+    .admin-textarea {
+      border-color: #d8def7;
+      background: #ffffff;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.92),
+        0 1px 2px rgba(37, 44, 97, 0.03);
+    }
+    .admin-input:focus,
+    .admin-select:focus,
+    .admin-textarea:focus {
+      outline: 2px solid rgba(103, 80, 255, 0.16);
+      outline-offset: 1px;
+      border-color: #a4b0fb;
+    }
+    .admin-table-shell,
+    .admin-card,
+    .admin-kpi,
+    .admin-mini-card {
+      border-color: #dde1f8;
+      box-shadow: 0 10px 28px rgba(64, 70, 134, 0.05);
+    }
+    .admin-table-header {
+      background: #f3f5ff;
+      color: #4d5698;
+    }
+    .admin-table-row {
+      border-top-color: #eceefb;
+    }
+    .admin-table-row:hover {
+      background: #f9faff;
+    }
+    .admin-email-avatar {
+      border-color: #d8def7;
+      background: linear-gradient(180deg, #ffffff, #f0f4ff);
+      color: #5863c7;
+    }
+    .admin-icon-button {
+      border-color: #d8def7;
+      background: #f4f6ff;
+      color: #515ab0;
+    }
+    .admin-card .faq-item,
+    .admin-list .faq-item,
+    .admin-view .code {
+      border-color: #e5e8fb;
+      background: #fafbff;
+    }
+    .admin-view .code {
+      color: #394071;
+    }
     @media (max-width: 1100px) {
       .admin-app-shell {
         grid-template-columns: 1fr;
@@ -2190,13 +4502,35 @@ function renderAdmin(url: URL): string {
       .admin-kpi-grid,
       .admin-three-column,
       .admin-two-column,
+      .admin-mini-grid,
       .admin-login-grid {
         grid-template-columns: 1fr;
+      }
+      .admin-summary-strip,
+      .admin-page-header {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+      .admin-filter-row,
+      .admin-table-header,
+      .admin-table-row {
+        grid-template-columns: 1fr;
+      }
+      .admin-table-header {
+        display: none;
+      }
+      .admin-trend-chart {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 720px) {
+      .admin-trend-chart {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
   </style>
 
-  <section id="admin-login-view" class="admin-login-shell">
+  <section id="admin-login-view" class="admin-login-shell"${initiallyAuthenticated ? ' style="display:none;"' : ""}>
     <div class="admin-login-card">
       <div class="eyebrow">Admin Access</div>
       <h1 style="font-size:52px; margin: 10px 0 14px;">Mailagents Control Room</h1>
@@ -2204,12 +4538,12 @@ function renderAdmin(url: URL): string {
       <div class="admin-login-grid">
         <section class="card">
           <h3>Sign in</h3>
-          <p>使用 Worker 上配置的管理密鑰。密鑰只會保存在你當前這台瀏覽器的 localStorage。</p>
-          <form id="auth-form">
-            <p><input id="admin-secret" class="admin-input" type="password" placeholder="Admin secret" /></p>
-            <p><button class="button primary" type="submit">Enter Dashboard</button></p>
+          <p>使用 Worker 上配置的管理密鑰。提交後會由服務端建立後台 session，不再依賴瀏覽器 localStorage。</p>
+          <form id="auth-form" method="post" action="/admin/login" autocomplete="off">
+            <p><input id="admin-secret" name="secret" class="admin-input" type="password" placeholder="Admin secret" /></p>
+            <p><button id="auth-submit" class="button primary" type="submit">Enter Dashboard</button></p>
           </form>
-          <p id="auth-status" class="admin-note">Dashboard is locked.</p>
+          <p id="auth-status" class="admin-note">${authStatusCopy}</p>
         </section>
         <section class="card">
           <h3>Current scope</h3>
@@ -2221,110 +4555,259 @@ function renderAdmin(url: URL): string {
     </div>
   </section>
 
-  <section id="admin-app-shell" class="admin-app-shell">
+  <section id="admin-app-shell" class="admin-app-shell${initiallyAuthenticated ? " ready" : ""}">
     <aside class="admin-sidebar">
-      <div>
-        <div class="eyebrow">Mailagents Admin</div>
-        <h2 style="margin:8px 0 10px;">Operations Dashboard</h2>
-        <p class="admin-note">郵件管理、轉發別名、發件與隊列狀態都放到這個工作台裡。</p>
+      <div class="admin-sidebar-brand">
+        <div class="admin-sidebar-account">
+          <div class="admin-brand-mark">M</div>
+          <div class="admin-sidebar-copy">
+            <strong>mailagents</strong>
+            <span class="admin-sidebar-kicker">Operations workspace</span>
+          </div>
+        </div>
+        <span class="admin-footer-menu">...</span>
       </div>
       <nav aria-label="Admin sections">
         <button class="admin-nav-button active" data-view="overview" type="button">
-          <strong>Overview</strong>
-          <span>系統概況與快速入口</span>
+          <span class="admin-nav-icon">${iconOverview}</span>
+          <span class="admin-nav-copy">
+            <strong>Dashboard</strong>
+            <span>運行指標與全局狀態</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="messages" type="button">
-          <strong>Messages</strong>
-          <span>郵箱與消息明細</span>
+          <span class="admin-nav-icon">${iconMessages}</span>
+          <span class="admin-nav-copy">
+            <strong>Messages</strong>
+            <span>郵箱與消息明細</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="contact" type="button">
-          <strong>Contact Inboxes</strong>
-          <span>hello / security / privacy / dmarc</span>
+          <span class="admin-nav-icon">${iconContact}</span>
+          <span class="admin-nav-copy">
+            <strong>Contact Inboxes</strong>
+            <span>hello / security / privacy / dmarc</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="threads" type="button">
-          <strong>Threads & Delivery</strong>
-          <span>線程、投遞事件、Outbox</span>
+          <span class="admin-nav-icon">${iconThreads}</span>
+          <span class="admin-nav-copy">
+            <strong>Threads & Delivery</strong>
+            <span>線程、投遞事件、Outbox</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="aliases" type="button">
-          <strong>Contact Aliases</strong>
-          <span>公共郵箱轉發規則</span>
+          <span class="admin-nav-icon">${iconAliases}</span>
+          <span class="admin-nav-copy">
+            <strong>Contact Aliases</strong>
+            <span>公共郵箱轉發規則</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="compose" type="button">
-          <strong>Compose</strong>
-          <span>後台發件與快速回覆</span>
+          <span class="admin-nav-icon">${iconCompose}</span>
+          <span class="admin-nav-copy">
+            <strong>Compose</strong>
+            <span>後台發件與快速回覆</span>
+          </span>
         </button>
         <button class="admin-nav-button" data-view="idempotency" type="button">
-          <strong>Idempotency</strong>
-          <span>重試鍵、衝突與清理</span>
+          <span class="admin-nav-icon">${iconIdempotency}</span>
+          <span class="admin-nav-copy">
+            <strong>Idempotency</strong>
+            <span>重試鍵、衝突與清理</span>
+          </span>
         </button>
       </nav>
+      <div class="admin-sidebar-footer">
+        <div class="admin-footer-avatar">A</div>
+        <div class="admin-footer-copy">
+          <strong>admin</strong>
+          <span>ops@${hostname}</span>
+        </div>
+        <span class="admin-footer-menu">...</span>
+      </div>
     </aside>
 
     <div class="admin-main">
       <section class="admin-topbar">
-        <div>
-          <div class="eyebrow">Workspace</div>
-          <h2 id="admin-view-title" style="margin: 6px 0 8px;">Overview</h2>
-          <div id="admin-runtime-status" class="admin-status-pill">Connected to live runtime</div>
+        <div class="admin-topbar-copy">
+          <div class="eyebrow">Mailagents Control Room</div>
+          <h2 id="admin-view-title">Dashboard</h2>
+          <div id="admin-runtime-status" class="admin-status-pill ${escapeHtml(initialRuntimeStatusTone)}">${escapeHtml(initialRuntimeStatusCopy)}</div>
         </div>
         <div class="admin-topbar-actions">
-          <button id="refresh-dashboard" class="button secondary" type="button">Refresh</button>
-          <button id="logout-dashboard" class="button secondary" type="button">Log Out</button>
+          <span class="admin-toolbar-pill">Feedback <span class="admin-toolbar-keycap">F</span></span>
+          <a class="admin-toolbar-link" href="/contact">Help</a>
+          <a class="admin-toolbar-link" href="/CHANGELOG.md">Docs</a>
+          <a id="refresh-dashboard" class="button secondary" href="/admin">Refresh</a>
+          <form method="post" action="/admin/logout" style="margin:0;">
+            <button id="logout-dashboard" class="button secondary" type="submit">Log Out</button>
+          </form>
         </div>
       </section>
 
       <section id="admin-view-overview" class="admin-view active">
-        <article class="admin-hero-card">
-          <div class="eyebrow">Overview</div>
-          <h2 style="margin:8px 0 10px;">分區式後台已就位</h2>
-          <p>現在的後台先進入登錄頁，解鎖後再進入左側導航的管理界面。右側內容會跟隨模塊切換，不再把所有工具堆在一個長頁裡。</p>
-        </article>
+        <div class="admin-page-header">
+          <div>
+            <div class="eyebrow">Operations Overview</div>
+            <h1 class="admin-page-title">Dashboard</h1>
+          </div>
+        </div>
+        <section class="admin-summary-strip">
+          <p id="overview-hero-copy" class="admin-hero-copy">${escapeHtml(initialOverviewHeroCopy)}</p>
+          <div id="overview-health-pills" class="admin-hero-pills">${initialOverviewHealthPills}</div>
+        </section>
+        <div class="admin-tabs-row" role="tablist" aria-label="Overview tabs">
+          <button class="admin-tab${initialOverviewTab === "sending" ? " active" : ""}" data-overview-tab="sending" type="button">Outbound</button>
+          <button class="admin-tab${initialOverviewTab === "receiving" ? " active" : ""}" data-overview-tab="receiving" type="button">Inbound</button>
+          <button class="admin-tab${initialOverviewTab === "overview" ? " active" : ""}" data-overview-tab="overview" type="button">System</button>
+        </div>
+        <div class="admin-filter-row">
+          <label class="admin-search-field">
+            <span class="admin-search-icon">${iconSearch}</span>
+            <input id="overview-search" class="admin-input" type="text" placeholder="Search subject, mailbox, sender, recipient" />
+          </label>
+          <select id="overview-time-window" class="admin-select">
+            <option value="15">Last 15 days</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <select id="overview-status-filter" class="admin-select">
+            <option value="">All statuses</option>
+          </select>
+          <select id="overview-mailbox-filter" class="admin-select">
+            <option value="">All mailboxes</option>
+          </select>
+        </div>
+        <section class="admin-table-shell">
+          <div class="admin-table-header">
+            <span id="overview-recipient-label">${escapeHtml(initialOverviewRecipientLabel)}</span>
+            <span>Status</span>
+            <span>Subject</span>
+            <span>Sent</span>
+            <span></span>
+          </div>
+          <div id="overview-activity-list" class="admin-table-body">${initialOverviewActivityHtml}</div>
+        </section>
         <div class="admin-kpi-grid">
           <div class="admin-kpi">
-            <span class="label">Mailboxes</span>
-            <strong id="stat-mailboxes">0</strong>
+            <span class="label">註冊用戶</span>
+            <strong id="stat-users">${escapeHtml(initialStatUsers)}</strong>
+            <small id="stat-users-meta">${escapeHtml(initialStatUsersMeta)}</small>
           </div>
           <div class="admin-kpi">
-            <span class="label">Visible Messages</span>
-            <strong id="stat-messages">0</strong>
+            <span class="label">活躍郵箱</span>
+            <strong id="stat-mailboxes">${escapeHtml(initialStatMailboxes)}</strong>
+            <small id="stat-mailboxes-meta">${escapeHtml(initialStatMailboxesMeta)}</small>
           </div>
           <div class="admin-kpi">
-            <span class="label">Outbound Jobs</span>
-            <strong id="stat-jobs">0</strong>
+            <span class="label">收信總量</span>
+            <strong id="stat-inbound">${escapeHtml(initialStatInbound)}</strong>
+            <small id="stat-inbound-meta">${escapeHtml(initialStatInboundMeta)}</small>
           </div>
           <div class="admin-kpi">
-            <span class="label">Configured Aliases</span>
-            <strong id="stat-aliases">0</strong>
+            <span class="label">發信總量</span>
+            <strong id="stat-outbound">${escapeHtml(initialStatOutbound)}</strong>
+            <small id="stat-outbound-meta">${escapeHtml(initialStatOutboundMeta)}</small>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">成功發信</span>
+            <strong id="stat-sent">${escapeHtml(initialStatSent)}</strong>
+            <small id="stat-sent-meta">${escapeHtml(initialStatSentMeta)}</small>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">未成功發信</span>
+            <strong id="stat-failed">${escapeHtml(initialStatFailed)}</strong>
+            <small id="stat-failed-meta">${escapeHtml(initialStatFailedMeta)}</small>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">成功送達</span>
+            <strong id="stat-delivered">${escapeHtml(initialStatDelivered)}</strong>
+            <small id="stat-delivered-meta">${escapeHtml(initialStatDeliveredMeta)}</small>
+          </div>
+          <div class="admin-kpi">
+            <span class="label">待處理隊列</span>
+            <strong id="stat-pending">${escapeHtml(initialStatPending)}</strong>
+            <small id="stat-pending-meta">${escapeHtml(initialStatPendingMeta)}</small>
           </div>
         </div>
         <div class="admin-two-column">
           <section class="admin-card">
             <div class="admin-card-header">
               <div>
-                <h3>Mail runtime</h3>
-                <p>讀取現有郵箱與消息，不改動你現有收發鏈路。</p>
+                <h3>運行快照</h3>
+                <p>帳號、流量、最近活動時間與快捷回覆上下文。</p>
               </div>
             </div>
-            <div id="overview-mail-runtime" class="admin-list admin-muted">Unlock the dashboard to inspect runtime status.</div>
+            <div id="overview-mail-runtime" class="admin-list admin-muted">${initialOverviewMailRuntime}</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>近 7 天趨勢</h3>
+                <p>註冊、收信、發信、成功與失敗都集中在這裡看。</p>
+              </div>
+            </div>
+            <div id="overview-activity-trend" class="admin-list admin-muted">${initialOverviewTrendHtml}</div>
+          </section>
+        </div>
+        <div class="admin-three-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>發信隊列</h3>
+                <p>排隊、重試、草稿與冪等鍵狀態。</p>
+              </div>
+            </div>
+            <div id="overview-queue-health" class="admin-list admin-muted">${initialOverviewQueueHealth}</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>送達健康度</h3>
+                <p>Delivery、bounce、complaint、reject 分佈。</p>
+              </div>
+            </div>
+            <div id="overview-delivery-health" class="admin-list admin-muted">${initialOverviewDeliveryHealth}</div>
+          </section>
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>高活躍郵箱</h3>
+                <p>最近累積郵件量最高的前幾個郵箱。</p>
+              </div>
+            </div>
+            <div id="overview-top-mailboxes" class="admin-list admin-muted">${initialOverviewTopMailboxes}</div>
+          </section>
+        </div>
+        <div class="admin-two-column">
+          <section class="admin-card">
+            <div class="admin-card-header">
+              <div>
+                <h3>最近異常</h3>
+                <p>優先查看最近失敗的發件任務與錯誤原因。</p>
+              </div>
+            </div>
+            <div id="overview-recent-failures" class="admin-list admin-muted">${initialOverviewRecentFailures}</div>
           </section>
           <section class="admin-card">
             <div class="admin-card-header">
               <div>
                 <h3>Contact aliases</h3>
-                <p>面向官網展示的三個公共地址。</p>
+                <p>面向官網展示的公共地址與實際路由狀態。</p>
               </div>
             </div>
-            <div id="overview-alias-status" class="admin-list admin-muted">Unlock the dashboard to inspect alias status.</div>
+            <div id="overview-alias-status" class="admin-list admin-muted">${initiallyAuthenticated ? initialAliasCards : "Unlock the dashboard to inspect alias status."}</div>
           </section>
         </div>
-        <section class="admin-card" style="margin-top:24px;">
+        <section class="admin-card">
           <div class="admin-card-header">
             <div>
               <h3>AI runtime policy</h3>
               <p>直接查看 MCP 工具的風險分級、是否有副作用，以及哪些動作應該先停下來等人確認。</p>
             </div>
           </div>
-          <div id="overview-ai-policy" class="admin-list admin-muted">Unlock the dashboard to inspect MCP risk policy.</div>
+          <div id="overview-ai-policy" class="admin-list admin-muted">${initialOverviewAiPolicy}</div>
         </section>
       </section>
 
@@ -2480,7 +4963,7 @@ function renderAdmin(url: URL): string {
                 <button class="button primary" type="submit">Create Inbox Alias</button>
               </div>
             </form>
-            <p id="alias-status" class="admin-note">No changes submitted yet.</p>
+            <p id="alias-status" class="admin-note">${escapeHtml(initialAliasFormStatus)}</p>
           </section>
           <section class="admin-card">
             <div class="admin-card-header">
@@ -2505,7 +4988,7 @@ function renderAdmin(url: URL): string {
               <p>公共聯繫郵箱的實際轉發狀態。</p>
             </div>
           </div>
-          <div id="alias-list" class="admin-list">Unlock the dashboard to load aliases.</div>
+          <div id="alias-list" class="admin-list">${initiallyAuthenticated ? initialAliasCards : "Unlock the dashboard to load aliases."}</div>
         </section>
       </section>
 
@@ -2589,10 +5072,16 @@ function renderAdmin(url: URL): string {
   </section>
 
   <script>
-    const secretKey = "mailagents_admin_secret";
+    const initiallyAuthenticated = ${JSON.stringify(initiallyAuthenticated)};
+    const initialOverviewTab = ${serializeAdminScriptData(initialOverviewTab)};
+    const initialOverviewStats = ${serializeAdminScriptData(initialOverviewStats)};
+    const initialRuntimeMetadata = ${serializeAdminScriptData(initialRuntimeMetadata)};
+    const initialAliases = ${serializeAdminScriptData(initialAliases)};
+    const initialAliasAdminAvailable = ${serializeAdminScriptData(initialAliasAdminAvailable)};
+    const initialAliasAdminMessage = ${serializeAdminScriptData(initialAliasAdminMessage)};
+    const overviewMessageIcon = ${JSON.stringify(iconMessages)};
     const authForm = document.getElementById("auth-form");
     const aliasForm = document.getElementById("alias-form");
-    const secretInput = document.getElementById("admin-secret");
     const authStatus = document.getElementById("auth-status");
     const aliasStatus = document.getElementById("alias-status");
     const aliasList = document.getElementById("alias-list");
@@ -2635,15 +5124,41 @@ function renderAdmin(url: URL): string {
     const refreshDashboard = document.getElementById("refresh-dashboard");
     const logoutDashboard = document.getElementById("logout-dashboard");
     const runtimeStatus = document.getElementById("admin-runtime-status");
+    const overviewTabs = Array.from(document.querySelectorAll("[data-overview-tab]"));
+    const overviewSearch = document.getElementById("overview-search");
+    const overviewTimeWindow = document.getElementById("overview-time-window");
+    const overviewStatusFilter = document.getElementById("overview-status-filter");
+    const overviewMailboxFilter = document.getElementById("overview-mailbox-filter");
+    const overviewRecipientLabel = document.getElementById("overview-recipient-label");
+    const overviewActivityList = document.getElementById("overview-activity-list");
+    const overviewHeroCopy = document.getElementById("overview-hero-copy");
+    const overviewHealthPills = document.getElementById("overview-health-pills");
     const overviewMailRuntime = document.getElementById("overview-mail-runtime");
+    const overviewActivityTrend = document.getElementById("overview-activity-trend");
+    const overviewQueueHealth = document.getElementById("overview-queue-health");
+    const overviewDeliveryHealth = document.getElementById("overview-delivery-health");
+    const overviewTopMailboxes = document.getElementById("overview-top-mailboxes");
+    const overviewRecentFailures = document.getElementById("overview-recent-failures");
     const overviewAliasStatus = document.getElementById("overview-alias-status");
     const overviewAiPolicy = document.getElementById("overview-ai-policy");
+    const statUsers = document.getElementById("stat-users");
+    const statUsersMeta = document.getElementById("stat-users-meta");
     const statMailboxes = document.getElementById("stat-mailboxes");
-    const statMessages = document.getElementById("stat-messages");
-    const statJobs = document.getElementById("stat-jobs");
-    const statAliases = document.getElementById("stat-aliases");
+    const statMailboxesMeta = document.getElementById("stat-mailboxes-meta");
+    const statInbound = document.getElementById("stat-inbound");
+    const statInboundMeta = document.getElementById("stat-inbound-meta");
+    const statOutbound = document.getElementById("stat-outbound");
+    const statOutboundMeta = document.getElementById("stat-outbound-meta");
+    const statSent = document.getElementById("stat-sent");
+    const statSentMeta = document.getElementById("stat-sent-meta");
+    const statFailed = document.getElementById("stat-failed");
+    const statFailedMeta = document.getElementById("stat-failed-meta");
+    const statDelivered = document.getElementById("stat-delivered");
+    const statDeliveredMeta = document.getElementById("stat-delivered-meta");
+    const statPending = document.getElementById("stat-pending");
+    const statPendingMeta = document.getElementById("stat-pending-meta");
     const viewMeta = {
-      overview: "Overview",
+      overview: "Dashboard",
       messages: "Messages",
       contact: "Contact Inboxes",
       threads: "Threads & Delivery",
@@ -2655,22 +5170,25 @@ function renderAdmin(url: URL): string {
     let currentContactMailboxId = null;
     let mailboxIndex = [];
     let currentReplyContext = null;
-    let latestAliases = [];
+    let latestAliases = Array.isArray(initialAliases) ? initialAliases.slice() : [];
     let latestMessages = [];
     let latestJobs = [];
-    let latestRuntimeMetadata = null;
-
-    secretInput.value = window.localStorage.getItem(secretKey) || "";
-
+    let latestRuntimeMetadata = initialRuntimeMetadata;
+    let latestOverviewStats = initialOverviewStats;
+    let aliasAdminAvailable = initialAliasAdminAvailable;
+    let aliasAdminMessage = initialAliasAdminMessage || "";
+    let currentOverviewTab = initialOverviewTab;
     async function api(path, init = {}) {
-      const secret = window.localStorage.getItem(secretKey) || "";
       const headers = new Headers(init.headers || {});
-      headers.set("x-admin-secret", secret);
       if (!headers.has("content-type") && init.body) {
         headers.set("content-type", "application/json");
       }
 
-      const response = await fetch(path, { ...init, headers });
+      const response = await fetch(path, {
+        ...init,
+        headers,
+        credentials: "same-origin",
+      });
       const raw = await response.text();
       let payload = null;
       if (raw) {
@@ -2717,20 +5235,534 @@ function renderAdmin(url: URL): string {
       appShell.classList.toggle("ready", isAuthenticated);
     }
 
+    function formatNumber(value) {
+      return new Intl.NumberFormat().format(Number(value || 0));
+    }
+
+    function formatPercent(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return "n/a";
+      }
+
+      const percentage = value * 100;
+      const digits = percentage >= 10 || percentage === 0 ? 0 : 1;
+      return percentage.toFixed(digits) + "%";
+    }
+
+    function formatDateTime(value) {
+      if (!value) {
+        return "n/a";
+      }
+
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+    }
+
+    function formatRelativeTime(value) {
+      if (!value) {
+        return "n/a";
+      }
+
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        return String(value);
+      }
+
+      const diffMs = parsed.getTime() - Date.now();
+      const diffMinutes = Math.round(diffMs / 60000);
+      const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+      if (Math.abs(diffMinutes) < 60) {
+        return formatter.format(diffMinutes, "minute");
+      }
+
+      const diffHours = Math.round(diffMinutes / 60);
+      if (Math.abs(diffHours) < 48) {
+        return formatter.format(diffHours, "hour");
+      }
+
+      const diffDays = Math.round(diffHours / 24);
+      return formatter.format(diffDays, "day");
+    }
+
+    function formatDayLabel(value) {
+      const parsed = new Date(value + "T00:00:00Z");
+      return Number.isNaN(parsed.getTime())
+        ? value.slice(5)
+        : parsed.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+    }
+
+    function humanizeLabel(value) {
+      const dictionary = {
+        received: "Received",
+        normalized: "Normalized",
+        tasked: "Tasked",
+        replied: "Replied",
+        ignored: "Ignored",
+        failed: "Failed",
+        queued: "Queued",
+        sending: "Sending",
+        retry: "Retry",
+        sent: "Sent",
+        delivery: "Delivered",
+        bounce: "Bounced",
+        complaint: "Complaint",
+        reject: "Rejected",
+        unknown: "Unknown",
+      };
+      return dictionary[value] || value.split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+    }
+
+    function getOverviewActivityStatus(item) {
+      if (item.direction === "outbound") {
+        if (item.deliveryEvent === "delivery") {
+          return { label: "Delivered", tone: "delivered" };
+        }
+        if (item.deliveryEvent === "bounce") {
+          return { label: "Bounced", tone: "bounced" };
+        }
+        if (item.deliveryEvent === "complaint") {
+          return { label: "Complaint", tone: "complaint" };
+        }
+        if (item.deliveryEvent === "reject") {
+          return { label: "Rejected", tone: "rejected" };
+        }
+        if (item.outboundStatus === "sent") {
+          return { label: "Sent", tone: "sent" };
+        }
+        if (item.outboundStatus === "failed") {
+          return { label: "Failed", tone: "failed" };
+        }
+        if (item.outboundStatus === "retry") {
+          return { label: "Retry", tone: "retry" };
+        }
+        if (item.outboundStatus === "sending") {
+          return { label: "Sending", tone: "sending" };
+        }
+        if (item.outboundStatus === "queued") {
+          return { label: "Queued", tone: "queued" };
+        }
+      }
+
+      if (item.messageStatus === "received") {
+        return { label: "Received", tone: "received" };
+      }
+      if (item.messageStatus === "normalized") {
+        return { label: "Normalized", tone: "normalized" };
+      }
+      if (item.messageStatus === "tasked") {
+        return { label: "Tasked", tone: "tasked" };
+      }
+      if (item.messageStatus === "replied") {
+        return { label: "Replied", tone: "replied" };
+      }
+      if (item.messageStatus === "ignored") {
+        return { label: "Ignored", tone: "ignored" };
+      }
+      if (item.messageStatus === "failed") {
+        return { label: "Failed", tone: "failed" };
+      }
+
+      return { label: "Processed", tone: "processed" };
+    }
+
+    function statusTone(value) {
+      if (["inbound", "received"].includes(value)) {
+        return "inbound";
+      }
+      if (["outbound"].includes(value)) {
+        return "outbound";
+      }
+      if (["delivery", "replied", "sent"].includes(value)) {
+        return "sent";
+      }
+      if (["failed", "bounce", "reject"].includes(value)) {
+        return "failed";
+      }
+      if (["retry", "complaint"].includes(value)) {
+        return "warning";
+      }
+      return value;
+    }
+
+    function renderBreakdown(items, emptyText) {
+      if (!items.length) {
+        return '<div class="admin-empty-state">' + esc(emptyText) + '</div>';
+      }
+
+      const max = Math.max(...items.map((item) => Number(item.count) || 0), 0);
+      return '<div class="admin-breakdown-list">' + items.map((item) => {
+        const count = Number(item.count) || 0;
+        const width = max > 0 ? Math.max(count > 0 ? 6 : 0, count / max * 100) : 0;
+        const tone = statusTone(String(item.key || item.label || "").toLowerCase());
+        return '<div class="admin-breakdown-row">' +
+          '<div class="admin-breakdown-meta">' +
+            '<span>' + esc(humanizeLabel(item.label || item.key || "")) + '</span>' +
+            '<span>' + esc(formatNumber(count)) + '</span>' +
+          '</div>' +
+          '<div class="admin-breakdown-track">' +
+            '<span class="admin-breakdown-fill ' + esc(tone) + '" style="width:' + width + '%;"></span>' +
+          '</div>' +
+        '</div>';
+      }).join("") + '</div>';
+    }
+
+    function renderTrendChart(points) {
+      if (!points.length) {
+        return '<div class="admin-empty-state">No recent trend data available.</div>';
+      }
+
+      const max = Math.max(
+        ...points.flatMap((point) => [
+          point.registrations || 0,
+          point.inbound || 0,
+          point.outbound || 0,
+          point.sent || 0,
+          point.failed || 0,
+        ]),
+        0
+      );
+
+      const legend = [
+        ['registrations', '新增'],
+        ['inbound', '收信'],
+        ['outbound', '發信'],
+        ['sent', '成功'],
+        ['failed', '失敗'],
+      ].map(([key, label]) =>
+        '<span class="admin-legend-item ' + key + '"><span class="admin-legend-dot"></span>' + esc(label) + '</span>'
+      ).join("");
+
+      const chart = points.map((point) => {
+        const series = [
+          ['registrations', point.registrations || 0, '新增'],
+          ['inbound', point.inbound || 0, '收信'],
+          ['outbound', point.outbound || 0, '發信'],
+          ['sent', point.sent || 0, '成功'],
+          ['failed', point.failed || 0, '失敗'],
+        ];
+        return '<div class="admin-trend-day">' +
+          '<div class="admin-trend-bars">' +
+            series.map(([key, count, label]) => {
+              const height = max > 0 ? Math.max(count > 0 ? 6 : 0, count / max * 100) : 0;
+              return '<span class="admin-trend-bar ' + key + '" style="height:' + height + '%;" title="' + esc(label + ': ' + formatNumber(count)) + '"></span>';
+            }).join("") +
+          '</div>' +
+          '<div class="admin-trend-label">' + esc(formatDayLabel(point.date)) + '</div>' +
+          '<div class="admin-trend-total">' + esc('收 ' + formatNumber(point.inbound || 0) + ' · 發 ' + formatNumber(point.outbound || 0)) + '</div>' +
+        '</div>';
+      }).join("");
+
+      return '<div class="admin-chart-legend">' + legend + '</div><div class="admin-trend-chart">' + chart + '</div>';
+    }
+
+    function renderTopMailboxes(items) {
+      if (!items.length) {
+        return '<div class="admin-empty-state">No mailbox activity recorded yet.</div>';
+      }
+
+      return items.map((item) =>
+        '<div class="faq-item">' +
+          '<h3>' + esc(item.address) + '</h3>' +
+          '<p>Total: ' + esc(formatNumber(item.totalMessages)) + '</p>' +
+          '<p>Inbound: ' + esc(formatNumber(item.inboundMessages)) + ' · Outbound: ' + esc(formatNumber(item.outboundMessages)) + '</p>' +
+        '</div>'
+      ).join("");
+    }
+
+    function renderRecentFailures(items) {
+      if (!items.length) {
+        return '<div class="faq-item"><h3>All clear</h3><p>No failed outbound jobs recorded.</p></div>';
+      }
+
+      return items.map((item) =>
+        '<div class="faq-item">' +
+          '<h3>' + esc(item.id) + '</h3>' +
+          '<p>Message: ' + esc(item.messageId || 'n/a') + '</p>' +
+          '<p>Error: ' + esc(item.lastError || 'unknown') + '</p>' +
+          '<p>Updated: ' + esc(formatDateTime(item.updatedAt)) + '</p>' +
+        '</div>'
+      ).join("");
+    }
+
+    function setOverviewTab(tabName) {
+      currentOverviewTab = tabName;
+      overviewTabs.forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-overview-tab") === tabName);
+      });
+      if (overviewRecipientLabel) {
+        overviewRecipientLabel.textContent = tabName === "receiving" ? "From" : "To";
+      }
+      renderOverviewActivity();
+    }
+
+    function refreshOverviewFilters() {
+      if (!latestOverviewStats || !Array.isArray(latestOverviewStats.recentActivity)) {
+        return;
+      }
+
+      const items = latestOverviewStats.recentActivity;
+      const statuses = Array.from(new Set(items.map((item) => getOverviewActivityStatus(item).label))).sort();
+      const mailboxes = Array.from(new Set(items.map((item) => item.mailboxAddress).filter(Boolean))).sort();
+      const previousStatus = overviewStatusFilter.value;
+      const previousMailbox = overviewMailboxFilter.value;
+
+      overviewStatusFilter.innerHTML = '<option value="">All statuses</option>' + statuses.map((status) =>
+        '<option value="' + esc(status) + '">' + esc(status) + '</option>'
+      ).join("");
+      overviewMailboxFilter.innerHTML = '<option value="">All mailboxes</option>' + mailboxes.map((mailbox) =>
+        '<option value="' + esc(mailbox) + '">' + esc(mailbox) + '</option>'
+      ).join("");
+
+      overviewStatusFilter.value = statuses.includes(previousStatus) ? previousStatus : "";
+      overviewMailboxFilter.value = mailboxes.includes(previousMailbox) ? previousMailbox : "";
+    }
+
+    function renderOverviewActivity() {
+      if (!overviewActivityList) {
+        return;
+      }
+
+      if (!latestOverviewStats || !Array.isArray(latestOverviewStats.recentActivity)) {
+        overviewActivityList.innerHTML =
+          '<div class="admin-table-row">' +
+            '<div class="admin-empty-state">Waiting for recent activity.</div>' +
+            '<div></div><div></div><div></div><div></div>' +
+          '</div>';
+        return;
+      }
+
+      const searchTerm = overviewSearch.value.trim().toLowerCase();
+      const statusValue = overviewStatusFilter.value;
+      const mailboxValue = overviewMailboxFilter.value;
+      const windowDays = Number(overviewTimeWindow.value || "15");
+      const now = Date.now();
+
+      const filteredItems = latestOverviewStats.recentActivity.filter((item) => {
+        if (currentOverviewTab === "sending" && item.direction !== "outbound") {
+          return false;
+        }
+        if (currentOverviewTab === "receiving" && item.direction !== "inbound") {
+          return false;
+        }
+
+        const status = getOverviewActivityStatus(item);
+        if (statusValue && status.label !== statusValue) {
+          return false;
+        }
+        if (mailboxValue && item.mailboxAddress !== mailboxValue) {
+          return false;
+        }
+        if (searchTerm) {
+          const haystack = [
+            item.toAddr,
+            item.fromAddr,
+            item.subject,
+            item.mailboxAddress,
+          ].map((value) => String(value || "").toLowerCase()).join("\\n");
+          if (!haystack.includes(searchTerm)) {
+            return false;
+          }
+        }
+        if (Number.isFinite(windowDays) && item.occurredAt) {
+          const occurredAt = new Date(item.occurredAt).getTime();
+          if (!Number.isNaN(occurredAt) && now - occurredAt > windowDays * 24 * 60 * 60 * 1000) {
+            return false;
+          }
+        }
+
+        return true;
+      });
+
+      if (!filteredItems.length) {
+        overviewActivityList.innerHTML =
+          '<div class="admin-table-row">' +
+            '<div class="admin-empty-state">No activity matches the current filters.</div>' +
+            '<div></div><div></div><div></div><div></div>' +
+          '</div>';
+        return;
+      }
+
+      overviewActivityList.innerHTML = filteredItems.map((item) => {
+        const status = getOverviewActivityStatus(item);
+        const recipient = currentOverviewTab === "receiving" ? (item.fromAddr || "Unknown sender") : (item.toAddr || "Unknown recipient");
+        const secondary = item.mailboxAddress || (currentOverviewTab === "receiving" ? item.toAddr : item.fromAddr) || "mail runtime";
+        return '<div class="admin-table-row">' +
+          '<div class="admin-email-recipient">' +
+            '<div class="admin-email-avatar">' + overviewMessageIcon + '</div>' +
+            '<div class="admin-email-lines">' +
+              '<div class="admin-email-primary">' + esc(recipient) + '</div>' +
+              '<div class="admin-email-secondary">' + esc(secondary || "") + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div><span class="admin-status-badge ' + esc(status.tone.toLowerCase()) + '">' + esc(status.label) + '</span></div>' +
+          '<div class="admin-email-subject"><div class="admin-email-subject-text">' + esc(item.subject || "(No subject)") + '</div></div>' +
+          '<div class="admin-time-label">' + esc(formatRelativeTime(item.occurredAt)) + '</div>' +
+          '<div>' +
+            '<button class="admin-icon-button overview-open-message" data-overview-message="' + esc(item.id) + '" data-overview-mailbox="' + esc(item.mailboxId || "") + '" type="button" aria-label="Open message">...</button>' +
+          '</div>' +
+        '</div>';
+      }).join("");
+
+      document.querySelectorAll(".overview-open-message").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const messageId = button.getAttribute("data-overview-message");
+          const mailboxId = button.getAttribute("data-overview-mailbox");
+          if (!messageId) {
+            return;
+          }
+          if (mailboxId) {
+            currentMailboxId = mailboxId;
+          }
+          await loadMessageDetail(messageId);
+        });
+      });
+    }
+
+    function getOverviewHealth(stats) {
+      if (!stats) {
+        return {
+          tone: "neutral",
+          label: "Waiting for runtime metrics",
+        };
+      }
+
+      const hasAliasGap = aliasAdminAvailable && latestAliases.some((item) => !item.configured);
+      const hasQueuePressure = stats.counts.retryJobs > 0 || stats.counts.pendingQueue > 0;
+      const hasFailures = stats.recentFailures.length > 0 || stats.counts.failedJobs > 0;
+
+      if (hasAliasGap || hasQueuePressure || hasFailures) {
+        return {
+          tone: "warning",
+          label: "Runtime needs attention",
+        };
+      }
+
+      return {
+        tone: "success",
+        label: "Runtime healthy",
+      };
+    }
+
+    function setRuntimeStatusTone(health, updatedAt) {
+      runtimeStatus.classList.remove("warning", "neutral");
+      if (health.tone === "warning" || health.tone === "neutral") {
+        runtimeStatus.classList.add(health.tone);
+      }
+      runtimeStatus.textContent = health.label + (updatedAt ? " · synced " + formatDateTime(updatedAt) : "");
+    }
+
     function updateOverview() {
-      statMailboxes.textContent = String(mailboxIndex.length);
-      statMessages.textContent = String(latestMessages.length);
-      statJobs.textContent = String(latestJobs.length);
-      statAliases.textContent = String(latestAliases.filter((item) => item.configured).length);
-      const runtimeDomain = latestAliases[0] ? latestAliases[0].address.split('@')[1] : 'mailagents.net';
+      const stats = latestOverviewStats;
+      const runtimeDomain = latestAliases[0]
+        ? latestAliases[0].address.split('@')[1]
+        : (stats && stats.domain) || 'mailagents.net';
+      const configuredAliasCount = latestAliases.filter((item) => item.configured).length;
+      const health = getOverviewHealth(stats);
 
-      overviewMailRuntime.innerHTML = [
-        '<div class="faq-item"><h3>Active domain</h3><p>' + esc(runtimeDomain) + '</p></div>',
-        '<div class="faq-item"><h3>Mailbox source</h3><p>' + esc(mailboxIndex.length ? mailboxIndex.length + ' live mailboxes loaded.' : 'No mailbox loaded yet.') + '</p></div>',
-        '<div class="faq-item"><h3>Reply workflow</h3><p>' + esc(currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
-      ].join("");
+      if (stats) {
+        statUsers.textContent = formatNumber(stats.counts.registeredUsers);
+        statUsersMeta.textContent = '近 7 日新增 ' + formatNumber(stats.counts.newUsers7d);
+        statMailboxes.textContent = formatNumber(stats.counts.activeMailboxes);
+        statMailboxesMeta.textContent = '用戶郵箱 ' + formatNumber(stats.counts.userMailboxes) + ' · 公共別名 ' + formatNumber(stats.counts.contactMailboxes);
+        statInbound.textContent = formatNumber(stats.counts.inboundMessages);
+        statInboundMeta.textContent = '最近收信 ' + formatDateTime(stats.latest.inboundAt);
+        statOutbound.textContent = formatNumber(stats.counts.outboundMessages);
+        statOutboundMeta.textContent = '最近發信 ' + formatDateTime(stats.latest.outboundAt);
+        statSent.textContent = formatNumber(stats.counts.sentJobs);
+        statSentMeta.textContent = '發信成功率 ' + formatPercent(stats.rates.sendSuccessRate);
+        statFailed.textContent = formatNumber(stats.counts.failedJobs);
+        statFailedMeta.textContent = stats.recentFailures.length ? '有 ' + formatNumber(stats.recentFailures.length) + ' 條最近異常' : '最近沒有新異常';
+        statDelivered.textContent = formatNumber(stats.counts.deliveredEvents);
+        statDeliveredMeta.textContent = '送達成功率 ' + formatPercent(stats.rates.deliverySuccessRate);
+        statPending.textContent = formatNumber(stats.counts.pendingQueue);
+        statPendingMeta.textContent = '草稿待處理 ' + formatNumber(stats.counts.pendingDrafts) + ' · Idempotency ' + formatNumber(stats.counts.pendingIdempotency);
 
-      overviewAliasStatus.innerHTML = latestAliases.length
+        overviewHeroCopy.textContent =
+          '目前共有 ' + formatNumber(stats.counts.registeredUsers) + ' 位註冊用戶、' +
+          formatNumber(stats.counts.activeMailboxes) + ' 個活躍郵箱，累計收信 ' +
+          formatNumber(stats.counts.inboundMessages) + ' 封、發信 ' +
+          formatNumber(stats.counts.outboundMessages) + ' 封。近 7 天新增 ' +
+          formatNumber(stats.counts.newUsers7d) + ' 位用戶，當前仍有 ' +
+          formatNumber(stats.counts.pendingQueue) + ' 個發信任務在隊列中。';
+        overviewHealthPills.innerHTML = [
+          '<span class="admin-chip ' + health.tone + '">' + esc(health.label) + '</span>',
+          '<span class="admin-chip neutral">發信成功率 ' + esc(formatPercent(stats.rates.sendSuccessRate)) + '</span>',
+          '<span class="admin-chip neutral">送達成功率 ' + esc(formatPercent(stats.rates.deliverySuccessRate)) + '</span>',
+          '<span class="admin-chip neutral">' + esc(aliasAdminAvailable
+            ? ('已配置別名 ' + formatNumber(configuredAliasCount) + '/' + formatNumber(latestAliases.length || 4))
+            : 'Alias admin unavailable in local mode') + '</span>',
+        ].join("");
+
+        overviewMailRuntime.innerHTML = [
+          '<div class="admin-mini-grid">' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.newUsers7d)) + '</strong><span>近 7 日新增</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.pendingQueue)) + '</strong><span>發信隊列待處理</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.pendingDrafts)) + '</strong><span>草稿待處理</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.pendingIdempotency)) + '</strong><span>Pending idempotency</span></div>' +
+          '</div>',
+          '<div class="faq-item"><h3>Active domain</h3><p>' + esc(runtimeDomain) + '</p></div>',
+          '<div class="faq-item"><h3>Latest registration</h3><p>' + esc(formatDateTime(stats.latest.registrationAt)) + '</p></div>',
+          '<div class="faq-item"><h3>Latest delivery event</h3><p>' + esc(formatDateTime(stats.latest.deliveryAt)) + '</p></div>',
+          '<div class="faq-item"><h3>Reply workflow</h3><p>' + esc(currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
+        ].join("");
+
+        overviewActivityTrend.innerHTML = renderTrendChart(stats.trend);
+        overviewQueueHealth.innerHTML = renderBreakdown(stats.distributions.outboundStatuses, 'No outbound queue data yet.') +
+          '<div class="admin-mini-grid" style="margin-top:16px;">' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.retryJobs)) + '</strong><span>Retry jobs</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.queuedJobs + stats.counts.sendingJobs)) + '</strong><span>Queued + sending</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.pendingDrafts)) + '</strong><span>Pending drafts</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.pendingIdempotency)) + '</strong><span>Pending idempotency</span></div>' +
+          '</div>';
+        overviewDeliveryHealth.innerHTML = renderBreakdown(stats.distributions.deliveryEvents, 'No delivery events yet.') +
+          '<div class="admin-mini-grid" style="margin-top:16px;">' +
+            '<div class="admin-mini-card"><strong>' + esc(formatPercent(stats.rates.deliverySuccessRate)) + '</strong><span>Delivery success rate</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatPercent(stats.rates.sendSuccessRate)) + '</strong><span>Send success rate</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.bounceEvents)) + '</strong><span>Bounces</span></div>' +
+            '<div class="admin-mini-card"><strong>' + esc(formatNumber(stats.counts.complaintEvents + stats.counts.rejectEvents)) + '</strong><span>Complaints + rejects</span></div>' +
+          '</div>';
+        overviewTopMailboxes.innerHTML = renderTopMailboxes(stats.topMailboxes);
+        overviewRecentFailures.innerHTML = renderRecentFailures(stats.recentFailures);
+        refreshOverviewFilters();
+        renderOverviewActivity();
+        setRuntimeStatusTone(health, stats.generatedAt);
+      } else {
+        statUsers.textContent = formatNumber(mailboxIndex.length);
+        statUsersMeta.textContent = 'Waiting for signup metrics';
+        statMailboxes.textContent = formatNumber(mailboxIndex.length);
+        statMailboxesMeta.textContent = 'Loaded live mailboxes';
+        statInbound.textContent = formatNumber(latestMessages.filter((item) => item.direction === 'inbound').length);
+        statInboundMeta.textContent = 'Current mailbox sample';
+        statOutbound.textContent = formatNumber(latestMessages.filter((item) => item.direction === 'outbound').length);
+        statOutboundMeta.textContent = 'Current mailbox sample';
+        statSent.textContent = formatNumber(latestJobs.filter((item) => item.status === 'sent').length);
+        statSentMeta.textContent = 'Fallback from loaded jobs';
+        statFailed.textContent = formatNumber(latestJobs.filter((item) => item.status === 'failed').length);
+        statFailedMeta.textContent = 'Fallback from loaded jobs';
+        statDelivered.textContent = '0';
+        statDeliveredMeta.textContent = 'Waiting for delivery metrics';
+        statPending.textContent = formatNumber(latestJobs.filter((item) => item.status === 'queued' || item.status === 'sending' || item.status === 'retry').length);
+        statPendingMeta.textContent = 'Fallback from loaded jobs';
+        overviewHeroCopy.textContent = '正在載入完整運行統計。當前頁面已經接上實時後台資料，詳細指標會在統計接口返回後補齊。';
+        overviewHealthPills.innerHTML = '<span class="admin-chip neutral">Waiting for runtime metrics</span>';
+        overviewMailRuntime.innerHTML = [
+          '<div class="faq-item"><h3>Active domain</h3><p>' + esc(runtimeDomain) + '</p></div>',
+          '<div class="faq-item"><h3>Mailbox source</h3><p>' + esc(mailboxIndex.length ? mailboxIndex.length + ' live mailboxes loaded.' : 'No mailbox loaded yet.') + '</p></div>',
+          '<div class="faq-item"><h3>Reply workflow</h3><p>' + esc(currentReplyContext ? 'Reply draft prepared for ' + currentReplyContext.to : 'No quick reply prepared.') + '</p></div>',
+        ].join("");
+        overviewActivityTrend.innerHTML = '<div class="admin-empty-state">Waiting for runtime trend metrics.</div>';
+        overviewQueueHealth.innerHTML = '<div class="admin-empty-state">Waiting for queue metrics.</div>';
+        overviewDeliveryHealth.innerHTML = '<div class="admin-empty-state">Waiting for delivery metrics.</div>';
+        overviewTopMailboxes.innerHTML = '<div class="admin-empty-state">Waiting for mailbox activity metrics.</div>';
+        overviewRecentFailures.innerHTML = '<div class="admin-empty-state">Waiting for failure metrics.</div>';
+        renderOverviewActivity();
+        setRuntimeStatusTone(health, null);
+      }
+
+      overviewAliasStatus.innerHTML = !aliasAdminAvailable
+        ? '<div class="admin-empty-state">' + esc(aliasAdminMessage || 'Cloudflare email routing admin is not configured in this environment.') + '</div>'
+        : latestAliases.length
         ? latestAliases.map((item) =>
             '<div class="faq-item">' +
               '<h3>' + esc(item.address) + '</h3>' +
@@ -2756,6 +5788,21 @@ function renderAdmin(url: URL): string {
             '<div class="faq-item"><h3>Route gates</h3><p>' + esc('Admin routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.adminEnabled ? 'enabled' : 'disabled') + ' · Debug routes: ' + (latestRuntimeMetadata.routes && latestRuntimeMetadata.routes.debugEnabled ? 'enabled' : 'disabled')) + '</p></div>',
           ].join('')
         : 'Unlock the dashboard to inspect MCP risk policy.';
+    }
+
+    async function loadOverviewStats() {
+      try {
+        latestOverviewStats = await api('/admin/api/overview-stats');
+        updateOverview();
+      } catch (error) {
+        latestOverviewStats = null;
+        overviewActivityTrend.textContent = error.message;
+        overviewQueueHealth.textContent = error.message;
+        overviewDeliveryHealth.textContent = error.message;
+        overviewTopMailboxes.textContent = error.message;
+        overviewRecentFailures.textContent = error.message;
+        updateOverview();
+      }
     }
 
     async function loadRuntimeMetadata() {
@@ -2795,6 +5842,7 @@ function renderAdmin(url: URL): string {
             await api('/admin/api/contact-aliases/' + encodeURIComponent(alias), { method: 'DELETE' });
             aliasStatus.textContent = 'Deleted alias ' + alias + '.';
             await loadAliases();
+            await loadOverviewStats();
           } catch (error) {
             aliasStatus.textContent = error.message;
           }
@@ -2807,11 +5855,17 @@ function renderAdmin(url: URL): string {
     async function loadAliases() {
       try {
         const payload = await api('/admin/api/contact-aliases');
+        aliasAdminAvailable = payload.available !== false;
+        aliasAdminMessage = payload.available === false && typeof payload.message === 'string'
+          ? payload.message
+          : '';
         authStatus.textContent = 'Dashboard unlocked.';
-        renderAliases(payload.aliases);
+        renderAliases(Array.isArray(payload.aliases) ? payload.aliases : []);
       } catch (error) {
-        authStatus.textContent = error.message;
-        aliasList.textContent = 'Unable to load aliases.';
+        aliasAdminAvailable = false;
+        aliasAdminMessage = error.message;
+        authStatus.textContent = 'Dashboard unlocked with alias admin unavailable.';
+        renderAliases([]);
       }
     }
 
@@ -3030,6 +6084,7 @@ function renderAdmin(url: URL): string {
           try {
             await api('/admin/api/outbound-jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
             await loadOutboundJobs();
+            await loadOverviewStats();
             outboxDetail.textContent = 'Retried outbound job ' + id + '.';
           } catch (error) {
             outboxDetail.textContent = error.message;
@@ -3049,6 +6104,7 @@ function renderAdmin(url: URL): string {
               body: JSON.stringify({ resolution: 'sent' }),
             });
             await loadOutboundJobs();
+            await loadOverviewStats();
             outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as sent.';
           } catch (error) {
             outboxDetail.textContent = error.message;
@@ -3068,6 +6124,7 @@ function renderAdmin(url: URL): string {
               body: JSON.stringify({ resolution: 'not_sent' }),
             });
             await loadOutboundJobs();
+            await loadOverviewStats();
             outboxDetail.textContent = 'Marked uncertain outbound job ' + id + ' as not sent.';
           } catch (error) {
             outboxDetail.textContent = error.message;
@@ -3309,10 +6366,14 @@ function renderAdmin(url: URL): string {
     }
 
     async function bootstrapDashboard() {
+      runtimeStatus.classList.remove('warning', 'neutral');
       runtimeStatus.textContent = 'Connecting to live runtime';
-      await loadRuntimeMetadata();
-      await loadAliases();
-      await loadMailboxes();
+      await Promise.all([
+        loadRuntimeMetadata(),
+        loadAliases(),
+        loadMailboxes(),
+        loadOverviewStats(),
+      ]);
       if (!currentMailboxId && mailboxIndex[0]) {
         currentMailboxId = mailboxIndex[0].id;
       }
@@ -3332,23 +6393,8 @@ function renderAdmin(url: URL): string {
       await loadOutboundJobs();
       await loadDrafts();
       await loadIdempotencyRecords();
-      runtimeStatus.textContent = 'Connected to live runtime';
       updateOverview();
     }
-
-    authForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      window.localStorage.setItem(secretKey, secretInput.value);
-      try {
-        await bootstrapDashboard();
-        setAuthenticated(true);
-        setView("overview");
-      } catch (error) {
-        authStatus.textContent = error.message;
-        runtimeStatus.textContent = 'Authentication failed';
-        setAuthenticated(false);
-      }
-    });
 
     aliasForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -3363,6 +6409,7 @@ function renderAdmin(url: URL): string {
         aliasName.value = '';
         await loadAliases();
         await loadMailboxes();
+        await loadOverviewStats();
       } catch (error) {
         aliasStatus.textContent = error.message;
       }
@@ -3380,6 +6427,7 @@ function renderAdmin(url: URL): string {
         aliasBootstrapStatus.textContent = 'Internal inbox setup complete for ' + result.results.length + ' aliases.';
         await loadAliases();
         await loadMailboxes();
+        await loadOverviewStats();
       } catch (error) {
         aliasBootstrapStatus.textContent = error.message;
       }
@@ -3387,6 +6435,18 @@ function renderAdmin(url: URL): string {
 
     messageSearch.addEventListener('change', loadMessages);
     messageDirection.addEventListener('change', loadMessages);
+    overviewTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        const tabName = button.getAttribute("data-overview-tab");
+        if (tabName) {
+          setOverviewTab(tabName);
+        }
+      });
+    });
+    overviewSearch.addEventListener('input', renderOverviewActivity);
+    overviewTimeWindow.addEventListener('change', renderOverviewActivity);
+    overviewStatusFilter.addEventListener('change', renderOverviewActivity);
+    overviewMailboxFilter.addEventListener('change', renderOverviewActivity);
     jobStatus.addEventListener('change', loadOutboundJobs);
     draftStatus.addEventListener('change', loadDrafts);
     idempotencyOperation.addEventListener('change', loadIdempotencyRecords);
@@ -3403,6 +6463,7 @@ function renderAdmin(url: URL): string {
             '<p>Pending retention: ' + result.pendingRetentionHours + ' hours</p>' +
           '</div>';
         await loadIdempotencyRecords();
+        await loadOverviewStats();
       } catch (error) {
         idempotencyMaintenance.textContent = error.message;
       }
@@ -3416,20 +6477,14 @@ function renderAdmin(url: URL): string {
       });
     });
 
-    refreshDashboard.addEventListener("click", async () => {
+    refreshDashboard.addEventListener("click", async (event) => {
+      event.preventDefault();
       try {
         await bootstrapDashboard();
+        authStatus.textContent = "Dashboard unlocked.";
       } catch (error) {
         runtimeStatus.textContent = error.message;
       }
-    });
-
-    logoutDashboard.addEventListener("click", () => {
-      window.localStorage.removeItem(secretKey);
-      secretInput.value = "";
-      authStatus.textContent = "Dashboard is locked.";
-      runtimeStatus.textContent = "Disconnected";
-      setAuthenticated(false);
     });
 
     sendForm.addEventListener('submit', async (event) => {
@@ -3467,24 +6522,28 @@ function renderAdmin(url: URL): string {
         await loadMessages();
         await loadDrafts();
         await loadOutboundJobs();
+        await loadOverviewStats();
       } catch (error) {
         sendStatus.textContent = error.message;
       }
     });
 
-    if (secretInput.value) {
+    if (initiallyAuthenticated) {
+      setAuthenticated(true);
+      setView("overview");
+      setOverviewTab(currentOverviewTab);
+      updateOverview();
       bootstrapDashboard()
         .then(() => {
-          setAuthenticated(true);
-          setView("overview");
+          authStatus.textContent = "Dashboard unlocked.";
         })
         .catch((error) => {
-          authStatus.textContent = error.message;
-          runtimeStatus.textContent = "Authentication failed";
-          setAuthenticated(false);
+          authStatus.textContent = "Dashboard unlocked with partial errors.";
+          runtimeStatus.textContent = error.message;
         });
     } else {
       setAuthenticated(false);
+      runtimeStatus.textContent = "Waiting for authentication";
     }
   </script>`;
 }

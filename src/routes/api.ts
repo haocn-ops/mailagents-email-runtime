@@ -25,6 +25,7 @@ import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPub
 import { settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
+import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
 import {
   bindMailbox,
   createAgent,
@@ -88,6 +89,7 @@ import {
   logTokenReissueRequest,
 } from "../repositories/token-reissue";
 import {
+  appendUpgradeCreditGrantLedgerEntry,
   appendTopupSettlementLedgerEntry,
   createTypedTenantPaymentReceipt,
   ensureTenantBillingAccount,
@@ -117,6 +119,7 @@ import {
   type X402FacilitatorVerificationResponse,
 } from "../lib/payments/x402-facilitator";
 import {
+  buildUpgradeCreditGrantLedgerMetadata,
   buildTopupSettlementLedgerMetadata,
 } from "../lib/payments/ledger-metadata";
 import {
@@ -839,6 +842,7 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
       metadata: buildUpgradeReceiptMetadata({
         tenantDid: didBinding?.did,
         targetPricingTier,
+        includedCredits: quote.includedCredits,
         quote,
         paymentProof,
       }),
@@ -870,6 +874,7 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   return accepted({
     receipt,
     targetPricingTier,
+    includedCredits: quote.includedCredits,
     verificationStatus: "pending",
     message: "Upgrade payment proof captured. Verification and plan upgrade are not yet automatic on this endpoint.",
   });
@@ -912,14 +917,23 @@ router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
     return badRequest("pricingTier, outboundStatus, externalSendEnabled, and reviewRequired are required");
   }
 
-  return json(await upsertTenantSendPolicy(env, {
+  const sendPolicy = await upsertTenantSendPolicy(env, {
     tenantId: route.params.tenantId,
     pricingTier: body.pricingTier,
     outboundStatus: body.outboundStatus,
     internalDomainAllowlist: body.internalDomainAllowlist ?? ["mailagents.net"],
     externalSendEnabled: body.externalSendEnabled,
     reviewRequired: body.reviewRequired,
-  }));
+  });
+
+  if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: route.params.tenantId,
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+    });
+  }
+
+  return json(sendPolicy);
 });
 
 router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (request, env, _ctx, route) => {
@@ -952,6 +966,10 @@ router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (re
       tenantId: route.params.tenantId,
       status: billingAccount.status === "trial" ? "active" : undefined,
       pricingTier: "paid_active",
+    });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: route.params.tenantId,
+      internalDomainAllowlist: updatedSendPolicy.internalDomainAllowlist,
     });
 
     return json({
@@ -3604,11 +3622,22 @@ async function finalizePaymentReceiptSettlement(
     if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
       throw new RouteRequestError("Payment receipt metadata is missing targetPricingTier", 409);
     }
+    const includedCredits = parsedMetadata.includedCredits > 0
+      ? parsedMetadata.includedCredits
+      : getX402Defaults(env).upgradeIncludedCredits;
+    const normalizedUpgradeMetadata = {
+      ...parsedMetadata,
+      includedCredits,
+      quote: {
+        ...parsedMetadata.quote,
+        includedCredits,
+      },
+    };
     const targetPricingTier = parsedMetadata.targetPricingTier;
     const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
 
     const existingAccount = await ensureTenantBillingAccount(env, finalizedReceipt.tenantId);
-    const account = await updateTenantBillingAccountProfile(env, {
+    await updateTenantBillingAccountProfile(env, {
       tenantId: finalizedReceipt.tenantId,
       status: existingAccount.status === "trial" ? "active" : undefined,
       pricingTier: approvedPricingTier,
@@ -3625,29 +3654,61 @@ async function finalizePaymentReceiptSettlement(
       externalSendEnabled: true,
       reviewRequired: false,
     });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: finalizedReceipt.tenantId,
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+    });
 
-    const settledReceipt = finalizedReceipt.status === "settled"
-      ? finalizedReceipt
-      : await updateTypedTenantPaymentReceiptStatus(env, {
+    const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
+    const ledgerEntry = includedCredits > 0
+      ? existingLedgerEntry ?? await appendUpgradeCreditGrantLedgerEntry(env, {
+        tenantId: finalizedReceipt.tenantId,
+        creditsDelta: includedCredits,
+        reason: facilitatorOutcome ? "facilitator_upgrade_credit_grant" : "manual_upgrade_credit_grant",
+        paymentReceiptId: finalizedReceipt.id,
+        referenceId: requestedSettlementReference ?? finalizedReceipt.settlementReference,
+        metadata: buildUpgradeCreditGrantLedgerMetadata({
+          receiptMetadata: normalizedUpgradeMetadata,
+          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+          facilitatorVerify: facilitatorOutcome?.verifyResponse,
+          facilitatorSettle: facilitatorOutcome?.settleResponse,
+        }),
+      })
+      : undefined;
+    const account = ledgerEntry
+      ? await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId)
+      : await ensureTenantBillingAccount(env, finalizedReceipt.tenantId);
+
+    const metadataNeedsRefresh = finalizedReceipt.status !== "settled"
+      || parsedMetadata.includedCredits !== includedCredits
+      || parsedMetadata.creditLedgerEntryId !== ledgerEntry?.id
+      || parsedMetadata.sendPolicyStatus !== sendPolicy.outboundStatus;
+
+    const settledReceipt = metadataNeedsRefresh
+      ? await updateTypedTenantPaymentReceiptStatus(env, {
         tenantId: finalizedReceipt.tenantId,
         receiptId: finalizedReceipt.id,
         status: "settled",
         paymentReference: facilitatorOutcome?.paymentReference,
         settlementReference: requestedSettlementReference,
-        metadata: withReceiptConfirmation(parsedMetadata, {
+        metadata: withReceiptConfirmation(normalizedUpgradeMetadata, {
           confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+          creditLedgerEntryId: ledgerEntry?.id,
           sendPolicyStatus: sendPolicy.outboundStatus,
           facilitatorVerify: facilitatorOutcome?.verifyResponse,
           facilitatorSettle: facilitatorOutcome?.settleResponse,
         }),
-      });
+      })
+      : finalizedReceipt;
 
     return {
       receipt: settledReceipt,
+      ledgerEntry,
+      includedCredits,
       account,
       sendPolicy,
       verificationStatus: "settled",
-      message: "Upgrade payment settled and external sending approved automatically.",
+      message: `Upgrade payment settled, external sending approved automatically, and ${includedCredits} credits granted.`,
     };
   }
 

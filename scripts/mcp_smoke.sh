@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
+BASE_ORIGIN="${BASE_ORIGIN:-${BASE_URL%/}}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 TENANT_ID="${TENANT_ID:-t_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
@@ -11,6 +13,12 @@ FROM_EMAIL="${FROM_EMAIL:-agent@mailagents.net}"
 TO_EMAIL="${TO_EMAIL:-peer@mailagents.net}"
 SEEDED_INBOUND_MESSAGE_ID="${SEEDED_INBOUND_MESSAGE_ID:-msg_demo_inbound}"
 PREPARE_SMOKE_TENANT_POLICY="${PREPARE_SMOKE_TENANT_POLICY:-1}"
+TEMP_FILES=()
+LAST_HEADERS=""
+LAST_BODY=""
+LAST_STATUS=""
+CURL_BASE_ARGS=()
+MKTEMP_BIN="${MKTEMP_BIN:-/usr/bin/mktemp}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -19,29 +27,157 @@ require_cmd() {
   fi
 }
 
+cleanup() {
+  if [[ "${#TEMP_FILES[@]}" -gt 0 ]]; then
+    rm -f "${TEMP_FILES[@]}"
+  fi
+}
+
+capture_request() {
+  local method="$1"
+  local path="$2"
+  local data="$3"
+  shift 3
+
+  LAST_HEADERS="$("$MKTEMP_BIN" -t mailagents-mcp-headers.XXXXXX)"
+  LAST_BODY="$("$MKTEMP_BIN" -t mailagents-mcp-body.XXXXXX)"
+  TEMP_FILES+=("$LAST_HEADERS" "$LAST_BODY")
+
+  local cmd=(
+    curl
+    -sS
+    -o "$LAST_BODY"
+    -D "$LAST_HEADERS"
+    -w "%{http_code}"
+    -X "$method"
+    "$BASE_URL$path"
+  )
+
+  while [[ "$#" -gt 0 ]]; do
+    cmd+=(-H "$1")
+    shift
+  done
+
+  if [[ -n "$data" ]]; then
+    cmd+=(-H "content-type: application/json" --data "$data")
+  fi
+
+  LAST_STATUS="$("${cmd[@]}")"
+}
+
+assert_status() {
+  local expected="$1"
+  if [[ "$LAST_STATUS" != "$expected" ]]; then
+    echo "Expected HTTP $expected but received $LAST_STATUS" >&2
+    cat "$LAST_BODY" >&2
+    exit 1
+  fi
+}
+
+assert_empty_body() {
+  if [[ -s "$LAST_BODY" ]]; then
+    echo "Expected empty response body" >&2
+    cat "$LAST_BODY" >&2
+    exit 1
+  fi
+}
+
+header_value() {
+  local header_name="$1"
+  grep -i "^${header_name}:" "$LAST_HEADERS" \
+    | head -n 1 \
+    | sed -E 's/^[^:]+:[[:space:]]*//; s/\r$//'
+}
+
+assert_header_contains() {
+  local header_name="$1"
+  local expected_fragment="$2"
+  local actual
+  actual="$(header_value "$header_name")"
+  if [[ "$actual" != *"$expected_fragment"* ]]; then
+    echo "Expected header $header_name to contain: $expected_fragment" >&2
+    cat "$LAST_HEADERS" >&2
+    exit 1
+  fi
+}
+
 require_cmd curl
 require_cmd jq
+if [[ ! -x "$MKTEMP_BIN" ]]; then
+  MKTEMP_BIN="$(command -v mktemp || true)"
+fi
+if [[ -z "$MKTEMP_BIN" ]]; then
+  echo "Missing required command: mktemp" >&2
+  exit 1
+fi
+require_cmd "$MKTEMP_BIN"
 
-load_local_secrets() {
-  local dev_vars="$REPO_ROOT/.dev.vars"
-  if [[ ! -f "$dev_vars" ]]; then
+trap cleanup EXIT
+
+prepare_curl_base_args() {
+  local host_port
+  local host
+  local port
+  local ip
+
+  if [[ "$BASE_URL" == http://127.0.0.1:* || "$BASE_URL" == http://localhost:* || "$BASE_URL" == https://127.0.0.1:* || "$BASE_URL" == https://localhost:* ]]; then
     return
   fi
 
+  host_port="${BASE_URL#*://}"
+  host_port="${host_port%%/*}"
+  host="${host_port%%:*}"
+  port="${host_port#*:}"
+  if [[ "$host" == "$host_port" ]]; then
+    if [[ "$BASE_URL" == https://* ]]; then
+      port=443
+    else
+      port=80
+    fi
+  fi
+
+  if command -v dig >/dev/null 2>&1; then
+    ip="$( { dig +short "$host" 2>/dev/null || true; } | awk 'NF { print; exit }' )"
+    if [[ -n "$ip" ]]; then
+      CURL_BASE_ARGS=(--resolve "${host}:${port}:${ip}")
+    fi
+  fi
+}
+
+curl() {
+  command curl "${CURL_BASE_ARGS[@]}" "$@"
+}
+
+read_dev_var() {
+  local key="$1"
+  local dev_vars="$REPO_ROOT/.dev.vars"
+  if [[ ! -f "$dev_vars" ]]; then
+    return 1
+  fi
+
+  awk -F= -v key="$key" '$1 == key { print substr($0, length($1) + 2); exit }' "$dev_vars"
+}
+
+load_local_secrets() {
   if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$dev_vars"
-    set +a
-    ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-${ADMIN_API_SECRET:-$ADMIN_SECRET}}"
+    ADMIN_SECRET="$(read_dev_var "ADMIN_API_SECRET" || true)"
+    ADMIN_SECRET="${ADMIN_SECRET:-replace-with-admin-api-secret}"
   fi
 }
 
 wait_for_server() {
   local attempt
+  local connect_timeout=1
+  local max_time=2
+
+  if [[ "$BASE_URL" != http://127.0.0.1:* && "$BASE_URL" != http://localhost:* && "$BASE_URL" != https://127.0.0.1:* && "$BASE_URL" != https://localhost:* ]]; then
+    connect_timeout=5
+    max_time=10
+  fi
+
   echo "Waiting for smoke target at $BASE_URL ..."
   for attempt in $(seq 1 20); do
-    if curl --connect-timeout 1 --max-time 2 -fsS "$BASE_URL/" >/dev/null 2>&1; then
+    if curl --connect-timeout "$connect_timeout" --max-time "$max_time" -sS -o /dev/null "$BASE_URL/" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -107,6 +243,7 @@ ensure_demo_tenant_send_policy() {
 }
 
 load_local_secrets
+prepare_curl_base_args
 wait_for_server
 
 if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
@@ -140,6 +277,182 @@ if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
   echo "Failed to mint token" >&2
   exit 1
 fi
+
+echo "Checking MCP transport OPTIONS response..."
+capture_request "OPTIONS" "/mcp" ""
+assert_status 204
+assert_empty_body
+assert_header_contains "allow" "GET, POST, OPTIONS"
+assert_header_contains "access-control-allow-methods" "GET, POST, OPTIONS"
+assert_header_contains "access-control-allow-headers" "authorization"
+
+echo "Checking admin MCP transport OPTIONS response..."
+capture_request "OPTIONS" "/admin/mcp" ""
+assert_status 204
+assert_empty_body
+assert_header_contains "allow" "GET, POST, OPTIONS"
+assert_header_contains "access-control-allow-methods" "GET, POST, OPTIONS"
+assert_header_contains "access-control-allow-headers" "x-admin-secret"
+
+echo "Checking MCP transport GET placeholder..."
+capture_request "GET" "/mcp" ""
+assert_status 405
+assert_empty_body
+assert_header_contains "allow" "GET, POST, OPTIONS"
+
+echo "Checking admin MCP transport GET placeholder..."
+capture_request "GET" "/admin/mcp" ""
+assert_status 405
+assert_empty_body
+assert_header_contains "allow" "GET, POST, OPTIONS"
+
+echo "Checking MCP transport rejects cross-origin browser requests..."
+capture_request "POST" "/mcp" '{
+  "jsonrpc": "2.0",
+  "id": 0.25,
+  "method": "initialize",
+  "params": {}
+}' "Origin: https://example.com"
+assert_status 403
+jq -e '.error == "Origin not allowed"' "$LAST_BODY" >/dev/null
+
+echo "Checking admin MCP transport rejects cross-origin browser requests..."
+capture_request "POST" "/admin/mcp" '{
+  "jsonrpc": "2.0",
+  "id": 0.26,
+  "method": "initialize",
+  "params": {}
+}' "Origin: https://example.com" "x-admin-secret: $ADMIN_SECRET"
+assert_status 403
+jq -e '.error == "Origin not allowed"' "$LAST_BODY" >/dev/null
+
+echo "Checking MCP transport accepts same-origin browser requests..."
+capture_request "POST" "/mcp" '{
+  "jsonrpc": "2.0",
+  "id": 0.27,
+  "method": "initialize",
+  "params": {}
+}' "Origin: $BASE_ORIGIN"
+assert_status 200
+assert_header_contains "access-control-allow-origin" "$BASE_ORIGIN"
+jq -e '.result.serverInfo.name == "mailagents-runtime"' "$LAST_BODY" >/dev/null
+
+echo "Checking admin MCP transport accepts same-origin browser requests..."
+capture_request "POST" "/admin/mcp" '{
+  "jsonrpc": "2.0",
+  "id": 0.28,
+  "method": "initialize",
+  "params": {}
+}' "Origin: $BASE_ORIGIN" "x-admin-secret: $ADMIN_SECRET"
+assert_status 200
+assert_header_contains "access-control-allow-origin" "$BASE_ORIGIN"
+jq -e '.result.serverInfo.name == "mailagents-runtime"' "$LAST_BODY" >/dev/null
+
+echo "Checking MCP JSON-RPC notifications return 202 without a body..."
+capture_request "POST" "/mcp" '{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {}
+}' "accept: application/json, text/event-stream"
+assert_status 202
+assert_empty_body
+
+echo "Checking admin MCP JSON-RPC notifications return 202 without a body..."
+capture_request "POST" "/admin/mcp" '{
+  "jsonrpc": "2.0",
+  "method": "initialize",
+  "params": {}
+}' "accept: application/json, text/event-stream" "x-admin-secret: $ADMIN_SECRET"
+assert_status 202
+assert_empty_body
+
+echo "Checking MCP batch requests..."
+capture_request "POST" "/mcp" '[
+  {
+    "jsonrpc": "2.0",
+    "id": "batch-init",
+    "method": "initialize",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": "batch-list",
+    "method": "tools/list",
+    "params": {}
+  }
+]' "accept: application/json, text/event-stream" "authorization: Bearer $TOKEN"
+assert_status 200
+jq -e '
+  type == "array" and
+  length == 2 and
+  any(.id == "batch-init" and .result.serverInfo.name == "mailagents-runtime") and
+  any(.id == "batch-list" and (.result.tools | any(.name == "create_agent")))
+' "$LAST_BODY" >/dev/null
+
+echo "Checking MCP empty batch rejection..."
+capture_request "POST" "/mcp" '[]'
+assert_status 400
+jq -e '.error.code == -32600 and .error.message == "Invalid Request"' "$LAST_BODY" >/dev/null
+
+echo "Checking MCP parse error handling..."
+capture_request "POST" "/mcp" '{"jsonrpc":"2.0","id":"bad-json","method":"initialize","params":'
+assert_status 400
+jq -e '.error.code == -32700 and .error.message == "Parse error"' "$LAST_BODY" >/dev/null
+
+echo "Checking MCP ignores posted JSON-RPC responses..."
+capture_request "POST" "/mcp" '{
+  "jsonrpc": "2.0",
+  "id": "client-response",
+  "result": {
+    "ok": true
+  }
+}' "accept: application/json, text/event-stream"
+assert_status 202
+assert_empty_body
+
+echo "Checking admin MCP batch requests..."
+capture_request "POST" "/admin/mcp" '[
+  {
+    "jsonrpc": "2.0",
+    "id": "admin-batch-init",
+    "method": "initialize",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": "admin-batch-list",
+    "method": "tools/list",
+    "params": {}
+  }
+]' "accept: application/json, text/event-stream" "x-admin-secret: $ADMIN_SECRET"
+assert_status 200
+jq -e '
+  type == "array" and
+  length == 2 and
+  any(.id == "admin-batch-init" and .result.serverInfo.name == "mailagents-runtime") and
+  any(.id == "admin-batch-list" and (.result.tools | any(.name == "create_access_token")))
+' "$LAST_BODY" >/dev/null
+
+echo "Checking admin MCP empty batch rejection..."
+capture_request "POST" "/admin/mcp" '[]' "x-admin-secret: $ADMIN_SECRET"
+assert_status 400
+jq -e '.error.code == -32600 and .error.message == "Invalid Request"' "$LAST_BODY" >/dev/null
+
+echo "Checking admin MCP parse error handling..."
+capture_request "POST" "/admin/mcp" '{"jsonrpc":"2.0","id":"admin-bad-json","method":"initialize","params":' "x-admin-secret: $ADMIN_SECRET"
+assert_status 400
+jq -e '.error.code == -32700 and .error.message == "Parse error"' "$LAST_BODY" >/dev/null
+
+echo "Checking admin MCP ignores posted JSON-RPC responses..."
+capture_request "POST" "/admin/mcp" '{
+  "jsonrpc": "2.0",
+  "id": "admin-client-response",
+  "result": {
+    "ok": true
+  }
+}' "accept: application/json, text/event-stream" "x-admin-secret: $ADMIN_SECRET"
+assert_status 202
+assert_empty_body
 
 echo "Checking top-level MCP auth error shape..."
 curl -sS "$BASE_URL/mcp" \

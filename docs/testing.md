@@ -28,6 +28,9 @@ The signup + site smoke flow exercises:
 
 The MCP smoke flow exercises:
 
+- MCP transport `OPTIONS` and placeholder `GET` handling
+- MCP JSON-RPC notifications, batches, parse errors, and empty-batch rejection
+- MCP same-origin `Origin` enforcement for browser-style callers
 - MCP `initialize`
 - MCP `tools/list`
 - `/v2/meta/compatibility`
@@ -88,12 +91,17 @@ Or:
 
 ```bash
 npm run smoke:mcp:local
+npm run smoke:mcp:dev
 ```
 
 The MCP smoke script expects the demo seed to include:
 
 - seeded inbound message `msg_demo_inbound`
 - seeded thread `thr_demo_inbound`
+
+When targeting deployed `dev`, the script defaults to the admin secret in
+`.dev.vars`. Override `ADMIN_API_SECRET_FOR_SMOKE` explicitly if the deployed
+environment uses a different admin secret.
 
 ## Run the billing + DID smoke script
 
@@ -135,14 +143,15 @@ This flow is the closest current check to a real x402 payment:
 
 - it requests a live `402` topup quote from deployed `dev`
 - it submits a real signed x402 v2 `exact/eip3009` proof to `POST /v1/billing/topup`
-- it either auto-settles immediately or retries facilitator settlement through `POST /v1/billing/payment/confirm`
+- with facilitator-backed `dev`, the payment receipt may already be `settled` in the initial topup response
+- it retries `POST /v1/billing/payment/confirm` by `receiptId` only when a facilitator-backed retry is still needed
 
 Prerequisites:
 
 - deployed `dev` has `X402_PAY_TO` configured
 - [`.secrets/dev-base-sepolia-wallet.json`](../.secrets/dev-base-sepolia-wallet.json) exists locally and holds a funded Base Sepolia wallet
-- `.dev.vars` contains a valid `ADMIN_API_SECRET`
 - the wallet has enough Base Sepolia ETH for gas and USDC for the requested amount
+- local `ethers` is available, or set `ETHERS_PATH`
 
 Run:
 
@@ -152,11 +161,36 @@ npm run smoke:billing:dev:real-chain:facilitator
 npm run smoke:billing:dev:real-chain:upgrade
 ```
 
+If the wallet is low on Base Sepolia funds, you can refill it from the local
+CDP faucet helper:
+
+```bash
+npm run faucet:cdp -- --token usdc
+npm run faucet:cdp -- --token eth --token usdc --with-balances
+npm run faucet:cdp -- --balances-only
+```
+
+This helper expects:
+
+- [`.secrets/cdp_api_key.json`](../.secrets/cdp_api_key.json) with a valid CDP
+  API key
+- [`.secrets/dev-base-sepolia-wallet.json`](../.secrets/dev-base-sepolia-wallet.json)
+  with the destination Base Sepolia address
+
+Optional overrides:
+
+- `CDP_API_KEY_JSON_PATH`
+- `WALLET_JSON_PATH`
+- `FAUCET_ADDRESS`
+- `FAUCET_NETWORK`
+- `FAUCET_TOKENS`
+
 Optional overrides:
 
 - `BASE_URL`
 - `BASE_RPC_URL`
 - `WALLET_JSON_PATH`
+- `ETHERS_PATH`
 - `CREDITS_TO_BUY`
 - `OPERATOR_EMAIL_FOR_SMOKE`
 - `PAYMENT_CONFIRM_MODE_FOR_SMOKE`
@@ -168,12 +202,16 @@ This script proves:
 - chain-backed payment proof capture works against deployed `dev`
 - settlement lands in receipts, ledger, and billing account state
 
-`PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` expects deployed `dev` to have
-`X402_FACILITATOR_URL=mock://local` or a real facilitator configured.
+Current note:
 
-The facilitator variant proves the deployed runtime can automatically execute
-`verify -> settle` after a real onchain payment, but it still does not prove a
-third-party facilitator is live unless the environment points at a real one.
+- `PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual` is no longer supported because
+  `POST /v1/billing/payment/confirm` now only retries facilitator-backed
+  settlement by `receiptId`
+- use the default facilitator path, or set
+  `PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator` explicitly
+- the facilitator variant proves the deployed runtime can automatically execute
+  `verify -> settle`, but it still does not prove a third-party facilitator is
+  live unless the environment points at a real one
 
 ## Run the dev real-chain upgrade smoke
 
@@ -205,11 +243,38 @@ Optional overrides:
 - `ETHERS_PATH`
 - `OPERATOR_EMAIL_FOR_SMOKE`
 
+Current note:
+
+- with facilitator-backed `dev`, the initial `upgrade-intent` response may
+  already return a `settled` receipt before the explicit confirm retry runs
+
 This script proves:
 
 - low-value upgrade quotes display correctly, including sub-cent prices like `0.001`
 - the facilitator-backed `upgrade-intent` flow accepts a real signed x402 payload
 - successful settlement applies the configured upgrade transition for that environment
+
+## Run the local upgrade-unlock regression smoke
+
+This regression covers the exact flow that previously broke:
+
+- self-serve signup starts with an internal-only agent recipient allowlist
+- topup settles successfully
+- external send is accepted immediately after topup, even while send policy still
+  reports `internal_only`
+- upgrade settles successfully
+- external send is still accepted after upgrade without requiring a manual
+  `agent:update` policy patch
+
+Run:
+
+```bash
+npm run smoke:upgrade-unlock:local:auto
+```
+
+This script proves credits now unlock external recipient delivery for the
+default self-serve agent policy, and that the later upgrade path does not
+reintroduce the old `allowedRecipientDomains=["mailagents.net"]` restriction.
 
 The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that
@@ -241,10 +306,10 @@ Notes:
   small mock delay so the script can assert the intermediate
   `availableCredits/reservedCredits` reservation state before capture. The flag is
   currently reused as the generic outbound mock toggle even when `OUTBOUND_PROVIDER=resend`.
-- The script seeds additional local credits into the demo tenant, enables
-  external sending, verifies one successful external send captures a reserved
-  credit, then verifies one suppressed-recipient send releases its reservation
-  without adding a debit ledger entry.
+- The script seeds additional local credits into the demo tenant, keeps the
+  tenant send policy on `internal_only`, verifies one successful external send
+  still captures a reserved credit, then verifies one suppressed-recipient send
+  releases its reservation without adding a debit ledger entry.
 - Run `npm run d1:seed:local` first if the demo tenant or mailbox is missing.
 
 ## Run the signup + site smoke script

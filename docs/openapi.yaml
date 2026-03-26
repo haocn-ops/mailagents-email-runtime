@@ -1774,7 +1774,7 @@ components:
     BillingUpgradeQuote:
       type: object
       required:
-        [scheme, network, asset, targetPricingTier, amountUsd, amountAtomic, description, paymentRequired]
+        [scheme, network, asset, targetPricingTier, includedCredits, amountUsd, amountAtomic, description, paymentRequired]
       properties:
         scheme:
           type: string
@@ -1785,6 +1785,8 @@ components:
         targetPricingTier:
           type: string
           enum: [paid_review]
+        includedCredits:
+          type: integer
         amountUsd:
           type: string
         amountAtomic:
@@ -1795,13 +1797,15 @@ components:
           $ref: '#/components/schemas/X402PaymentRequirement'
     BillingUpgradePendingResponse:
       type: object
-      required: [receipt, targetPricingTier, verificationStatus, message]
+      required: [receipt, targetPricingTier, includedCredits, verificationStatus, message]
       properties:
         receipt:
           $ref: '#/components/schemas/PaymentReceipt'
         targetPricingTier:
           type: string
           enum: [paid_review]
+        includedCredits:
+          type: integer
         verificationStatus:
           type: string
           enum: [pending]
@@ -1980,6 +1984,7 @@ components:
     CreditLedgerEntryMetadata:
       oneOf:
         - $ref: '#/components/schemas/TopupSettlementLedgerMetadata'
+        - $ref: '#/components/schemas/UpgradeCreditGrantLedgerMetadata'
         - $ref: '#/components/schemas/OutboundUsageLedgerMetadata'
     TopupSettlementLedgerMetadata:
       type: object
@@ -1996,6 +2001,28 @@ components:
           enum: [manual_admin, facilitator]
         creditsRequested:
           type: integer
+        facilitatorVerify:
+          $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
+        facilitatorSettle:
+          $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    UpgradeCreditGrantLedgerMetadata:
+      type: object
+      required: [entryType, receiptType, confirmationMode, creditsGranted, targetPricingTier]
+      properties:
+        entryType:
+          type: string
+          enum: [adjustment]
+        receiptType:
+          type: string
+          enum: [upgrade]
+        confirmationMode:
+          type: string
+          enum: [manual_admin, facilitator]
+        creditsGranted:
+          type: integer
+        targetPricingTier:
+          type: string
+          enum: [paid_review]
         facilitatorVerify:
           $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
         facilitatorSettle:
@@ -2112,7 +2139,7 @@ components:
           enum: [internal_only, external_review, external_enabled, suspended]
     UpgradeReceiptMetadata:
       type: object
-      required: [receiptType, targetPricingTier, quote, paymentProof]
+      required: [receiptType, targetPricingTier, includedCredits, quote, paymentProof]
       properties:
         receiptType:
           type: string
@@ -2122,6 +2149,8 @@ components:
         targetPricingTier:
           type: string
           enum: [paid_review]
+        includedCredits:
+          type: integer
         quote:
           $ref: '#/components/schemas/BillingUpgradeQuote'
         paymentProof:

@@ -10,7 +10,8 @@ AUTH_SCOPE="${AUTH_SCOPE_FOR_SMOKE:-task:read}"
 RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
 TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-topup-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
 UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-upgrade-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
-PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-manual}"
+PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-facilitator}"
+UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -120,9 +121,6 @@ assert_status() {
 append_confirm_headers() {
   local headers=()
   headers+=("authorization: Bearer $TOKEN")
-  if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
-    headers+=("x-admin-secret: $ADMIN_SECRET")
-  fi
   printf '%s\n' "${headers[@]}"
 }
 
@@ -136,6 +134,12 @@ wait_for_server
 
 if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
   echo "Missing admin secret. Set ADMIN_API_SECRET_FOR_SMOKE or configure ADMIN_API_SECRET in .dev.vars." >&2
+  exit 1
+fi
+
+if [[ "$PAYMENT_CONFIRM_MODE" != "facilitator" ]]; then
+  echo "PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual is no longer supported by /v1/billing/payment/confirm." >&2
+  echo "Use facilitator mode (the current default) for local billing smoke." >&2
   exit 1
 fi
 
@@ -258,24 +262,41 @@ echo "Submitting topup proof..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
-assert_status "202"
+if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
+  echo "Expected HTTP 200 or 202 but received $LAST_STATUS" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+fi
 TOPUP_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 jq -e '
   .receipt.receiptType == "topup" and
-  .receipt.status == "pending" and
-  .creditsRequested == 25 and
-  .verificationStatus == "pending"
+  (.receipt.status == "pending" or .receipt.status == "settled") and
+  (
+    (
+      .creditsRequested == 25 and
+      (.verificationStatus == "pending" or .verificationStatus == "settled")
+    ) or (
+      .verificationStatus == "settled" and
+      .ledgerEntry.entryType == "topup" and
+      .ledgerEntry.creditsDelta == 25 and
+      .account.availableCredits == 25
+    )
+  )
 ' "$LAST_BODY" >/dev/null
 
 echo "Replaying the same topup proof returns the same receipt..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
-assert_status "202"
+if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
+  echo "Expected replay HTTP 200 or 202 but received $LAST_STATUS" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+fi
 jq -e --arg receipt "$TOPUP_RECEIPT_ID" '
   .receipt.id == $receipt and
   .receipt.receiptType == "topup" and
-  .verificationStatus == "pending"
+  (.verificationStatus == "pending" or .verificationStatus == "settled")
 ' "$LAST_BODY" >/dev/null
 
 echo "Confirming topup settlement..."
@@ -284,8 +305,7 @@ while IFS= read -r header; do
   CONFIRM_HEADERS+=("$header")
 done < <(append_confirm_headers)
 capture_request "POST" "/v1/billing/payment/confirm" "{
-  \"receiptId\": \"$TOPUP_RECEIPT_ID\",
-  \"settlementReference\": \"smoke-topup-$TENANT_ID\"
+  \"receiptId\": \"$TOPUP_RECEIPT_ID\"
 }" "${CONFIRM_HEADERS[@]}"
 assert_status "200"
 jq -e '
@@ -324,31 +344,52 @@ fi
 jq -e '
   .error == "Payment required" and
   .protocol == "x402" and
-  .quote.targetPricingTier == "paid_review"
+  .quote.targetPricingTier == "paid_review" and
+  .quote.includedCredits > 0
 ' "$LAST_BODY" >/dev/null
 
 echo "Submitting upgrade proof..."
 capture_request "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $UPGRADE_PAYMENT_SIGNATURE"
-assert_status "202"
+if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
+  echo "Expected HTTP 200 or 202 but received $LAST_STATUS" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+fi
 UPGRADE_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 jq -e '
   .receipt.receiptType == "upgrade" and
-  .receipt.status == "pending" and
-  .targetPricingTier == "paid_review" and
-  .verificationStatus == "pending"
+  (.receipt.status == "pending" or .receipt.status == "settled") and
+  (
+    (
+      .targetPricingTier == "paid_review" and
+      (.verificationStatus == "pending" or .verificationStatus == "settled")
+    ) or (
+      .verificationStatus == "settled" and
+      .includedCredits > 0 and
+      .account.pricingTier == "paid_active" and
+      .sendPolicy.pricingTier == "paid_active" and
+      .sendPolicy.outboundStatus == "external_enabled" and
+      .sendPolicy.externalSendEnabled == true and
+      .sendPolicy.reviewRequired == false
+    )
+  )
 ' "$LAST_BODY" >/dev/null
 
 echo "Replaying the same upgrade proof returns the same receipt..."
 capture_request "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $UPGRADE_PAYMENT_SIGNATURE"
-assert_status "202"
+if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
+  echo "Expected replay HTTP 200 or 202 but received $LAST_STATUS" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+fi
 jq -e --arg receipt "$UPGRADE_RECEIPT_ID" '
   .receipt.id == $receipt and
   .receipt.receiptType == "upgrade" and
-  .verificationStatus == "pending"
+  (.verificationStatus == "pending" or .verificationStatus == "settled")
 ' "$LAST_BODY" >/dev/null
 
 echo "Confirming upgrade settlement..."
@@ -357,12 +398,14 @@ while IFS= read -r header; do
   CONFIRM_HEADERS+=("$header")
 done < <(append_confirm_headers)
 capture_request "POST" "/v1/billing/payment/confirm" "{
-  \"receiptId\": \"$UPGRADE_RECEIPT_ID\",
-  \"settlementReference\": \"smoke-upgrade-$TENANT_ID\"
+  \"receiptId\": \"$UPGRADE_RECEIPT_ID\"
 }" "${CONFIRM_HEADERS[@]}"
 assert_status "200"
-jq -e '
+jq -e --argjson upgrade_included_credits "$UPGRADE_INCLUDED_CREDITS" '
   .receipt.status == "settled" and
+  .includedCredits == $upgrade_included_credits and
+  .ledgerEntry.entryType == "adjustment" and
+  .ledgerEntry.creditsDelta == $upgrade_included_credits and
   .account.pricingTier == "paid_active" and
   .sendPolicy.pricingTier == "paid_active" and
   .sendPolicy.outboundStatus == "external_enabled" and
@@ -374,9 +417,9 @@ jq -e '
 echo "Re-checking final billing account and send policy..."
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
-jq -e '
+jq -e --argjson upgrade_included_credits "$UPGRADE_INCLUDED_CREDITS" '
   .pricingTier == "paid_active" and
-  .availableCredits == 25
+  .availableCredits == (25 + $upgrade_included_credits)
 ' "$LAST_BODY" >/dev/null
 
 capture_request "GET" "/v1/tenants/$TENANT_ID/send-policy" "" "authorization: Bearer $TOKEN"

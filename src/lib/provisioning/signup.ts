@@ -26,6 +26,7 @@ import { createDraft, enqueueDraftSend } from "../../repositories/mail";
 import { upsertTenantSendPolicy } from "../../repositories/tenant-policies";
 import type { Env } from "../../types";
 import { issueSelfServeAccessToken } from "./default-access";
+import { buildDefaultSelfServeAgentPolicy } from "../self-serve-agent-policy";
 import { buildWelcomeHtml, buildWelcomeText } from "./welcome";
 
 export class SignupError extends Error {
@@ -221,16 +222,10 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       status: "active",
     });
 
-    await upsertAgentPolicy(env, {
+    await upsertAgentPolicy(env, buildDefaultSelfServeAgentPolicy({
       agentId: agent.id,
-      autoReplyEnabled: false,
-      humanReviewRequired: true,
-      confidenceThreshold: 0.85,
-      maxAutoRepliesPerThread: 1,
-      allowedRecipientDomains: [domain],
-      blockedSenderDomains: [],
-      allowedTools: ["reply_email", "mark_task_done"],
-    });
+      internalDomainAllowlist: [domain],
+    }));
 
     await upsertTenantSendPolicy(env, {
       tenantId,
