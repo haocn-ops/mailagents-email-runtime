@@ -7,6 +7,7 @@ import { getAgentVersion, getMailboxById, resolveAgentExecutionTarget } from "..
 import {
 } from "../repositories/billing";
 import {
+  findThreadByReplyContext,
   claimTaskForExecution,
   getDraftByR2Key,
   getMessage,
@@ -85,7 +86,18 @@ async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env):
 
       const rawText = await rawObject.text();
       const parsed = parseRawEmail(rawText);
-      const thread = await getOrCreateThread(env, {
+      const referencedMessageIds = [
+        parsed.inReplyTo,
+        ...[...parsed.references].reverse(),
+      ].filter((value): value is string => Boolean(value?.trim()));
+      // Prefer an existing thread referenced by email headers before falling back to parser-derived keys.
+      const thread = await findThreadByReplyContext(env, {
+        tenantId: message.body.tenantId,
+        mailboxId: message.body.mailboxId,
+        internetMessageIds: referencedMessageIds,
+        subject: parsed.subject,
+        participantAddress: parsed.replyTo ?? parsed.from,
+      }) ?? await getOrCreateThread(env, {
         tenantId: message.body.tenantId,
         mailboxId: message.body.mailboxId,
         threadKey: parsed.threadKey,

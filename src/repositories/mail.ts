@@ -1,5 +1,6 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
+import { normalizeSubject } from "../lib/email-parser";
 import { getOutboundCreditRequirement } from "../lib/outbound-credits";
 import { getOutboundProvider } from "../lib/outbound-provider";
 import { releaseTenantReservedCredits, reserveTenantAvailableCredits } from "./billing";
@@ -39,6 +40,22 @@ interface MessageRow {
   received_at: string | null;
   sent_at: string | null;
   created_at: string;
+}
+
+interface ReplyFallbackCandidateRow {
+  message_id: string;
+  tenant_id: string | null;
+  mailbox_id: string;
+  thread_id: string | null;
+  internet_message_id: string | null;
+  provider_message_id: string | null;
+  to_addr: string;
+  subject: string | null;
+  created_at: string;
+  thread_row_id: string | null;
+  thread_key: string | null;
+  subject_norm: string | null;
+  thread_status: string | null;
 }
 
 interface ThreadRow {
@@ -576,6 +593,167 @@ export async function getOrCreateThread(env: Env, input: {
   };
 }
 
+export async function findThreadByInternetMessageIds(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  internetMessageIds: string[];
+}): Promise<ThreadRecord | null> {
+  const candidates = [...new Set(input.internetMessageIds.map((value) => value.trim()).filter(Boolean))];
+
+  for (const internetMessageId of candidates) {
+    const row = await firstRow<ThreadRow>(
+      env.D1_DB.prepare(
+        `SELECT t.id, t.tenant_id, t.mailbox_id, t.thread_key, t.subject_norm, t.status
+         FROM messages m
+         JOIN threads t ON t.id = m.thread_id
+         WHERE m.mailbox_id = ? AND m.internet_message_id = ? AND m.thread_id IS NOT NULL
+         ORDER BY m.created_at DESC
+         LIMIT 1`
+      ).bind(input.mailboxId, internetMessageId)
+    );
+
+    if (row) {
+      return {
+        id: row.id,
+        tenantId: row.tenant_id ?? input.tenantId,
+        mailboxId: row.mailbox_id,
+        subjectNorm: row.subject_norm ?? undefined,
+        status: row.status ?? undefined,
+        messages: [],
+      };
+    }
+  }
+
+  return null;
+}
+
+function normalizeEmailAddress(value?: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+export async function assignDraftThreadId(env: Env, draftId: string, threadId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE drafts
+     SET thread_id = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    threadId,
+    nowIso(),
+    draftId
+  ));
+}
+
+export async function assignMessageThreadId(env: Env, messageId: string, threadId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE messages
+     SET thread_id = ?
+     WHERE id = ?`
+  ).bind(
+    threadId,
+    messageId
+  ));
+}
+
+export async function findThreadByReplyContext(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  internetMessageIds: string[];
+  subject?: string;
+  participantAddress?: string;
+}): Promise<ThreadRecord | null> {
+  const exactThread = await findThreadByInternetMessageIds(env, input);
+  if (exactThread) {
+    return exactThread;
+  }
+
+  const subjectNorm = normalizeSubject(input.subject);
+  const participantAddress = normalizeEmailAddress(input.participantAddress);
+  if (!subjectNorm || !participantAddress) {
+    return null;
+  }
+
+  const rows = await allRows<ReplyFallbackCandidateRow>(
+    env.D1_DB.prepare(
+      `SELECT
+         m.id AS message_id,
+         m.tenant_id,
+         m.mailbox_id,
+         m.thread_id,
+         m.internet_message_id,
+         m.provider_message_id,
+         m.to_addr,
+         m.subject,
+         m.created_at,
+         t.id AS thread_row_id,
+         t.thread_key,
+         t.subject_norm,
+         t.status AS thread_status
+       FROM messages m
+       LEFT JOIN threads t
+         ON t.id = m.thread_id
+       WHERE m.mailbox_id = ?
+         AND m.direction = 'outbound'
+       ORDER BY m.created_at DESC
+       LIMIT 50`
+    ).bind(input.mailboxId)
+  );
+
+  const referencedIds = new Set(input.internetMessageIds.map((value) => value.trim()).filter(Boolean));
+  const candidates = rows.filter((row) => {
+    const recipients = row.to_addr
+      .split(",")
+      .map((value) => normalizeEmailAddress(value))
+      .filter((value): value is string => Boolean(value));
+    return recipients.includes(participantAddress) && normalizeSubject(row.subject ?? undefined) === subjectNorm;
+  });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const exactProviderCandidateKeys = new Set(
+    candidates
+      .filter((row) => {
+        const providerMessageId = normalizeEmailAddress(row.provider_message_id);
+        const internetMessageId = normalizeEmailAddress(row.internet_message_id);
+        return (providerMessageId && referencedIds.has(providerMessageId))
+          || (internetMessageId && referencedIds.has(internetMessageId));
+      })
+      .map((row) => row.thread_id ?? row.message_id)
+  );
+
+  const effectiveCandidates = exactProviderCandidateKeys.size > 0
+    ? candidates.filter((row) => exactProviderCandidateKeys.has(row.thread_id ?? row.message_id))
+    : candidates;
+
+  const uniqueCandidateKeys = new Set(effectiveCandidates.map((row) => row.thread_id ?? row.message_id));
+  if (uniqueCandidateKeys.size !== 1) {
+    return null;
+  }
+
+  const selected = effectiveCandidates[0]!;
+  if (selected.thread_id && selected.thread_row_id) {
+    return {
+      id: selected.thread_row_id,
+      tenantId: selected.tenant_id ?? input.tenantId,
+      mailboxId: selected.mailbox_id,
+      subjectNorm: selected.subject_norm ?? subjectNorm,
+      status: selected.thread_status ?? "open",
+      messages: [],
+    };
+  }
+
+  const thread = await getOrCreateThread(env, {
+    tenantId: selected.tenant_id ?? input.tenantId,
+    mailboxId: selected.mailbox_id,
+    threadKey: selected.internet_message_id ?? selected.provider_message_id ?? `outbound:${selected.message_id}`,
+    subjectNorm,
+  });
+  await assignMessageThreadId(env, selected.message_id, thread.id);
+  return thread;
+}
+
 export async function createDraft(env: Env, input: {
   tenantId: string;
   agentId: string;
@@ -760,9 +938,12 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+  let outboundThreadId = draft.threadId ?? null;
   const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
   const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
   const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+  const subject = typeof draftPayload.subject === "string" ? draftPayload.subject : "";
+  const normalizedSubject = normalizeSubject(subject);
   const creditRequirement = await getOutboundCreditRequirement(env, {
     tenantId: draft.tenantId,
     to,
@@ -795,6 +976,16 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   }
   if (fromAddress !== mailboxAddress) {
     throw new Error("Draft from address must match the mailbox address");
+  }
+  if (!outboundThreadId && normalizedSubject) {
+    const outboundThread = await getOrCreateThread(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+      threadKey: `outbound:${outboundMessageId}`,
+      subjectNorm: normalizedSubject,
+    });
+    outboundThreadId = outboundThread.id;
+    await assignDraftThreadId(env, draft.id, outboundThread.id);
   }
   for (const ref of attachmentRefs) {
     const r2Key = typeof ref.r2Key === "string" ? ref.r2Key.trim() : "";
@@ -831,12 +1022,12 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
       outboundMessageId,
       draft.tenantId,
       draft.mailboxId,
-      draft.threadId ?? null,
+      outboundThreadId,
       "outbound",
       getOutboundProvider(env),
       fromAddress,
       Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
-      typeof draftPayload.subject === "string" ? draftPayload.subject : "",
+      subject,
       "tasked",
       timestamp
     ));
