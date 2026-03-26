@@ -71,6 +71,7 @@ export interface Env {
   X402_PAY_TO?: string;
   X402_PRICE_PER_CREDIT_USD?: string;
   X402_UPGRADE_PRICE_USD?: string;
+  X402_UPGRADE_INCLUDED_CREDITS?: string;
   X402_FACILITATOR_URL?: string;
   X402_FACILITATOR_VERIFY_PATH?: string;
   X402_FACILITATOR_SETTLE_PATH?: string;

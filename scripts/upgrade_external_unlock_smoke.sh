@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:8787}"
 RUN_ID="${RUN_ID:-$(date +%s)}"
 ALIAS="unlock${RUN_ID}"
 OP_EMAIL="${OP_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
+UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
 
 TMP_FILES=()
 LAST_HEADERS=""
@@ -135,7 +136,14 @@ UPGRADE_RECEIPT_ID="$(jq -r '.receipt.id' "$LAST_BODY")"
 capture "POST" "/v1/billing/payment/confirm" "{\"receiptId\":\"$UPGRADE_RECEIPT_ID\"}" -H "authorization: Bearer $TOKEN"
 echo "upgrade confirm status=$LAST_STATUS"
 expect_status "200"
-jq -e '.sendPolicy.outboundStatus == "external_enabled" and .sendPolicy.externalSendEnabled == true' "$LAST_BODY" >/dev/null
+jq -e --argjson upgrade_included_credits "$UPGRADE_INCLUDED_CREDITS" '
+  .includedCredits == $upgrade_included_credits and
+  .ledgerEntry.entryType == "adjustment" and
+  .ledgerEntry.creditsDelta == $upgrade_included_credits and
+  .sendPolicy.outboundStatus == "external_enabled" and
+  .sendPolicy.externalSendEnabled == true and
+  .account.availableCredits == (25 + $upgrade_included_credits)
+' "$LAST_BODY" >/dev/null
 
 SEND_BODY="$(new_tmp)"
 cat > "$SEND_BODY" <<JSON
