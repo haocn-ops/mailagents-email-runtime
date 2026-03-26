@@ -88,6 +88,9 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   const externalSendingUnlockedByPolicy =
     tenantPolicy.externalSendEnabled && tenantPolicy.outboundStatus === "external_enabled";
   const externalSendingUnlockedByCredits = (account?.availableCredits ?? 0) > 0;
+  const externalSendingUnlocked =
+    externalDomains.length > 0 &&
+    (externalSendingUnlockedByPolicy || externalSendingUnlockedByCredits);
 
   if (tenantPolicy.outboundStatus === "suspended") {
     return {
@@ -131,7 +134,10 @@ export async function evaluateOutboundPolicy(env: Env, input: {
     }
   }
 
-  if (tenantPolicy.effectiveDailySendLimit !== null || tenantPolicy.effectiveHourlySendLimit !== null) {
+  if (
+    !externalSendingUnlocked &&
+    (tenantPolicy.effectiveDailySendLimit !== null || tenantPolicy.effectiveHourlySendLimit !== null)
+  ) {
     const usage = await getTenantOutboundUsageWindowCounts(env, {
       tenantId: input.tenantId,
       sinceHour: rollingWindowStart(1),
