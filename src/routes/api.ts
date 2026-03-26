@@ -25,6 +25,7 @@ import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPub
 import { settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
+import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
 import {
   bindMailbox,
   createAgent,
@@ -912,14 +913,23 @@ router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
     return badRequest("pricingTier, outboundStatus, externalSendEnabled, and reviewRequired are required");
   }
 
-  return json(await upsertTenantSendPolicy(env, {
+  const sendPolicy = await upsertTenantSendPolicy(env, {
     tenantId: route.params.tenantId,
     pricingTier: body.pricingTier,
     outboundStatus: body.outboundStatus,
     internalDomainAllowlist: body.internalDomainAllowlist ?? ["mailagents.net"],
     externalSendEnabled: body.externalSendEnabled,
     reviewRequired: body.reviewRequired,
-  }));
+  });
+
+  if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: route.params.tenantId,
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+    });
+  }
+
+  return json(sendPolicy);
 });
 
 router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (request, env, _ctx, route) => {
@@ -952,6 +962,10 @@ router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (re
       tenantId: route.params.tenantId,
       status: billingAccount.status === "trial" ? "active" : undefined,
       pricingTier: "paid_active",
+    });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: route.params.tenantId,
+      internalDomainAllowlist: updatedSendPolicy.internalDomainAllowlist,
     });
 
     return json({
@@ -3624,6 +3638,10 @@ async function finalizePaymentReceiptSettlement(
       internalDomainAllowlist: existingSendPolicy.internalDomainAllowlist,
       externalSendEnabled: true,
       reviewRequired: false,
+    });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: finalizedReceipt.tenantId,
+      internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
     });
 
     const settledReceipt = finalizedReceipt.status === "settled"

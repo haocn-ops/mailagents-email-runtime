@@ -20,6 +20,7 @@ import {
   RUNTIME_TOOL_CATALOG,
   buildRuntimeMetadata,
 } from "../lib/runtime-metadata";
+import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
 import {
   ADMIN_MCP_AUTH,
   ADMIN_MCP_METHODS,
@@ -656,6 +657,10 @@ async function applyTenantSendPolicyReview(env: Env, input: {
       status: billingAccount.status === "trial" ? "active" : undefined,
       pricingTier: "paid_active",
     });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: input.tenantId,
+      internalDomainAllowlist: updatedSendPolicy.internalDomainAllowlist,
+    });
 
     return {
       sendPolicy: updatedSendPolicy,
@@ -867,7 +872,7 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       throw new AdminMcpToolError("invalid_arguments", "outboundStatus is invalid");
     }
 
-    return await upsertTenantSendPolicy(env, {
+    const sendPolicy = await upsertTenantSendPolicy(env, {
       tenantId: requireString(args.tenantId, "tenantId"),
       pricingTier,
       outboundStatus,
@@ -875,6 +880,15 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       externalSendEnabled: requireBoolean(args.externalSendEnabled, "externalSendEnabled"),
       reviewRequired: requireBoolean(args.reviewRequired, "reviewRequired"),
     });
+
+    if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
+      await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+        tenantId: sendPolicy.tenantId,
+        internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      });
+    }
+
+    return sendPolicy;
   }
 
   if (toolName === "apply_tenant_send_policy_review") {
