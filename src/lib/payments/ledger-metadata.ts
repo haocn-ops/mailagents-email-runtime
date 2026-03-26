@@ -3,7 +3,10 @@ import type {
   X402FacilitatorSettlementResponse,
   X402FacilitatorVerificationResponse,
 } from "./x402-facilitator";
-import type { TopupReceiptMetadata } from "./receipt-metadata";
+import type {
+  TopupReceiptMetadata,
+  UpgradeReceiptMetadata,
+} from "./receipt-metadata";
 
 export interface TopupSettlementLedgerMetadata {
   entryType: "topup";
@@ -27,10 +30,27 @@ export interface OutboundUsageLedgerMetadata {
   externalDomains: string[];
 }
 
-export type CreditLedgerMetadata = TopupSettlementLedgerMetadata | OutboundUsageLedgerMetadata;
+export interface UpgradeCreditGrantLedgerMetadata {
+  entryType: "adjustment";
+  receiptType: "upgrade";
+  confirmationMode: "manual_admin" | "facilitator";
+  creditsGranted: number;
+  targetPricingTier: "paid_review";
+  facilitatorVerify?: X402FacilitatorVerificationResponse;
+  facilitatorSettle?: X402FacilitatorSettlementResponse;
+}
+
+export type CreditLedgerMetadata =
+  | TopupSettlementLedgerMetadata
+  | UpgradeCreditGrantLedgerMetadata
+  | OutboundUsageLedgerMetadata;
 export type TypedTopupCreditLedgerEntryRecord = CreditLedgerEntryRecord<TopupSettlementLedgerMetadata>;
+export type TypedUpgradeCreditLedgerEntryRecord = CreditLedgerEntryRecord<UpgradeCreditGrantLedgerMetadata>;
 export type TypedOutboundUsageCreditLedgerEntryRecord = CreditLedgerEntryRecord<OutboundUsageLedgerMetadata>;
-export type TypedCreditLedgerEntryRecord = TypedTopupCreditLedgerEntryRecord | TypedOutboundUsageCreditLedgerEntryRecord;
+export type TypedCreditLedgerEntryRecord =
+  | TypedTopupCreditLedgerEntryRecord
+  | TypedUpgradeCreditLedgerEntryRecord
+  | TypedOutboundUsageCreditLedgerEntryRecord;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -49,6 +69,23 @@ export function buildTopupSettlementLedgerMetadata(input: {
     receiptType: "topup",
     confirmationMode: input.confirmationMode,
     creditsRequested: input.receiptMetadata.creditsRequested,
+    facilitatorVerify: input.facilitatorVerify,
+    facilitatorSettle: input.facilitatorSettle,
+  };
+}
+
+export function buildUpgradeCreditGrantLedgerMetadata(input: {
+  receiptMetadata: UpgradeReceiptMetadata;
+  confirmationMode: "manual_admin" | "facilitator";
+  facilitatorVerify?: X402FacilitatorVerificationResponse;
+  facilitatorSettle?: X402FacilitatorSettlementResponse;
+}): UpgradeCreditGrantLedgerMetadata {
+  return {
+    entryType: "adjustment",
+    receiptType: "upgrade",
+    confirmationMode: input.confirmationMode,
+    creditsGranted: input.receiptMetadata.includedCredits,
+    targetPricingTier: input.receiptMetadata.targetPricingTier,
     facilitatorVerify: input.facilitatorVerify,
     facilitatorSettle: input.facilitatorSettle,
   };
@@ -104,6 +141,28 @@ export function parseTypedCreditLedgerEntry(
         receiptType: "topup",
         confirmationMode: metadata.confirmationMode,
         creditsRequested: metadata.creditsRequested,
+        facilitatorVerify: metadata.facilitatorVerify as X402FacilitatorVerificationResponse | undefined,
+        facilitatorSettle: metadata.facilitatorSettle as X402FacilitatorSettlementResponse | undefined,
+      },
+    };
+  }
+
+  if (
+    entry.entryType === "adjustment" &&
+    metadata.entryType === "adjustment" &&
+    metadata.receiptType === "upgrade" &&
+    (metadata.confirmationMode === "manual_admin" || metadata.confirmationMode === "facilitator") &&
+    typeof metadata.creditsGranted === "number" &&
+    metadata.targetPricingTier === "paid_review"
+  ) {
+    return {
+      ...entry,
+      metadata: {
+        entryType: "adjustment",
+        receiptType: "upgrade",
+        confirmationMode: metadata.confirmationMode,
+        creditsGranted: metadata.creditsGranted,
+        targetPricingTier: "paid_review",
         facilitatorVerify: metadata.facilitatorVerify as X402FacilitatorVerificationResponse | undefined,
         facilitatorSettle: metadata.facilitatorSettle as X402FacilitatorSettlementResponse | undefined,
       },

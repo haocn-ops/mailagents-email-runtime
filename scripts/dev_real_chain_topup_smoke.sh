@@ -6,10 +6,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-https://mailagents-dev.izhenghaocn.workers.dev}"
 BASE_RPC_URL="${BASE_RPC_URL:-https://sepolia.base.org}"
 WALLET_JSON_PATH="${WALLET_JSON_PATH:-$REPO_ROOT/.secrets/dev-base-sepolia-wallet.json}"
+ETHERS_PATH="${ETHERS_PATH:-$REPO_ROOT/node_modules/ethers}"
 ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 CREDITS_TO_BUY="${CREDITS_TO_BUY:-25}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
-PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-manual}"
+PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-facilitator}"
 
 TEMP_FILES=()
 
@@ -63,14 +64,21 @@ if [[ ! -f "$WALLET_JSON_PATH" ]]; then
   exit 1
 fi
 
+if [[ ! -e "$ETHERS_PATH" ]]; then
+  echo "Missing ethers package at: $ETHERS_PATH" >&2
+  echo "Set ETHERS_PATH or install ethers locally first." >&2
+  exit 1
+fi
+
 if [[ "$PAYMENT_CONFIRM_MODE" != "manual" && "$PAYMENT_CONFIRM_MODE" != "facilitator" ]]; then
   echo "Unsupported PAYMENT_CONFIRM_MODE_FOR_SMOKE: $PAYMENT_CONFIRM_MODE" >&2
   echo "Use 'manual' or 'facilitator'." >&2
   exit 1
 fi
 
-if [[ "$PAYMENT_CONFIRM_MODE" == "manual" && "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
-  echo "Missing admin secret. Set ADMIN_API_SECRET_FOR_SMOKE or configure ADMIN_API_SECRET in .dev.vars." >&2
+if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
+  echo "PAYMENT_CONFIRM_MODE_FOR_SMOKE=manual is no longer supported by /v1/billing/payment/confirm." >&2
+  echo "Use PAYMENT_CONFIRM_MODE_FOR_SMOKE=facilitator or leave it unset." >&2
   exit 1
 fi
 
@@ -136,52 +144,14 @@ if [[ -z "$PAY_TO" ]]; then
   exit 1
 fi
 
-if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
-  echo "Sending real onchain USDC payment to $PAY_TO ..."
-  node - <<'NODE' "$PAY_TO" "$AMOUNT_ATOMIC" "$PAYMENT_JSON" "$WALLET_JSON_PATH" "$BASE_RPC_URL"
-const fs = require("fs");
-const { JsonRpcProvider, Wallet, Contract } = require("/tmp/mailagents-x402-wallet/node_modules/ethers");
-const payTo = process.argv[2];
-const amountAtomic = process.argv[3];
-const outputPath = process.argv[4];
-const walletPath = process.argv[5];
-const rpcUrl = process.argv[6];
-const walletJson = JSON.parse(fs.readFileSync(walletPath, "utf8"));
-const provider = new JsonRpcProvider(rpcUrl);
-const wallet = new Wallet(walletJson.privateKey, provider);
-const usdc = new Contract(
-  "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  ["function transfer(address to, uint256 value) returns (bool)"],
-  wallet,
-);
-
-(async () => {
-  const tx = await usdc.transfer(payTo, amountAtomic);
-  const receipt = await tx.wait();
-  fs.writeFileSync(outputPath, JSON.stringify({
-    payer: wallet.address,
-    payTo,
-    network: "eip155:84532",
-    asset: "usdc",
-    amountAtomic,
-    txHash: tx.hash,
-    receiptStatus: receipt.status,
-    blockNumber: receipt.blockNumber,
-  }, null, 2));
-})().catch((err) => {
-  console.error(err?.shortMessage || err?.message || String(err));
-  process.exit(1);
-});
-NODE
-else
-  echo "Creating facilitator-ready x402 EIP-3009 payload ..."
-  node - <<'NODE' "$QUOTE_JSON" "$PAYMENT_JSON" "$WALLET_JSON_PATH"
+echo "Creating facilitator-ready x402 EIP-3009 payload ..."
+node - <<'NODE' "$QUOTE_JSON" "$PAYMENT_JSON" "$WALLET_JSON_PATH" "$ETHERS_PATH"
 const fs = require("fs");
 const {
   Wallet,
   randomBytes,
   hexlify,
-} = require("/tmp/mailagents-x402-wallet/node_modules/ethers");
+} = require(process.argv[5]);
 const quotePath = process.argv[2];
 const outputPath = process.argv[3];
 const walletPath = process.argv[4];
@@ -233,7 +203,6 @@ const types = {
   process.exit(1);
 });
 NODE
-fi
 
 PAYMENT_SIGNATURE="$(python3 - <<'PY' "$PAYMENT_JSON"
 import base64,sys
@@ -252,37 +221,24 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
 
 RECEIPT_ID="$(python3 - <<'PY' "$PENDING_JSON"
 import json,sys
-print(json.load(open(sys.argv[1]))['receipt']['id'])
+payload=json.load(open(sys.argv[1]))
+receipt=payload.get("receipt")
+if not isinstance(receipt, dict) or not receipt.get("id"):
+    print("Topup proof submission did not return a receipt.", file=sys.stderr)
+    print(json.dumps(payload, indent=2), file=sys.stderr)
+    raise SystemExit(1)
+print(receipt["id"])
 PY
 )"
 
-if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
-  TX_HASH="$(python3 - <<'PY' "$PAYMENT_JSON"
-import json,sys
-print(json.load(open(sys.argv[1]))['txHash'])
-PY
-)"
-  CONFIRM_BODY="$(printf '{"receiptId":"%s","settlementReference":"%s"}' "$RECEIPT_ID" "$TX_HASH")"
-else
-  CONFIRM_BODY="$(printf '{"receiptId":"%s"}' "$RECEIPT_ID")"
-fi
+CONFIRM_BODY="$(printf '{"receiptId":"%s"}' "$RECEIPT_ID")"
 
-if [[ "$PAYMENT_CONFIRM_MODE" == "manual" ]]; then
-  echo "Confirming receipt through manual admin settlement ..."
-  curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
-    -X POST "$BASE_URL/v1/billing/payment/confirm" \
-    -H "authorization: Bearer $TOKEN" \
-    -H "x-admin-secret: $ADMIN_SECRET" \
-    -H 'content-type: application/json' \
-    --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
-else
-  echo "Confirming receipt through facilitator-backed settlement ..."
-  curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
-    -X POST "$BASE_URL/v1/billing/payment/confirm" \
-    -H "authorization: Bearer $TOKEN" \
-    -H 'content-type: application/json' \
-    --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
-fi
+echo "Confirming receipt through facilitator-backed settlement ..."
+curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
+  -X POST "$BASE_URL/v1/billing/payment/confirm" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  --data "$CONFIRM_BODY" > "$CONFIRM_JSON"
 
 curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   "$BASE_URL/v1/billing/account" \
@@ -296,7 +252,7 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   "$BASE_URL/v1/billing/receipts" \
   -H "authorization: Bearer $TOKEN" > "$RECEIPTS_JSON"
 
-python3 - <<'PY' "$SIGNUP_JSON" "$DID_JSON" "$QUOTE_HEADERS" "$QUOTE_JSON" "$PAYMENT_JSON" "$PENDING_JSON" "$CONFIRM_JSON" "$ACCOUNT_JSON" "$LEDGER_JSON" "$RECEIPTS_JSON"
+python3 - <<'PY' "$SIGNUP_JSON" "$DID_JSON" "$QUOTE_HEADERS" "$QUOTE_JSON" "$PAYMENT_JSON" "$PENDING_JSON" "$CONFIRM_JSON" "$ACCOUNT_JSON" "$LEDGER_JSON" "$RECEIPTS_JSON" "$CREDITS_TO_BUY"
 import json,sys
 signup=json.load(open(sys.argv[1]))
 did=json.load(open(sys.argv[2]))
@@ -308,6 +264,7 @@ confirm=json.load(open(sys.argv[7]))
 account=json.load(open(sys.argv[8]))
 ledger=json.load(open(sys.argv[9]))
 receipts=json.load(open(sys.argv[10]))
+credits_requested=int(sys.argv[11])
 print(json.dumps({
   "mailboxAddress": signup["mailboxAddress"],
   "tenantId": signup["tenantId"],
@@ -345,13 +302,13 @@ print(json.dumps({
 }, indent=2))
 
 assert pending["receipt"]["receiptType"] == "topup", pending
-assert pending["receipt"]["status"] == "pending", pending
+assert pending["receipt"]["status"] in ("pending", "settled"), pending
 assert confirm.get("verificationStatus") == "settled", confirm
 assert confirm.get("receipt", {}).get("status") == "settled", confirm
-assert account["availableCredits"] == 25, account
+assert account["availableCredits"] == credits_requested, account
 assert ledger.get("items"), ledger
 assert ledger["items"][0]["entryType"] == "topup", ledger["items"][0]
-assert ledger["items"][0]["creditsDelta"] == 25, ledger["items"][0]
+assert ledger["items"][0]["creditsDelta"] == credits_requested, ledger["items"][0]
 assert receipts.get("items"), receipts
 assert receipts["items"][0]["status"] == "settled", receipts["items"][0]
 print("Real-chain topup smoke completed successfully.")

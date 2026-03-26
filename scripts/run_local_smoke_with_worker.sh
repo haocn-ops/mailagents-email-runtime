@@ -8,6 +8,7 @@ SMOKE_SCRIPT="${1:-$SCRIPT_DIR/local_smoke.sh}"
 WORKER_LOG="$(mktemp -t mailagents-local-worker.XXXXXX.log)"
 WORKER_PID=""
 ENV_OVERLAY_FILE=""
+MERGED_ENV_FILE=""
 DEV_VARS_FILE="$REPO_ROOT/.dev.vars"
 
 require_cmd() {
@@ -25,12 +26,18 @@ cleanup() {
   if [[ -n "$ENV_OVERLAY_FILE" && -f "$ENV_OVERLAY_FILE" ]]; then
     rm -f "$ENV_OVERLAY_FILE"
   fi
+  if [[ -n "$MERGED_ENV_FILE" && -f "$MERGED_ENV_FILE" ]]; then
+    rm -f "$MERGED_ENV_FILE"
+  fi
 }
 
 prepare_env_overlay() {
   local var_name
   local wrote_any=0
   local passthrough_vars=(
+    ADMIN_API_SECRET
+    API_SIGNING_SECRET
+    WEBHOOK_SHARED_SECRET
     SES_MOCK_SEND
     SES_MOCK_SEND_DELAY_MS
     OUTBOUND_SEND_IN_DOUBT_GRACE_SECONDS
@@ -51,6 +58,21 @@ prepare_env_overlay() {
   ENV_OVERLAY_FILE="$(mktemp -t mailagents-local-worker-env.XXXXXX)"
   : >"$ENV_OVERLAY_FILE"
 
+  if [[ -n "${ADMIN_API_SECRET_FOR_SMOKE:-}" && -z "${ADMIN_API_SECRET:-}" ]]; then
+    printf 'ADMIN_API_SECRET=%s\n' "$ADMIN_API_SECRET_FOR_SMOKE" >>"$ENV_OVERLAY_FILE"
+    wrote_any=1
+  fi
+
+  if [[ -n "${API_SIGNING_SECRET_FOR_SMOKE:-}" && -z "${API_SIGNING_SECRET:-}" ]]; then
+    printf 'API_SIGNING_SECRET=%s\n' "$API_SIGNING_SECRET_FOR_SMOKE" >>"$ENV_OVERLAY_FILE"
+    wrote_any=1
+  fi
+
+  if [[ -n "${WEBHOOK_SHARED_SECRET_FOR_SMOKE:-}" && -z "${WEBHOOK_SHARED_SECRET:-}" ]]; then
+    printf 'WEBHOOK_SHARED_SECRET=%s\n' "$WEBHOOK_SHARED_SECRET_FOR_SMOKE" >>"$ENV_OVERLAY_FILE"
+    wrote_any=1
+  fi
+
   for var_name in "${passthrough_vars[@]}"; do
     if [[ -n "${!var_name+x}" ]]; then
       printf '%s=%s\n' "$var_name" "${!var_name}" >>"$ENV_OVERLAY_FILE"
@@ -61,6 +83,23 @@ prepare_env_overlay() {
   if [[ "$wrote_any" -eq 0 ]]; then
     rm -f "$ENV_OVERLAY_FILE"
     ENV_OVERLAY_FILE=""
+  fi
+}
+
+prepare_worker_env_file() {
+  if [[ -n "$ENV_OVERLAY_FILE" && -f "$ENV_OVERLAY_FILE" && -f "$DEV_VARS_FILE" ]]; then
+    MERGED_ENV_FILE="$(mktemp -t mailagents-local-worker-merged-env.XXXXXX)"
+    cat "$DEV_VARS_FILE" "$ENV_OVERLAY_FILE" >"$MERGED_ENV_FILE"
+    return
+  fi
+
+  if [[ -n "$ENV_OVERLAY_FILE" && -f "$ENV_OVERLAY_FILE" ]]; then
+    MERGED_ENV_FILE="$ENV_OVERLAY_FILE"
+    return
+  fi
+
+  if [[ -f "$DEV_VARS_FILE" ]]; then
+    MERGED_ENV_FILE="$DEV_VARS_FILE"
   fi
 }
 
@@ -93,6 +132,7 @@ fi
 
 trap cleanup EXIT
 prepare_env_overlay
+prepare_worker_env_file
 
 cd "$REPO_ROOT"
 echo "Preparing local D1 schema for smoke run ..."
@@ -104,12 +144,8 @@ if server_is_ready; then
   echo "Reusing existing local worker at $BASE_URL"
 else
   echo "Starting local worker for smoke run ..."
-  if [[ -n "$ENV_OVERLAY_FILE" ]]; then
-    if [[ -f "$DEV_VARS_FILE" ]]; then
-      npm run dev:local -- --env-file "$DEV_VARS_FILE" --env-file "$ENV_OVERLAY_FILE" >"$WORKER_LOG" 2>&1 &
-    else
-      npm run dev:local -- --env-file "$ENV_OVERLAY_FILE" >"$WORKER_LOG" 2>&1 &
-    fi
+  if [[ -n "$MERGED_ENV_FILE" ]]; then
+    npm run dev:local -- --env-file "$MERGED_ENV_FILE" >"$WORKER_LOG" 2>&1 &
   else
     npm run dev:local >"$WORKER_LOG" 2>&1 &
   fi
@@ -119,6 +155,12 @@ else
 fi
 
 echo "Running smoke script: $SMOKE_SCRIPT"
+if [[ -n "$MERGED_ENV_FILE" && -f "$MERGED_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$MERGED_ENV_FILE"
+  set +a
+fi
 bash "$SMOKE_SCRIPT"
 
 echo "Smoke run completed."

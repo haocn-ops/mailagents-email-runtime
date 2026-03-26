@@ -5,8 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_URL="${BASE_URL:-https://mailagents-dev.izhenghaocn.workers.dev}"
 WALLET_JSON_PATH="${WALLET_JSON_PATH:-$REPO_ROOT/.secrets/dev-base-sepolia-wallet.json}"
-ETHERS_PATH="${ETHERS_PATH:-/tmp/mailagents-x402-wallet/node_modules/ethers}"
+ETHERS_PATH="${ETHERS_PATH:-$REPO_ROOT/node_modules/ethers}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
+UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
+PERSIST_SUCCESS_JSON_PATH="${PERSIST_SUCCESS_JSON_PATH:-$REPO_ROOT/.secrets/latest-upgraded-mailbox.json}"
 
 TEMP_FILES=()
 
@@ -40,6 +42,12 @@ trap cleanup EXIT
 if [[ ! -f "$WALLET_JSON_PATH" ]]; then
   echo "Missing wallet file: $WALLET_JSON_PATH" >&2
   echo "Create or copy a funded Base Sepolia wallet into .secrets first." >&2
+  exit 1
+fi
+
+if [[ ! -e "$ETHERS_PATH" ]]; then
+  echo "Missing ethers package at: $ETHERS_PATH" >&2
+  echo "Set ETHERS_PATH or install ethers locally first." >&2
   exit 1
 fi
 
@@ -189,7 +197,7 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   "$BASE_URL/v1/billing/receipts" \
   -H "authorization: Bearer $TOKEN" > "$RECEIPTS_JSON"
 
-python3 - <<'PY' "$SIGNUP_JSON" "$DID_JSON" "$QUOTE_HEADERS" "$QUOTE_JSON" "$PAYMENT_JSON" "$PENDING_JSON" "$CONFIRM_JSON" "$ACCOUNT_JSON" "$POLICY_JSON" "$RECEIPTS_JSON"
+python3 - <<'PY' "$SIGNUP_JSON" "$DID_JSON" "$QUOTE_HEADERS" "$QUOTE_JSON" "$PAYMENT_JSON" "$PENDING_JSON" "$CONFIRM_JSON" "$ACCOUNT_JSON" "$POLICY_JSON" "$RECEIPTS_JSON" "$UPGRADE_INCLUDED_CREDITS"
 import json,sys
 signup=json.load(open(sys.argv[1]))
 did=json.load(open(sys.argv[2]))
@@ -201,6 +209,7 @@ confirm=json.load(open(sys.argv[7]))
 account=json.load(open(sys.argv[8]))
 policy=json.load(open(sys.argv[9]))
 receipts=json.load(open(sys.argv[10]))
+upgrade_included_credits=int(sys.argv[11])
 print(json.dumps({
   "mailboxAddress": signup["mailboxAddress"],
   "tenantId": signup["tenantId"],
@@ -215,6 +224,7 @@ print(json.dumps({
     "amountAtomic": quote["quote"]["amountAtomic"],
     "payTo": quote["quote"]["paymentRequired"]["accepts"][0].get("payTo"),
     "targetPricingTier": quote["quote"].get("targetPricingTier"),
+    "includedCredits": quote["quote"].get("includedCredits"),
   },
   "paymentSubmission": payment,
   "pendingReceipt": {
@@ -227,6 +237,7 @@ print(json.dumps({
     "message": confirm.get("message"),
     "receiptStatus": confirm.get("receipt", {}).get("status"),
     "ledgerEntryId": confirm.get("ledgerEntry", {}).get("id"),
+    "includedCredits": confirm.get("includedCredits"),
   },
   "account": {
     "pricingTier": account["pricingTier"],
@@ -244,15 +255,62 @@ print(json.dumps({
 }, indent=2))
 
 assert quote["quote"]["targetPricingTier"] == "paid_review", quote
+assert quote["quote"]["includedCredits"] == upgrade_included_credits, quote
 assert pending["receipt"]["receiptType"] == "upgrade", pending
-assert pending["receipt"]["status"] == "pending", pending
+assert pending["receipt"]["status"] in ("pending", "settled"), pending
 assert confirm.get("verificationStatus") == "settled", confirm
-assert confirm.get("receipt", {}).get("status") == "settled", confirm
+assert confirm.get("receipt", {}).get("status") in (None, "settled"), confirm
+assert confirm.get("includedCredits") == upgrade_included_credits, confirm
+assert confirm.get("ledgerEntry", {}).get("entryType") == "adjustment", confirm
+assert confirm.get("ledgerEntry", {}).get("creditsDelta") == upgrade_included_credits, confirm
 assert account["pricingTier"] == "paid_active", account
+assert account["availableCredits"] == upgrade_included_credits, account
 assert policy["pricingTier"] == "paid_active", policy
 assert policy["outboundStatus"] == "external_enabled", policy
 assert policy["externalSendEnabled"] is True, policy
 assert policy["reviewRequired"] is False, policy
 assert receipts["items"][0]["status"] == "settled", receipts
 print("Real-chain upgrade smoke completed successfully.")
+PY
+
+python3 - <<'PY' "$SIGNUP_JSON" "$DID_JSON" "$ACCOUNT_JSON" "$POLICY_JSON" "$RECEIPTS_JSON" "$PERSIST_SUCCESS_JSON_PATH" "$BASE_URL" "$OPERATOR_EMAIL"
+import json,sys,datetime,pathlib
+signup=json.load(open(sys.argv[1]))
+did=json.load(open(sys.argv[2]))
+account=json.load(open(sys.argv[3]))
+policy=json.load(open(sys.argv[4]))
+receipts=json.load(open(sys.argv[5]))
+output_path=pathlib.Path(sys.argv[6])
+base_url=sys.argv[7]
+operator_email=sys.argv[8]
+payload={
+  "savedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"),
+  "baseUrl": base_url,
+  "mailboxAddress": signup.get("mailboxAddress"),
+  "mailboxId": signup.get("mailboxId"),
+  "tenantId": signup.get("tenantId"),
+  "agentId": signup.get("agentId"),
+  "agentVersionId": signup.get("agentVersionId"),
+  "deploymentId": signup.get("deploymentId"),
+  "operatorEmail": operator_email,
+  "tenantDid": did.get("did"),
+  "accessToken": signup.get("accessToken"),
+  "accessTokenExpiresAt": signup.get("accessTokenExpiresAt"),
+  "accessTokenScopes": signup.get("accessTokenScopes"),
+  "billingAccount": {
+    "pricingTier": account.get("pricingTier"),
+    "status": account.get("status"),
+    "availableCredits": account.get("availableCredits"),
+    "reservedCredits": account.get("reservedCredits"),
+  },
+  "sendPolicy": {
+    "pricingTier": policy.get("pricingTier"),
+    "outboundStatus": policy.get("outboundStatus"),
+    "externalSendEnabled": policy.get("externalSendEnabled"),
+    "reviewRequired": policy.get("reviewRequired"),
+  },
+  "latestReceipt": receipts["items"][0] if receipts.get("items") else None,
+}
+output_path.write_text(json.dumps(payload, indent=2) + "\n")
+print(f"Saved upgrade account snapshot to {output_path}")
 PY

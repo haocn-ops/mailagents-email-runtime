@@ -1,6 +1,8 @@
 import { getAgentPolicy } from "../repositories/agents";
+import { ensureTenantBillingAccount } from "../repositories/billing";
 import { getTenantOutboundUsageWindowCounts } from "../repositories/mail";
 import { ensureTenantSendPolicy } from "../repositories/tenant-policies";
+import { isDefaultSelfServeInternalOnlyAgentPolicy } from "./self-serve-agent-policy";
 import type { Env } from "../types";
 
 export interface OutboundPolicyDecision {
@@ -75,11 +77,18 @@ export async function evaluateOutboundPolicy(env: Env, input: {
     return {
       ok: false,
       code: "recipient_domain_not_allowed",
-        message: "At least one valid recipient domain is required",
+      message: "At least one valid recipient domain is required",
     };
   }
 
   const tenantPolicy = await ensureTenantSendPolicy(env, input.tenantId);
+  const account = externalDomains.length > 0
+    ? await ensureTenantBillingAccount(env, input.tenantId)
+    : null;
+  const externalSendingUnlockedByPolicy =
+    tenantPolicy.externalSendEnabled && tenantPolicy.outboundStatus === "external_enabled";
+  const externalSendingUnlockedByCredits = (account?.availableCredits ?? 0) > 0;
+
   if (tenantPolicy.outboundStatus === "suspended") {
     return {
       ok: false,
@@ -88,12 +97,12 @@ export async function evaluateOutboundPolicy(env: Env, input: {
     };
   }
 
-  if (!tenantPolicy.externalSendEnabled || tenantPolicy.outboundStatus !== "external_enabled") {
+  if (!externalSendingUnlockedByPolicy && !externalSendingUnlockedByCredits) {
     if (externalDomains.length > 0) {
       return {
         ok: false,
         code: "external_send_not_enabled",
-        message: `External sending is not enabled for this tenant. Disallowed domains: ${externalDomains.join(", ")}`,
+        message: `External sending requires available credits or an enabled outbound policy. Disallowed domains: ${externalDomains.join(", ")}`,
         recipientDomains,
         externalDomains,
       };
@@ -102,16 +111,23 @@ export async function evaluateOutboundPolicy(env: Env, input: {
 
   const agentPolicy = await getAgentPolicy(env, input.agentId);
   if (agentPolicy?.allowedRecipientDomains.length) {
-    const allowedDomains = new Set(agentPolicy.allowedRecipientDomains.map((item) => item.toLowerCase()));
-    const disallowed = recipientDomains.filter((domain) => !allowedDomains.has(domain));
-    if (disallowed.length > 0) {
-      return {
-        ok: false,
-        code: "recipient_domain_not_allowed",
-        message: `Recipient domains are not allowed for this agent: ${disallowed.join(", ")}`,
-        recipientDomains,
-        externalDomains,
-      };
+    const bypassDefaultInternalOnlyAllowlist =
+      externalDomains.length > 0 &&
+      externalSendingUnlockedByCredits &&
+      isDefaultSelfServeInternalOnlyAgentPolicy(agentPolicy, tenantPolicy.internalDomainAllowlist);
+
+    if (!bypassDefaultInternalOnlyAllowlist) {
+      const allowedDomains = new Set(agentPolicy.allowedRecipientDomains.map((item) => item.toLowerCase()));
+      const disallowed = recipientDomains.filter((domain) => !allowedDomains.has(domain));
+      if (disallowed.length > 0) {
+        return {
+          ok: false,
+          code: "recipient_domain_not_allowed",
+          message: `Recipient domains are not allowed for this agent: ${disallowed.join(", ")}`,
+          recipientDomains,
+          externalDomains,
+        };
+      }
     }
   }
 

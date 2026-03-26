@@ -10,6 +10,13 @@ Current support:
 - `tools/list`
 - `tools/call`
 
+Transport notes:
+
+- `POST` accepts JSON-RPC requests, notifications, and batches
+- JSON-RPC notifications return `202 Accepted` with an empty body
+- `GET` is exposed as a transport placeholder and currently returns `405 Method Not Allowed`
+- browser callers that send an `Origin` header must be same-origin; SDK and CLI callers without `Origin` continue to work
+
 ## Prerequisites
 
 1. start the local worker with `npm run dev:local`

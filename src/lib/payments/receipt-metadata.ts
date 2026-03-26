@@ -39,6 +39,7 @@ export interface TopupReceiptMetadata extends X402ReceiptMetadataBase {
 export interface UpgradeReceiptMetadata extends X402ReceiptMetadataBase {
   receiptType: "upgrade";
   targetPricingTier: "paid_review";
+  includedCredits: number;
   quote: X402UpgradeQuote;
 }
 
@@ -136,6 +137,7 @@ function isUpgradeQuote(value: unknown): value is X402UpgradeQuote {
     typeof record.network === "string" &&
     typeof record.asset === "string" &&
     record.targetPricingTier === "paid_review" &&
+    (typeof record.includedCredits === "number" || typeof record.includedCredits === "undefined") &&
     typeof record.amountUsd === "string" &&
     typeof record.amountAtomic === "string" &&
     typeof record.description === "string" &&
@@ -180,6 +182,7 @@ export function buildTopupReceiptMetadata(input: {
 export function buildUpgradeReceiptMetadata(input: {
   tenantDid?: string;
   targetPricingTier: "paid_review";
+  includedCredits: number;
   quote: X402UpgradeQuote;
   paymentProof: ParsedX402PaymentProof;
 }): UpgradeReceiptMetadata {
@@ -187,6 +190,7 @@ export function buildUpgradeReceiptMetadata(input: {
     receiptType: "upgrade",
     tenantDid: input.tenantDid,
     targetPricingTier: input.targetPricingTier,
+    includedCredits: input.includedCredits,
     quote: input.quote,
     paymentProof: {
       raw: input.paymentProof.raw,
@@ -238,6 +242,10 @@ export function parsePaymentReceiptMetadata(
     };
   }
 
+  const quoteRecord = asRecord(record.quote);
+  const includedCredits = asInteger(record.includedCredits)
+    ?? asInteger(quoteRecord?.includedCredits)
+    ?? 0;
   if (record.targetPricingTier !== "paid_review" || !isUpgradeQuote(record.quote)) {
     return undefined;
   }
@@ -246,6 +254,7 @@ export function parsePaymentReceiptMetadata(
     receiptType: "upgrade",
     tenantDid: base.tenantDid,
     targetPricingTier: "paid_review",
+    includedCredits,
     quote: record.quote,
     paymentProof: base.paymentProof,
     confirmationMode: base.confirmationMode,

@@ -107,16 +107,66 @@ exec_sql() {
   wrangler d1 execute mailagents-local --local --command "$sql" >/dev/null
 }
 
+reset_demo_outbound_state() {
+  exec_sql "
+BEGIN TRANSACTION;
+DELETE FROM delivery_events
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM outbound_jobs
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM drafts
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM messages
+WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound';
+DELETE FROM threads
+WHERE tenant_id = '$TENANT_ID' AND id != 'thr_demo_inbound';
+DELETE FROM tenant_credit_ledger
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM tenant_payment_receipts
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM tenant_billing_accounts
+WHERE tenant_id = '$TENANT_ID';
+COMMIT;"
+}
+
 seed_available_credits() {
   local credits="$1"
   local timestamp
+  local ledger_id
+  local reference_id
+  local metadata_json
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  ledger_id="led_smoke_${TENANT_ID}_$(date +%s)_$RANDOM"
+  reference_id="smoke-credit-topup-${TENANT_ID}-$(date +%s)-$RANDOM"
+  metadata_json="$(jq -cn --argjson credits "$credits" '{
+    entryType: "topup",
+    receiptType: "topup",
+    confirmationMode: "manual_admin",
+    creditsRequested: $credits
+  }')"
 
   exec_sql "
+BEGIN TRANSACTION;
 UPDATE tenant_billing_accounts
 SET available_credits = available_credits + $credits,
     updated_at = '$timestamp'
-WHERE tenant_id = '$TENANT_ID';"
+WHERE tenant_id = '$TENANT_ID';
+INSERT INTO tenant_credit_ledger (
+  id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
+  reference_id, metadata_json, created_at
+) VALUES (
+  '$ledger_id', '$TENANT_ID', 'topup', $credits, 'smoke_credit_topup', NULL,
+  '$reference_id', '$metadata_json', '$timestamp'
+);
+COMMIT;"
 }
 
 wait_for_job_status() {
@@ -133,6 +183,72 @@ wait_for_job_status() {
   done
 
   echo "Timed out waiting for outbound job $outbound_job_id to reach status $expected_status" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+}
+
+wait_for_billing_account_state() {
+  local expected_available="$1"
+  local expected_reserved="$2"
+  local attempt
+
+  for attempt in $(seq 1 40); do
+    capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+    if [[ "$LAST_STATUS" == "200" ]] && jq -e \
+      --argjson expected_available "$expected_available" \
+      --argjson expected_reserved "$expected_reserved" '
+        .availableCredits == $expected_available and
+        .reservedCredits == $expected_reserved
+      ' "$LAST_BODY" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for billing account to reach the expected balance" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+}
+
+wait_for_credit_ledger_debit() {
+  local outbound_job_id="$1"
+  local expected_delta="$2"
+  local attempt
+
+  for attempt in $(seq 1 40); do
+    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
+    if [[ "$LAST_STATUS" == "200" ]] && jq -e \
+      --arg outbound "$outbound_job_id" \
+      --argjson expected_delta "$expected_delta" '
+        (.items | map(select(.entryType == "debit_send" and .referenceId == $outbound)) | length) == 1 and
+        (.items | map(select(.entryType == "debit_send" and .referenceId == $outbound))[0].creditsDelta) == $expected_delta
+      ' "$LAST_BODY" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for debit ledger entry for outbound job $outbound_job_id" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+}
+
+wait_for_credit_ledger_absence() {
+  local outbound_job_id="$1"
+  local attempt
+
+  for attempt in $(seq 1 40); do
+    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
+    if [[ "$LAST_STATUS" == "200" ]] && jq -e \
+      --arg outbound "$outbound_job_id" '
+        (.items | map(select(.referenceId == $outbound)) | length) == 0
+      ' "$LAST_BODY" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for ledger to exclude outbound job $outbound_job_id" >&2
   cat "$LAST_BODY" >&2
   exit 1
 }
@@ -168,6 +284,9 @@ capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $TOKEN"
 assert_status "200"
 jq -e --arg mailbox "$MAILBOX_ID" '.id == $mailbox and .status == "active"' "$LAST_BODY" >/dev/null
 
+echo "Resetting demo tenant outbound and billing state..."
+reset_demo_outbound_state
+
 echo "Capturing starting billing balance..."
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
@@ -186,16 +305,16 @@ jq -e --argjson start_available "$STARTING_AVAILABLE_CREDITS" --argjson start_re
   .reservedCredits == $start_reserved
 ' "$LAST_BODY" >/dev/null
 
-echo "Enabling external sending for the demo tenant..."
+echo "Keeping the demo tenant on an internal-only send policy to verify credits unlock external sending..."
 capture_request "PUT" "/v1/tenants/$TENANT_ID/send-policy" '{
   "pricingTier": "paid_active",
-  "outboundStatus": "external_enabled",
+  "outboundStatus": "internal_only",
   "internalDomainAllowlist": ["mailagents.net"],
-  "externalSendEnabled": true,
-  "reviewRequired": false
+  "externalSendEnabled": false,
+  "reviewRequired": true
 }' "x-admin-secret: $ADMIN_SECRET"
 assert_status "200"
-jq -e '.pricingTier == "paid_active" and .outboundStatus == "external_enabled" and .externalSendEnabled == true' "$LAST_BODY" >/dev/null
+jq -e '.pricingTier == "paid_active" and .outboundStatus == "internal_only" and .externalSendEnabled == false' "$LAST_BODY" >/dev/null
 
 echo "Sending an external email to verify credit reservation..."
 capture_request "POST" "/v1/mailboxes/self/send" "{
@@ -230,12 +349,17 @@ jq -e '
   (.message.providerMessageId | type) == "string"
 ' "$LAST_BODY" >/dev/null
 
+echo "Waiting for billing settlement after the successful send..."
+wait_for_billing_account_state "$((TOPUP_AVAILABLE_CREDITS - 1))" "$TOPUP_RESERVED_CREDITS"
+
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
 jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
   .availableCredits == ($topup_available - 1) and
   .reservedCredits == $topup_reserved
 ' "$LAST_BODY" >/dev/null
+
+wait_for_credit_ledger_debit "$SUCCESS_OUTBOUND_JOB_ID" -1
 
 capture_request "GET" "/v1/billing/ledger?limit=10" "" "authorization: Bearer $TOKEN"
 assert_status "200"
@@ -327,12 +451,17 @@ BLOCKED_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
 
 wait_for_job_status "$BLOCKED_OUTBOUND_JOB_ID" "failed"
 
+echo "Waiting for reserved credit release after the blocked send..."
+wait_for_billing_account_state "$((TOPUP_AVAILABLE_CREDITS - 1))" "$TOPUP_RESERVED_CREDITS"
+
 capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
 assert_status "200"
 jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
   .availableCredits == ($topup_available - 1) and
   .reservedCredits == $topup_reserved
 ' "$LAST_BODY" >/dev/null
+
+wait_for_credit_ledger_absence "$BLOCKED_OUTBOUND_JOB_ID"
 
 capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
 assert_status "200"

@@ -3,13 +3,24 @@ import {
   requireAdminRoutesEnabled,
   requireAdminSecret,
 } from "../lib/auth";
-import { accepted, json } from "../lib/http";
+import {
+  type JsonRpcId,
+  type JsonRpcRequest,
+  type JsonRpcResponseEnvelope,
+  jsonRpcError,
+  jsonRpcResult,
+  handleMcpTransportGet,
+  handleMcpTransportOptions,
+  handleMcpTransportPost,
+  toToolContent,
+} from "../lib/mcp-transport";
 import {
   MCP_PROTOCOL_VERSION,
   RUNTIME_SERVER_INFO,
   RUNTIME_TOOL_CATALOG,
   buildRuntimeMetadata,
 } from "../lib/runtime-metadata";
+import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
 import {
   ADMIN_MCP_AUTH,
   ADMIN_MCP_METHODS,
@@ -51,21 +62,13 @@ import type {
   TenantOutboundStatus,
 } from "../types";
 
-type JsonRpcId = string | number | null;
-const ADMIN_MCP_ALLOW_METHODS = "POST, OPTIONS";
-const ADMIN_MCP_ALLOW_HEADERS = "content-type, x-admin-secret";
+const ADMIN_MCP_ALLOW_METHODS = "GET, POST, OPTIONS";
+const ADMIN_MCP_ALLOW_HEADERS = "accept, content-type, mcp-protocol-version, mcp-session-id, x-admin-secret";
 const DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES = {
   read_only: ["mail:read", "task:read"],
   draft_only: ["mail:read", "task:read", "draft:create", "draft:read"],
   send: ["mail:read", "task:read", "draft:create", "draft:read", "draft:send"],
 } as const;
-
-interface JsonRpcRequest {
-  jsonrpc?: string;
-  id?: JsonRpcId;
-  method?: string;
-  params?: unknown;
-}
 
 interface AdminToolDescriptor {
   name: string;
@@ -429,38 +432,6 @@ const ADMIN_TOOL_DEFINITIONS: AdminToolDescriptor[] = [
 
 const router = new Router<Env>();
 
-function jsonRpcResult(id: JsonRpcId, result: unknown): Response {
-  return json({
-    jsonrpc: "2.0",
-    id,
-    result,
-  });
-}
-
-function jsonRpcError(id: JsonRpcId, code: number, message: string, data?: unknown): Response {
-  return json({
-    jsonrpc: "2.0",
-    id,
-    error: {
-      code,
-      message,
-      data,
-    },
-  }, { status: 400 });
-}
-
-function toToolContent(payload: unknown) {
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(payload, null, 2),
-      },
-    ],
-    structuredContent: payload,
-  };
-}
-
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new AdminMcpToolError("invalid_arguments", "params must be an object");
@@ -528,7 +499,11 @@ function requireTool(name: string): AdminToolDescriptor {
   return tool;
 }
 
-async function adminJsonRpcError(id: JsonRpcId, response: Response, fallbackMessage: string): Promise<Response> {
+async function adminJsonRpcError(
+  id: JsonRpcId,
+  response: Response,
+  fallbackMessage: string,
+): Promise<JsonRpcResponseEnvelope> {
   const payload = await response.clone().json<{ error?: string }>().catch(() => null);
   const errorCode = response.status === 404
     ? "route_disabled"
@@ -539,20 +514,6 @@ async function adminJsonRpcError(id: JsonRpcId, response: Response, fallbackMess
     status: response.status,
     errorCode,
     error: payload?.error ?? fallbackMessage,
-  });
-}
-
-function withAdminMcpCors(response: Response): Response {
-  const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-methods", ADMIN_MCP_ALLOW_METHODS);
-  headers.set("access-control-allow-headers", ADMIN_MCP_ALLOW_HEADERS);
-  headers.set("access-control-max-age", "86400");
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
   });
 }
 
@@ -695,6 +656,10 @@ async function applyTenantSendPolicyReview(env: Env, input: {
       tenantId: input.tenantId,
       status: billingAccount.status === "trial" ? "active" : undefined,
       pricingTier: "paid_active",
+    });
+    await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+      tenantId: input.tenantId,
+      internalDomainAllowlist: updatedSendPolicy.internalDomainAllowlist,
     });
 
     return {
@@ -907,7 +872,7 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       throw new AdminMcpToolError("invalid_arguments", "outboundStatus is invalid");
     }
 
-    return await upsertTenantSendPolicy(env, {
+    const sendPolicy = await upsertTenantSendPolicy(env, {
       tenantId: requireString(args.tenantId, "tenantId"),
       pricingTier,
       outboundStatus,
@@ -915,6 +880,15 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       externalSendEnabled: requireBoolean(args.externalSendEnabled, "externalSendEnabled"),
       reviewRequired: requireBoolean(args.reviewRequired, "reviewRequired"),
     });
+
+    if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
+      await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
+        tenantId: sendPolicy.tenantId,
+        internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      });
+    }
+
+    return sendPolicy;
   }
 
   if (toolName === "apply_tenant_send_policy_review") {
@@ -1023,110 +997,111 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
 }
 
 router.on("POST", ADMIN_MCP_PATH, async (request, env) => {
-  let rpc: JsonRpcRequest;
-  try {
-    rpc = await request.json<JsonRpcRequest>();
-  } catch {
-    return jsonRpcError(null, -32700, "Parse error");
-  }
+  return await handleMcpTransportPost(request, {
+    allowMethods: ADMIN_MCP_ALLOW_METHODS,
+    allowHeaders: ADMIN_MCP_ALLOW_HEADERS,
+  }, async (rpc) => {
+    const routeError = requireAdminRoutesEnabled(request, env);
+    if (routeError) {
+      return await adminJsonRpcError(rpc.id ?? null, routeError, "Admin routes are disabled");
+    }
 
-  if (rpc.jsonrpc !== "2.0" || typeof rpc.method !== "string") {
-    return jsonRpcError(rpc.id ?? null, -32600, "Invalid Request");
-  }
+    const adminError = requireAdminSecret(request, env);
+    if (adminError) {
+      return await adminJsonRpcError(rpc.id ?? null, adminError, "Admin secret required");
+    }
 
-  const routeError = requireAdminRoutesEnabled(request, env);
-  if (routeError) {
-    return await adminJsonRpcError(rpc.id ?? null, routeError, "Admin routes are disabled");
-  }
+    if (rpc.method === "notifications/initialized") {
+      return null;
+    }
 
-  const adminError = requireAdminSecret(request, env);
-  if (adminError) {
-    return await adminJsonRpcError(rpc.id ?? null, adminError, "Admin secret required");
-  }
+    if (rpc.method === "initialize") {
+      const runtime = buildRuntimeMetadata(request, env);
+      return jsonRpcResult(rpc.id ?? null, {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        serverInfo: RUNTIME_SERVER_INFO,
+        capabilities: {
+          tools: {},
+        },
+        meta: {
+          ...runtime,
+          adminMcp: buildAdminMcpMetadata(),
+        },
+      });
+    }
 
-  if (rpc.method === "notifications/initialized") {
-    return accepted({ ok: true });
-  }
+    if (rpc.method === "tools/list") {
+      return jsonRpcResult(rpc.id ?? null, {
+        tools: ADMIN_TOOL_DEFINITIONS.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          annotations: tool.annotations,
+        })),
+      });
+    }
 
-  if (rpc.method === "initialize") {
-    const runtime = buildRuntimeMetadata(request, env);
-    return jsonRpcResult(rpc.id ?? null, {
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      serverInfo: RUNTIME_SERVER_INFO,
-      capabilities: {
-        tools: {},
-      },
-      meta: {
-        ...runtime,
-        adminMcp: buildAdminMcpMetadata(),
-      },
-    });
-  }
+    if (rpc.method === "tools/call") {
+      const params: Record<string, unknown> | Error = (() => {
+        try {
+          return asObject(rpc.params);
+        } catch (error) {
+          return error instanceof Error ? error : new Error("Invalid params");
+        }
+      })();
 
-  if (rpc.method === "tools/list") {
-    return jsonRpcResult(rpc.id ?? null, {
-      tools: ADMIN_TOOL_DEFINITIONS.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: tool.annotations,
-      })),
-    });
-  }
-
-  if (rpc.method === "tools/call") {
-    const params: Record<string, unknown> | Error = (() => {
-      try {
-        return asObject(rpc.params);
-      } catch (error) {
-        return error instanceof Error ? error : new Error("Invalid params");
+      if (params instanceof Error) {
+        return jsonRpcError(rpc.id ?? null, -32602, params.message);
       }
-    })();
 
-    if (params instanceof Error) {
-      return jsonRpcError(rpc.id ?? null, -32602, params.message);
-    }
+      const toolName = params.name;
+      if (typeof toolName !== "string") {
+        return jsonRpcError(rpc.id ?? null, -32602, "Unknown tool");
+      }
 
-    const toolName = params.name;
-    if (typeof toolName !== "string") {
-      return jsonRpcError(rpc.id ?? null, -32602, "Unknown tool");
-    }
+      try {
+        const result = await callAdminTool(env, toolName, asObject(params.arguments ?? {}));
+        return jsonRpcResult(rpc.id ?? null, toToolContent(result));
+      } catch (error) {
+        if (error instanceof AdminMcpToolError) {
+          return jsonRpcResult(rpc.id ?? null, {
+            isError: true,
+            ...toToolContent({
+              error: {
+                code: error.errorCode,
+                message: error.message,
+                details: error.data,
+              },
+            }),
+          });
+        }
 
-    try {
-      const result = await callAdminTool(env, toolName, asObject(params.arguments ?? {}));
-      return jsonRpcResult(rpc.id ?? null, toToolContent(result));
-    } catch (error) {
-      if (error instanceof AdminMcpToolError) {
         return jsonRpcResult(rpc.id ?? null, {
           isError: true,
           ...toToolContent({
             error: {
-              code: error.errorCode,
-              message: error.message,
-              details: error.data,
+              code: "tool_internal_error",
+              message: error instanceof Error ? error.message : "Tool call failed",
             },
           }),
         });
       }
-
-      return jsonRpcResult(rpc.id ?? null, {
-        isError: true,
-        ...toToolContent({
-          error: {
-            code: "tool_internal_error",
-            message: error instanceof Error ? error.message : "Tool call failed",
-          },
-        }),
-      });
     }
-  }
 
-  return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
+    return jsonRpcError(rpc.id ?? null, -32601, "Method not found");
+  });
 });
 
-router.on("OPTIONS", ADMIN_MCP_PATH, async () => withAdminMcpCors(new Response(null, { status: 204 })));
+router.on("GET", ADMIN_MCP_PATH, async (request) => handleMcpTransportGet(request, {
+  allowMethods: ADMIN_MCP_ALLOW_METHODS,
+  allowHeaders: ADMIN_MCP_ALLOW_HEADERS,
+}));
+
+router.on("OPTIONS", ADMIN_MCP_PATH, async (request) => handleMcpTransportOptions(request, {
+  allowMethods: ADMIN_MCP_ALLOW_METHODS,
+  allowHeaders: ADMIN_MCP_ALLOW_HEADERS,
+}));
 
 export async function handleAdminMcpRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
-  const response = await router.handle(request, env, ctx);
-  return response ? withAdminMcpCors(response) : null;
+  return await router.handle(request, env, ctx);
 }

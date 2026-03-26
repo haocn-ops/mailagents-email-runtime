@@ -10,7 +10,7 @@ Mailagents separates:
 
 - mailbox access
 - outbound credits
-- external-send enablement
+- outbound policy enforcement
 
 That means a new tenant can have a working mailbox and mailbox-scoped token
 before it has permission to send to arbitrary external recipients.
@@ -33,8 +33,8 @@ For most early integration work, this is the recommended path.
 
 New tenants start in a conservative policy state.
 
-Treat these paths as limited until the tenant has credits and a send policy that
-explicitly enables external delivery:
+Treat these paths as limited until the tenant has usable outbound credits or an
+explicitly enabled external send policy:
 
 - ordinary free-tier tenants can send up to 10 outbound emails in a rolling 24-hour window
 - ordinary free-tier tenants can send up to 1 outbound email in a rolling 1-hour window
@@ -60,16 +60,17 @@ Until external delivery is enabled:
 
 ## Unlocking External Delivery
 
-External delivery is not just a payment switch. The current unlock model has
-two gates:
+External delivery follows a credits-first model.
 
-- billing capacity
-- outbound policy enablement
+The current unlock model has one hard safety stop and one normal unlock path:
+
+- `outboundStatus = suspended` always blocks outbound sending
+- otherwise, any tenant with usable outbound credits can send to external recipients
 
 The current flow is:
 
-1. Top up credits when the tenant needs outbound capacity.
-2. Request an upgrade with `POST /v1/billing/upgrade-intent`.
+1. Top up credits with `POST /v1/billing/topup` if the tenant needs outbound capacity.
+2. Or request an upgrade with `POST /v1/billing/upgrade-intent`; a settled upgrade also grants the configured upgrade credit bundle.
 3. If the environment still returns a `pending` or `verified` receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
 4. Verify the resulting state with:
    - `GET /v1/billing/account`
@@ -83,11 +84,15 @@ The main states to expect are:
   - billing `pricingTier = free`
   - send policy `outboundStatus = internal_only`
   - effective outbound cap `10 per rolling 24h` and `1 per rolling 1h`
+- credits-backed external send:
+  - billing `availableCredits > 0`
+  - external recipients are allowed even if send policy still reports `internal_only`
 - upgrade requested:
   - billing may move to `paid_review`
   - send policy may move to `external_review`
 - external delivery enabled:
   - billing `pricingTier = paid_active`
+  - billing `availableCredits` includes the configured upgrade bundle
   - send policy `outboundStatus = external_enabled`
   - `externalSendEnabled = true`
 - restricted or frozen:
@@ -103,8 +108,8 @@ attempt does not complete, `POST /v1/billing/payment/confirm` is used only to
 retry facilitator settlement for the existing receipt. Manual operator-driven
 payment confirmation is no longer part of the supported x402 flow.
 
-Do not assume payment alone unlocks arbitrary external delivery until the
-tenant send policy shows that external delivery is enabled.
+Do not assume payment proof alone is enough until the tenant billing account
+shows usable credits or the tenant send policy is explicitly enabled.
 
 ## Relevant Endpoints
 
