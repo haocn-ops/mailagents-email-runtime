@@ -50,6 +50,7 @@ interface ReplyFallbackCandidateRow {
   internet_message_id: string | null;
   provider_message_id: string | null;
   to_addr: string;
+  draft_r2_key: string | null;
   subject: string | null;
   created_at: string;
   thread_row_id: string | null;
@@ -87,6 +88,12 @@ interface AttachmentRow {
   content_type: string | null;
   size_bytes: number;
   r2_key: string;
+}
+
+interface PersistedAttachmentRow extends AttachmentRow {
+  message_id: string;
+  sha256: string | null;
+  created_at: string;
 }
 
 interface AttachmentOwnerRow {
@@ -187,6 +194,11 @@ function mapMessageRow(row: MessageRow): MessageRecord {
   };
 }
 
+export function normalizeInternetMessageId(value?: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
 function mapDraftRow(row: DraftRow): DraftRecord {
   return {
     id: row.id,
@@ -282,7 +294,7 @@ function normalizeListLimit(limit?: number, fallback = 50, max = 200): number {
   return Math.max(1, Math.min(Math.trunc(limit), max));
 }
 
-export async function listTasks(env: Env, agentId: string, status?: TaskRecord["status"]): Promise<TaskRecord[]> {
+export async function listTasks(env: Env, agentId: string, status?: TaskRecord["status"], mailboxIds?: string[]): Promise<TaskRecord[]> {
   const query = status
     ? env.D1_DB.prepare(
         `SELECT id, tenant_id, mailbox_id, source_message_id, task_type, priority, status,
@@ -300,7 +312,10 @@ export async function listTasks(env: Env, agentId: string, status?: TaskRecord["
       ).bind(agentId);
 
   const rows = await allRows<TaskRow>(query);
-  return rows.map(mapTaskRow);
+  const mailboxFilter = mailboxIds?.length ? new Set(mailboxIds) : null;
+  return rows
+    .map(mapTaskRow)
+    .filter((row) => !mailboxFilter || mailboxFilter.has(row.mailboxId));
 }
 
 export async function getMessage(env: Env, messageId: string): Promise<MessageRecord | null> {
@@ -315,6 +330,99 @@ export async function getMessage(env: Env, messageId: string): Promise<MessageRe
   );
 
   return row ? mapMessageRow(row) : null;
+}
+
+export async function getInboundMessageByInternetMessageId(env: Env, mailboxId: string, internetMessageId: string): Promise<MessageRecord | null> {
+  const normalizedMessageId = normalizeInternetMessageId(internetMessageId);
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  const row = await firstRow<MessageRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, mailbox_id, thread_id, direction, provider, internet_message_id,
+              provider_message_id, from_addr, to_addr, subject, snippet, status, raw_r2_key,
+              normalized_r2_key, received_at, sent_at, created_at
+       FROM messages
+       WHERE mailbox_id = ?
+         AND direction = 'inbound'
+         AND internet_message_id = ?
+       ORDER BY created_at ASC
+       LIMIT 1`
+    ).bind(mailboxId, normalizedMessageId)
+  );
+
+  return row ? mapMessageRow(row) : null;
+}
+
+export async function createInboundMessage(env: Env, input: {
+  id: string;
+  tenantId: string;
+  mailboxId: string;
+  provider: string;
+  internetMessageId?: string | null;
+  fromAddr: string;
+  toAddr: string;
+  status: MessageRecord["status"];
+  rawR2Key: string;
+  receivedAt: string;
+  createdAt: string;
+}): Promise<boolean> {
+  const normalizedMessageId = normalizeInternetMessageId(input.internetMessageId);
+  if (!normalizedMessageId) {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO messages (
+         id, tenant_id, mailbox_id, direction, provider, internet_message_id,
+         from_addr, to_addr, status, raw_r2_key, received_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      input.id,
+      input.tenantId,
+      input.mailboxId,
+      "inbound",
+      input.provider,
+      null,
+      input.fromAddr,
+      input.toAddr,
+      input.status,
+      input.rawR2Key,
+      input.receivedAt,
+      input.createdAt
+    ));
+    return true;
+  }
+
+  const result = await execute(env.D1_DB.prepare(
+    `INSERT INTO messages (
+       id, tenant_id, mailbox_id, direction, provider, internet_message_id,
+       from_addr, to_addr, status, raw_r2_key, received_at, created_at
+     )
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM messages
+       WHERE mailbox_id = ?
+         AND direction = 'inbound'
+         AND internet_message_id = ?
+     )`
+  ).bind(
+    input.id,
+    input.tenantId,
+    input.mailboxId,
+    "inbound",
+    input.provider,
+    normalizedMessageId,
+    input.fromAddr,
+    input.toAddr,
+    input.status,
+    input.rawR2Key,
+    input.receivedAt,
+    input.createdAt,
+    input.mailboxId,
+    normalizedMessageId
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function listMessages(env: Env, input?: {
@@ -598,7 +706,7 @@ export async function findThreadByInternetMessageIds(env: Env, input: {
   mailboxId: string;
   internetMessageIds: string[];
 }): Promise<ThreadRecord | null> {
-  const candidates = [...new Set(input.internetMessageIds.map((value) => value.trim()).filter(Boolean))];
+  const candidates = [...new Set(input.internetMessageIds.map((value) => normalizeInternetMessageId(value)).filter((value): value is string => Boolean(value)))];
 
   for (const internetMessageId of candidates) {
     const row = await firstRow<ThreadRow>(
@@ -606,7 +714,7 @@ export async function findThreadByInternetMessageIds(env: Env, input: {
         `SELECT t.id, t.tenant_id, t.mailbox_id, t.thread_key, t.subject_norm, t.status
          FROM messages m
          JOIN threads t ON t.id = m.thread_id
-         WHERE m.mailbox_id = ? AND m.internet_message_id = ? AND m.thread_id IS NOT NULL
+         WHERE m.mailbox_id = ? AND lower(m.internet_message_id) = ? AND m.thread_id IS NOT NULL
          ORDER BY m.created_at DESC
          LIMIT 1`
       ).bind(input.mailboxId, internetMessageId)
@@ -630,6 +738,43 @@ export async function findThreadByInternetMessageIds(env: Env, input: {
 function normalizeEmailAddress(value?: string | null): string | null {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : null;
+}
+
+function parseStoredRecipientList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => normalizeEmailAddress(item))
+    .filter((item): item is string => Boolean(item));
+}
+
+async function loadReplyFallbackRecipients(env: Env, row: ReplyFallbackCandidateRow): Promise<string[]> {
+  const recipients = new Set(parseStoredRecipientList(row.to_addr));
+  const draftR2Key = row.draft_r2_key?.trim();
+  if (!draftR2Key) {
+    return [...recipients];
+  }
+
+  const draftObject = await env.R2_EMAIL.get(draftR2Key);
+  if (!draftObject) {
+    return [...recipients];
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  for (const field of ["to", "cc", "bcc"] as const) {
+    const values = payload[field];
+    if (!Array.isArray(values)) {
+      continue;
+    }
+
+    for (const value of values) {
+      const normalized = typeof value === "string" ? normalizeEmailAddress(value) : null;
+      if (normalized) {
+        recipients.add(normalized);
+      }
+    }
+  }
+
+  return [...recipients];
 }
 
 export async function assignDraftThreadId(env: Env, draftId: string, threadId: string): Promise<void> {
@@ -683,6 +828,7 @@ export async function findThreadByReplyContext(env: Env, input: {
          m.internet_message_id,
          m.provider_message_id,
          m.to_addr,
+         o.draft_r2_key,
          m.subject,
          m.created_at,
          t.id AS thread_row_id,
@@ -690,6 +836,8 @@ export async function findThreadByReplyContext(env: Env, input: {
          t.subject_norm,
          t.status AS thread_status
        FROM messages m
+       LEFT JOIN outbound_jobs o
+         ON o.message_id = m.id
        LEFT JOIN threads t
          ON t.id = m.thread_id
        WHERE m.mailbox_id = ?
@@ -699,14 +847,18 @@ export async function findThreadByReplyContext(env: Env, input: {
     ).bind(input.mailboxId)
   );
 
-  const referencedIds = new Set(input.internetMessageIds.map((value) => value.trim()).filter(Boolean));
-  const candidates = rows.filter((row) => {
-    const recipients = row.to_addr
-      .split(",")
-      .map((value) => normalizeEmailAddress(value))
-      .filter((value): value is string => Boolean(value));
-    return recipients.includes(participantAddress) && normalizeSubject(row.subject ?? undefined) === subjectNorm;
-  });
+  const referencedIds = new Set(
+    input.internetMessageIds
+      .map((value) => normalizeInternetMessageId(value))
+      .filter((value): value is string => Boolean(value))
+  );
+  const candidates: ReplyFallbackCandidateRow[] = [];
+  for (const row of rows) {
+    const recipients = await loadReplyFallbackRecipients(env, row);
+    if (recipients.includes(participantAddress) && normalizeSubject(row.subject ?? undefined) === subjectNorm) {
+      candidates.push(row);
+    }
+  }
 
   if (candidates.length === 0) {
     return null;
@@ -772,46 +924,51 @@ export async function createDraft(env: Env, input: {
   });
 
   try {
-    await execute(env.D1_DB.prepare(
-      `INSERT INTO drafts (
-         id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
-         status, draft_r2_key, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id,
-      input.tenantId,
-      input.agentId,
-      input.mailboxId,
-      input.threadId ?? null,
-      input.sourceMessageId ?? null,
-      input.createdVia ?? null,
-      "draft",
-      draftR2Key,
-      timestamp,
-      timestamp
-    ));
-  } catch (error) {
-    if (!isMissingCreatedViaColumn(error)) {
-      throw error;
-    }
+    try {
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO drafts (
+           id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id, created_via,
+           status, draft_r2_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        id,
+        input.tenantId,
+        input.agentId,
+        input.mailboxId,
+        input.threadId ?? null,
+        input.sourceMessageId ?? null,
+        input.createdVia ?? null,
+        "draft",
+        draftR2Key,
+        timestamp,
+        timestamp
+      ));
+    } catch (error) {
+      if (!isMissingCreatedViaColumn(error)) {
+        throw error;
+      }
 
-    await execute(env.D1_DB.prepare(
-      `INSERT INTO drafts (
-         id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
-         status, draft_r2_key, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id,
-      input.tenantId,
-      input.agentId,
-      input.mailboxId,
-      input.threadId ?? null,
-      input.sourceMessageId ?? null,
-      "draft",
-      draftR2Key,
-      timestamp,
-      timestamp
-    ));
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO drafts (
+           id, tenant_id, agent_id, mailbox_id, thread_id, source_message_id,
+           status, draft_r2_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        id,
+        input.tenantId,
+        input.agentId,
+        input.mailboxId,
+        input.threadId ?? null,
+        input.sourceMessageId ?? null,
+        "draft",
+        draftR2Key,
+        timestamp,
+        timestamp
+      ));
+    }
+  } catch (error) {
+    await env.R2_EMAIL.delete(draftR2Key).catch(() => undefined);
+    throw error;
   }
 
   return requireRow(await getDraft(env, id), "Failed to load created draft");
@@ -927,6 +1084,26 @@ export async function getDraftByR2Key(env: Env, draftR2Key: string): Promise<Dra
   return row ? mapDraftRow(row) : null;
 }
 
+async function claimDraftForSend(
+  env: Env,
+  draftId: string,
+  updatedAt: string,
+): Promise<boolean> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE drafts
+     SET status = ?, updated_at = ?
+     WHERE id = ? AND status IN (?, ?)`
+  ).bind(
+    "queued",
+    updatedAt,
+    draftId,
+    "draft",
+    "approved",
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ outboundJobId: string; status: "queued" }> {
   const draft = requireRow(await getDraft(env, draftId), "Draft not found");
   if (draft.status !== "draft" && draft.status !== "approved") {
@@ -935,6 +1112,11 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   const priorDraftStatus = draft.status;
   const outboundJobId = createId("obj");
   const timestamp = nowIso();
+  const claimed = await claimDraftForSend(env, draftId, timestamp);
+  if (!claimed) {
+    const latestDraft = await getDraft(env, draftId);
+    throw new Error(`Draft status ${latestDraft?.status ?? "unknown"} cannot be enqueued for send`);
+  }
   const outboundMessageId = createId("msg");
   const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
   const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
@@ -1050,10 +1232,6 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
       timestamp,
       timestamp
     ));
-
-    await execute(env.D1_DB.prepare(
-      `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
-    ).bind("queued", timestamp, draftId));
 
     await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId });
   } catch (error) {
@@ -1355,26 +1533,64 @@ export async function insertAttachments(env: Env, input: {
     r2Key: string;
     sha256?: string;
   }>;
-}): Promise<void> {
+}): Promise<string[]> {
+  const existingRows = await allRows<PersistedAttachmentRow>(
+    env.D1_DB.prepare(
+      `SELECT id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at
+       FROM attachments
+       WHERE message_id = ?
+       ORDER BY created_at ASC`
+    ).bind(input.messageId)
+  );
+
   await execute(env.D1_DB.prepare(
     `DELETE FROM attachments WHERE message_id = ?`
   ).bind(input.messageId));
 
-  for (const attachment of input.attachments) {
+  try {
+    for (const attachment of input.attachments) {
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        attachment.id,
+        input.messageId,
+        attachment.filename ?? null,
+        attachment.contentType ?? null,
+        attachment.sizeBytes,
+        attachment.sha256 ?? null,
+        attachment.r2Key,
+        nowIso()
+      ));
+    }
+  } catch (error) {
     await execute(env.D1_DB.prepare(
-      `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      attachment.id,
-      input.messageId,
-      attachment.filename ?? null,
-      attachment.contentType ?? null,
-      attachment.sizeBytes,
-      attachment.sha256 ?? null,
-      attachment.r2Key,
-      nowIso()
-    ));
+      `DELETE FROM attachments WHERE message_id = ?`
+    ).bind(input.messageId));
+
+    for (const row of existingRows) {
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO attachments (id, message_id, filename, content_type, size_bytes, sha256, r2_key, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        row.id,
+        row.message_id,
+        row.filename,
+        row.content_type,
+        row.size_bytes,
+        row.sha256,
+        row.r2_key,
+        row.created_at
+      ));
+    }
+
+    throw error;
   }
+
+  const nextKeys = new Set(input.attachments.map((attachment) => attachment.r2Key));
+  return existingRows
+    .map((row) => row.r2_key)
+    .filter((r2Key) => !nextKeys.has(r2Key));
 }
 
 export async function resolveAssignedAgent(env: Env, mailboxId: string): Promise<string | null> {
@@ -1553,16 +1769,30 @@ export async function claimTaskForExecution(env: Env, taskId: string): Promise<b
   const result = await execute(env.D1_DB.prepare(
     `UPDATE tasks
      SET status = ?, updated_at = ?
-     WHERE id = ? AND status IN (?, ?)`
+     WHERE id = ? AND status = ?`
   ).bind(
     "running",
     nowIso(),
     taskId,
-    "queued",
-    "failed"
+    "queued"
   ));
 
   return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function updateTaskAssignment(env: Env, input: {
+  taskId: string;
+  assignedAgent?: string | null;
+}): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE tasks
+     SET assigned_agent = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.assignedAgent ?? null,
+    nowIso(),
+    input.taskId,
+  ));
 }
 
 export async function updateTaskStatus(env: Env, input: {
@@ -1718,6 +1948,22 @@ export async function updateOutboundJobStatus(env: Env, input: {
     nowIso(),
     input.outboundJobId
   ));
+}
+
+export async function claimOutboundJobForSend(env: Env, outboundJobId: string): Promise<boolean> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE outbound_jobs
+     SET status = ?, last_error = NULL, updated_at = ?
+     WHERE id = ? AND status IN (?, ?)`
+  ).bind(
+    "sending",
+    nowIso(),
+    outboundJobId,
+    "queued",
+    "retry",
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function markDraftStatus(env: Env, draftId: string, status: DraftRecord["status"]): Promise<void> {

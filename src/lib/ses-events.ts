@@ -5,8 +5,23 @@ export interface NormalizedSesEvent {
   eventType: DeliveryEventType;
   mailTags: Record<string, string>;
   recipient?: string;
+  recipients: string[];
   reason?: string;
   raw: unknown;
+}
+
+function normalizeRecipients(values: unknown[]): string[] {
+  return values
+    .map((value) => {
+      if (typeof value === "string") {
+        return value.trim().toLowerCase();
+      }
+      if (value && typeof value === "object" && typeof (value as { emailAddress?: unknown }).emailAddress === "string") {
+        return (value as { emailAddress: string }).emailAddress.trim().toLowerCase();
+      }
+      return "";
+    })
+    .filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
 }
 
 function toTagMap(tags: unknown): Record<string, string> {
@@ -35,25 +50,26 @@ export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
 
   if (eventType === "delivery") {
     const delivery = (detail.delivery ?? {}) as Record<string, unknown>;
-    const recipients = Array.isArray(delivery.recipients) ? delivery.recipients : [];
+    const recipients = normalizeRecipients(Array.isArray(delivery.recipients) ? delivery.recipients : []);
     return {
       providerMessageId,
       eventType: "delivery",
       mailTags: tags,
-      recipient: typeof recipients[0] === "string" ? recipients[0] : undefined,
+      recipient: recipients[0],
+      recipients,
       raw: payload,
     };
   }
 
   if (eventType === "bounce") {
     const bounce = (detail.bounce ?? {}) as Record<string, unknown>;
-    const bounced = Array.isArray(bounce.bouncedRecipients) ? bounce.bouncedRecipients : [];
-    const first = (bounced[0] ?? {}) as Record<string, unknown>;
+    const recipients = normalizeRecipients(Array.isArray(bounce.bouncedRecipients) ? bounce.bouncedRecipients : []);
     return {
       providerMessageId,
       eventType: "bounce",
       mailTags: tags,
-      recipient: typeof first.emailAddress === "string" ? first.emailAddress : undefined,
+      recipient: recipients[0],
+      recipients,
       reason: typeof bounce.bounceType === "string" ? bounce.bounceType : undefined,
       raw: payload,
     };
@@ -61,13 +77,13 @@ export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
 
   if (eventType === "complaint") {
     const complaint = (detail.complaint ?? {}) as Record<string, unknown>;
-    const complained = Array.isArray(complaint.complainedRecipients) ? complaint.complainedRecipients : [];
-    const first = (complained[0] ?? {}) as Record<string, unknown>;
+    const recipients = normalizeRecipients(Array.isArray(complaint.complainedRecipients) ? complaint.complainedRecipients : []);
     return {
       providerMessageId,
       eventType: "complaint",
       mailTags: tags,
-      recipient: typeof first.emailAddress === "string" ? first.emailAddress : undefined,
+      recipient: recipients[0],
+      recipients,
       reason: typeof complaint.complaintFeedbackType === "string" ? complaint.complaintFeedbackType : undefined,
       raw: payload,
     };
@@ -77,6 +93,7 @@ export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
     return {
       providerMessageId,
       eventType: "reject",
+      recipients: [],
       mailTags: tags,
       raw: payload,
     };
@@ -85,6 +102,7 @@ export function normalizeSesEvent(payload: unknown): NormalizedSesEvent {
   return {
     providerMessageId,
     eventType: "unknown",
+    recipients: [],
     mailTags: tags,
     raw: payload,
   };

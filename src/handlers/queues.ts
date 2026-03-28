@@ -1,4 +1,5 @@
-import { parseRawEmail } from "../lib/email-parser";
+import { normalizeSubject, parseRawEmail } from "../lib/email-parser";
+import { DraftSendValidationError, ensureDraftSendAllowed } from "../lib/draft-send-guards";
 import { sendOutboundDraft } from "../lib/outbound-provider";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { enqueueDeadLetter } from "../lib/queue";
@@ -13,14 +14,17 @@ import {
   getMessage,
   getOrCreateTaskForSourceMessage,
   getOrCreateThread,
+  claimOutboundJobForSend,
   getOutboundJob,
   getSuppression,
+  getTask,
   getTaskBySourceMessageId,
   insertAttachments,
   listDeliveryEventsByMessageId,
   markDraftStatus,
   markMessageSent,
   updateMessageStatus,
+  updateTaskAssignment,
   updateTaskStatus,
   updateInboundMessageNormalized,
   updateOutboundJobStatus,
@@ -29,6 +33,7 @@ import {
 import type { AgentExecuteJob, DeadLetterJob, EmailIngestJob, Env, OutboundSendJob } from "../types";
 
 class OutboundPolicyError extends Error {}
+class ProviderAcceptedPersistenceError extends Error {}
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 
 type TerminalDeliveryOutcome = "sent" | "failed" | null;
@@ -75,113 +80,124 @@ async function getSuppressedRecipients(env: Env, recipients: string[]): Promise<
   return suppressed;
 }
 
+async function deleteR2Objects(env: Env, r2Keys: string[]): Promise<void> {
+  const uniqueKeys = [...new Set(r2Keys.map((value) => value.trim()).filter(Boolean))];
+  await Promise.all(uniqueKeys.map((key) => env.R2_EMAIL.delete(key).catch(() => undefined)));
+}
+
+export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Promise<void> {
+  const existingMessage = await getMessage(env, job.messageId);
+  const rawObject = await env.R2_EMAIL.get(job.rawR2Key);
+  if (!rawObject) {
+    throw new Error("Raw email object not found");
+  }
+
+  const rawText = await rawObject.text();
+  const parsed = parseRawEmail(rawText);
+  const referencedMessageIds = [
+    parsed.inReplyTo,
+    ...[...parsed.references].reverse(),
+  ].filter((value): value is string => Boolean(value?.trim()));
+  // Prefer an existing thread referenced by email headers before falling back to parser-derived keys.
+  const thread = await findThreadByReplyContext(env, {
+    tenantId: job.tenantId,
+    mailboxId: job.mailboxId,
+    internetMessageIds: referencedMessageIds,
+    subject: parsed.subject,
+    participantAddress: parsed.replyTo ?? parsed.from,
+  }) ?? await getOrCreateThread(env, {
+    tenantId: job.tenantId,
+    mailboxId: job.mailboxId,
+    threadKey: parsed.threadKey,
+    subjectNorm: normalizeSubject(parsed.subject),
+  });
+
+  const normalizedR2Key = `normalized/${job.messageId}.json`;
+  await env.R2_EMAIL.put(normalizedR2Key, JSON.stringify({
+    text: parsed.text ?? "",
+    html: parsed.html ?? "",
+    headers: parsed.headers,
+    from: parsed.from,
+    replyTo: parsed.replyTo,
+    messageId: parsed.messageId,
+    inReplyTo: parsed.inReplyTo,
+    references: parsed.references,
+  }, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+
+  await updateInboundMessageNormalized(env, {
+    messageId: job.messageId,
+    threadId: thread.id,
+    normalizedR2Key,
+    subject: parsed.subject,
+    snippet: parsed.snippet,
+    internetMessageId: parsed.messageId,
+    fromAddr: parsed.replyTo ?? parsed.from,
+    status: "normalized",
+  });
+  await updateThreadTimestamp(env, thread.id);
+
+  const attachmentRows = [];
+  for (const [index, attachment] of parsed.attachments.entries()) {
+    const attachmentId = `att_${job.messageId}_${index + 1}`;
+    const r2Key = `attachments/${job.messageId}/${attachmentId}`;
+    await env.R2_EMAIL.put(r2Key, attachment.content, {
+      httpMetadata: { contentType: attachment.contentType ?? "application/octet-stream" },
+    });
+    attachmentRows.push({
+      id: attachmentId,
+      filename: attachment.filename,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.content.byteLength,
+      r2Key,
+    });
+  }
+
+  const staleAttachmentKeys = await insertAttachments(env, {
+    messageId: job.messageId,
+    attachments: attachmentRows,
+  });
+
+  const executionTarget = await resolveAgentExecutionTarget(env, job.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
+  const task = executionTarget
+    ? await getOrCreateTaskForSourceMessage(env, {
+        tenantId: job.tenantId,
+        mailboxId: job.mailboxId,
+        sourceMessageId: job.messageId,
+        taskType: "reply",
+        priority: 50,
+        status: "queued",
+        assignedAgent: executionTarget.agentId,
+      })
+    : await getTaskBySourceMessageId(env, job.messageId, "reply");
+
+  if (task && (task.status === "queued" || task.status === "running" || task.status === "needs_review")) {
+    await updateMessageStatus(env, job.messageId, "tasked");
+  } else if (
+    existingMessage?.status
+    && existingMessage.status !== "received"
+    && existingMessage.status !== "normalized"
+  ) {
+    await updateMessageStatus(env, job.messageId, existingMessage.status);
+  }
+
+  if (executionTarget && task?.status === "queued") {
+    await env.AGENT_EXECUTE_QUEUE.send({
+      taskId: task.id,
+      agentId: executionTarget.agentId,
+      agentVersionId: executionTarget.agentVersionId,
+      deploymentId: executionTarget.deploymentId,
+    });
+  }
+
+  await deleteR2Objects(env, staleAttachmentKeys);
+}
+
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     try {
-      const existingMessage = await getMessage(env, message.body.messageId);
-      const rawObject = await env.R2_EMAIL.get(message.body.rawR2Key);
-      if (!rawObject) {
-        throw new Error("Raw email object not found");
-      }
-
-      const rawText = await rawObject.text();
-      const parsed = parseRawEmail(rawText);
-      const referencedMessageIds = [
-        parsed.inReplyTo,
-        ...[...parsed.references].reverse(),
-      ].filter((value): value is string => Boolean(value?.trim()));
-      // Prefer an existing thread referenced by email headers before falling back to parser-derived keys.
-      const thread = await findThreadByReplyContext(env, {
-        tenantId: message.body.tenantId,
-        mailboxId: message.body.mailboxId,
-        internetMessageIds: referencedMessageIds,
-        subject: parsed.subject,
-        participantAddress: parsed.replyTo ?? parsed.from,
-      }) ?? await getOrCreateThread(env, {
-        tenantId: message.body.tenantId,
-        mailboxId: message.body.mailboxId,
-        threadKey: parsed.threadKey,
-        subjectNorm: parsed.subject?.replace(/^(re|fwd|fw):\s*/gi, "").trim().toLowerCase(),
-      });
-
-      const normalizedR2Key = `normalized/${message.body.messageId}.json`;
-      await env.R2_EMAIL.put(normalizedR2Key, JSON.stringify({
-        text: parsed.text ?? "",
-        html: parsed.html ?? "",
-        headers: parsed.headers,
-        from: parsed.from,
-        replyTo: parsed.replyTo,
-        messageId: parsed.messageId,
-        inReplyTo: parsed.inReplyTo,
-        references: parsed.references,
-      }, null, 2), {
-        httpMetadata: { contentType: "application/json; charset=utf-8" },
-      });
-
-      await updateInboundMessageNormalized(env, {
-        messageId: message.body.messageId,
-        threadId: thread.id,
-        normalizedR2Key,
-        subject: parsed.subject,
-        snippet: parsed.snippet,
-        internetMessageId: parsed.messageId,
-        fromAddr: parsed.replyTo ?? parsed.from,
-        status: "normalized",
-      });
-      await updateThreadTimestamp(env, thread.id);
-
-      const attachmentRows = [];
-      for (const [index, attachment] of parsed.attachments.entries()) {
-        const attachmentId = `att_${message.body.messageId}_${index + 1}`;
-        const r2Key = `attachments/${message.body.messageId}/${attachmentId}`;
-        await env.R2_EMAIL.put(r2Key, attachment.content, {
-          httpMetadata: { contentType: attachment.contentType ?? "application/octet-stream" },
-        });
-        attachmentRows.push({
-          id: attachmentId,
-          filename: attachment.filename,
-          contentType: attachment.contentType,
-          sizeBytes: attachment.content.byteLength,
-          r2Key,
-        });
-      }
-      await insertAttachments(env, {
-        messageId: message.body.messageId,
-        attachments: attachmentRows,
-      });
-
-      const executionTarget = await resolveAgentExecutionTarget(env, message.body.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
-      const task = executionTarget
-        ? await getOrCreateTaskForSourceMessage(env, {
-            tenantId: message.body.tenantId,
-            mailboxId: message.body.mailboxId,
-            sourceMessageId: message.body.messageId,
-            taskType: "reply",
-            priority: 50,
-            status: "queued",
-            assignedAgent: executionTarget.agentId,
-          })
-        : await getTaskBySourceMessageId(env, message.body.messageId, "reply");
-
-      if (task && (task.status === "queued" || task.status === "running" || task.status === "needs_review")) {
-        await updateMessageStatus(env, message.body.messageId, "tasked");
-      } else if (
-        existingMessage?.status
-        && existingMessage.status !== "received"
-        && existingMessage.status !== "normalized"
-      ) {
-        await updateMessageStatus(env, message.body.messageId, existingMessage.status);
-      }
-
-      if (executionTarget && task?.status === "queued") {
-        await env.AGENT_EXECUTE_QUEUE.send({
-          taskId: task.id,
-          agentId: executionTarget.agentId,
-          agentVersionId: executionTarget.agentVersionId,
-          deploymentId: executionTarget.deploymentId,
-        });
-      }
-
+      await processEmailIngestJob(message.body, env);
       message.ack();
     } catch (error) {
       await enqueueDeadLetter(env, deadLetterFromError("email-ingest", message.body.messageId, error));
@@ -199,21 +215,58 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
         continue;
       }
 
+      const task = await getTask(env, message.body.taskId);
+      if (!task) {
+        message.ack();
+        continue;
+      }
+
+      const sourceMessage = await getMessage(env, task.sourceMessageId);
+      const resolvedExecutionTarget = await resolveAgentExecutionTarget(
+        env,
+        task.mailboxId,
+        task.assignedAgent,
+        [...RECEIVE_CAPABLE_MAILBOX_ROLES],
+      );
+      if (resolvedExecutionTarget?.agentId && resolvedExecutionTarget.agentId !== task.assignedAgent) {
+        await updateTaskAssignment(env, {
+          taskId: task.id,
+          assignedAgent: resolvedExecutionTarget.agentId,
+        });
+      }
+
+      const effectiveAgentId = resolvedExecutionTarget?.agentId ?? task.assignedAgent ?? message.body.agentId;
       const runId = `run_${message.body.taskId}`;
       const timestamp = nowIso();
-      const version = message.body.agentVersionId
-        ? await getAgentVersion(env, message.body.agentId, message.body.agentVersionId)
+      const version = resolvedExecutionTarget?.agentVersionId
+        ? await getAgentVersion(env, effectiveAgentId, resolvedExecutionTarget.agentVersionId)
         : null;
       const traceR2Key = `traces/${runId}.json`;
+      const reviewReason = !sourceMessage
+        ? "source_message_missing"
+        : !resolvedExecutionTarget
+        ? "agent_assignment_unavailable"
+        : resolvedExecutionTarget.agentId !== message.body.agentId
+        || resolvedExecutionTarget.agentVersionId !== message.body.agentVersionId
+        || resolvedExecutionTarget.deploymentId !== message.body.deploymentId
+        ? "stale_queue_assignment"
+        : "agent_execution_not_implemented";
 
       await env.R2_EMAIL.put(traceR2Key, JSON.stringify({
         runId,
-        taskId: message.body.taskId,
-        agentId: message.body.agentId,
-        agentVersionId: message.body.agentVersionId ?? null,
-        deploymentId: message.body.deploymentId ?? null,
+        taskId: task.id,
+        sourceMessageId: task.sourceMessageId,
+        mailboxId: task.mailboxId,
+        queuedAgentId: message.body.agentId,
+        queuedAgentVersionId: message.body.agentVersionId ?? null,
+        queuedDeploymentId: message.body.deploymentId ?? null,
+        agentId: effectiveAgentId,
+        agentVersionId: resolvedExecutionTarget?.agentVersionId ?? null,
+        deploymentId: resolvedExecutionTarget?.deploymentId ?? null,
         model: version?.model ?? "gpt-5",
-        status: "completed",
+        status: "needs_review",
+        reviewReason,
+        sourceMessageStatus: sourceMessage?.status ?? null,
         startedAt: timestamp,
         completedAt: timestamp,
       }, null, 2), {
@@ -226,18 +279,18 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         runId,
-        message.body.taskId,
-        message.body.agentId,
+        task.id,
+        effectiveAgentId,
         version?.model ?? "gpt-5",
-        "completed",
+        "needs_review",
         traceR2Key,
         timestamp,
         timestamp
       ).run();
 
       await updateTaskStatus(env, {
-        taskId: message.body.taskId,
-        status: "done",
+        taskId: task.id,
+        status: "needs_review",
         resultR2Key: traceR2Key,
       });
 
@@ -245,10 +298,10 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
     } catch (error) {
       await updateTaskStatus(env, {
         taskId: message.body.taskId,
-        status: "failed",
+        status: "needs_review",
       }).catch(() => undefined);
       await enqueueDeadLetter(env, deadLetterFromError("agent-execute", message.body.taskId, error));
-      message.retry();
+      message.ack();
     }
   }
 }
@@ -384,6 +437,10 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
           continue;
         }
 
+        to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+        cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+        bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
           status: "failed",
@@ -393,6 +450,15 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         await updateMessageStatus(env, outboundJob.messageId, "failed").catch(() => undefined);
         if (draft) {
           await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
+          await releaseOutboundUsageReservation(env, {
+            tenantId: draft.tenantId,
+            outboundJobId: outboundJob.id,
+            sourceMessageId: draft.sourceMessageId,
+            draftCreatedVia: draft.createdVia,
+            to,
+            cc,
+            bcc,
+          }).catch(() => undefined);
         }
         await enqueueDeadLetter(
           env,
@@ -406,11 +472,15 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         continue;
       }
 
-      await updateOutboundJobStatus(env, {
-        outboundJobId: outboundJob.id,
-        status: "sending",
-        lastError: null,
-      });
+      const claimed = await claimOutboundJobForSend(env, outboundJob.id);
+      if (!claimed) {
+        message.ack();
+        continue;
+      }
+      outboundJob = await getOutboundJob(env, outboundJob.id);
+      if (!outboundJob) {
+        throw new Error("Outbound job disappeared after claim");
+      }
       const mailbox = await getMailboxById(env, outboundMessage.mailboxId);
       if (!mailbox) {
         throw new Error("Mailbox not found");
@@ -430,6 +500,16 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       const attachmentRefs = Array.isArray(draftPayload.attachments)
         ? draftPayload.attachments.filter((item): item is { filename?: unknown; contentType?: unknown; r2Key?: unknown } => typeof item === "object" && item !== null)
         : [];
+      if (draft) {
+        await ensureDraftSendAllowed(env, {
+          tenantId: draft.tenantId,
+          agentId: draft.agentId,
+          mailboxId: draft.mailboxId,
+          draftR2Key: draft.draftR2Key,
+          threadId: draft.threadId ?? undefined,
+          sourceMessageId: draft.sourceMessageId ?? undefined,
+        });
+      }
       const suppressedRecipients = await getSuppressedRecipients(env, [...to, ...cc, ...bcc]);
       if (suppressedRecipients.length > 0) {
         const label = suppressedRecipients.length === 1 ? "recipient is" : "recipients are";
@@ -458,21 +538,36 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         emailTags,
       });
 
-      await markMessageSent(env, {
-        messageId: outboundJob.messageId,
-        providerMessageId: sendResult.messageId,
-        status: "replied",
-      });
+      try {
+        await updateOutboundJobStatus(env, {
+          outboundJobId: outboundJob.id,
+          status: "sent",
+          lastError: null,
+          nextRetryAt: null,
+        });
 
-      await updateOutboundJobStatus(env, {
-        outboundJobId: outboundJob.id,
-        status: "sent",
-        lastError: null,
-        nextRetryAt: null,
-      });
+        await markMessageSent(env, {
+          messageId: outboundJob.messageId,
+          providerMessageId: sendResult.messageId,
+          status: "replied",
+        });
 
-      if (draft) {
-        await markDraftStatus(env, draft.id, "sent");
+        if (draft) {
+          await markDraftStatus(env, draft.id, "sent");
+        }
+      } catch (error) {
+        await enqueueDeadLetter(
+          env,
+          deadLetterFromError(
+            "outbound-send",
+            outboundJob.id,
+            new ProviderAcceptedPersistenceError(
+              `provider_accepted_persistence_incomplete:${sendResult.messageId}:${error instanceof Error ? error.message : "unknown_error"}`
+            )
+          )
+        );
+        message.ack();
+        continue;
       }
 
       try {
@@ -498,6 +593,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       const nextRetryCount = outboundJob ? outboundJob.retryCount + 1 : undefined;
       const maxRetries = getOutboundSendMaxRetries(env);
       const exhausted = error instanceof OutboundPolicyError
+        || error instanceof DraftSendValidationError
         || (nextRetryCount !== undefined && nextRetryCount > maxRetries);
 
       await updateOutboundJobStatus(env, {

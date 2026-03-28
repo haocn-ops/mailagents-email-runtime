@@ -31,6 +31,8 @@ import {
 import { Router } from "../lib/router";
 import {
   getAgent,
+  hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
   getMailboxByAddress,
   getMailboxById,
   listAgents,
@@ -584,6 +586,18 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     const draft = outboundJob ? await getDraftByR2Key(env, outboundJob.draftR2Key) : null;
+    const suppressionLookups = message.direction === "outbound"
+      ? await Promise.all(
+        message.toAddr
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+          .map(async (email) => ({
+            email,
+            suppression: await getSuppression(env, email).catch(() => null),
+          }))
+      )
+      : [];
     return {
       lookup: { type: "message", value: message.id },
       message,
@@ -591,7 +605,7 @@ async function inspectDeliveryCase(env: Env, input: {
       outboundJob,
       draft,
       draftPayload: includePayload && outboundJob ? await readDraftPayload(env, outboundJob.draftR2Key) : undefined,
-      suppression: message.direction === "outbound" ? await getSuppression(env, message.toAddr).catch(() => null) : null,
+      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
     };
   }
 
@@ -602,6 +616,18 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
     const message = outboundJob ? await getMessage(env, outboundJob.messageId) : null;
+    const suppressionLookups = message?.direction === "outbound"
+      ? await Promise.all(
+        message.toAddr
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+          .map(async (email) => ({
+            email,
+            suppression: await getSuppression(env, email).catch(() => null),
+          }))
+      )
+      : [];
     return {
       lookup: { type: "draft", value: draft.id },
       draft,
@@ -609,7 +635,7 @@ async function inspectDeliveryCase(env: Env, input: {
       outboundJob,
       message,
       deliveryEvents: message ? await listDeliveryEventsByMessageId(env, message.id) : [],
-      suppression: message?.direction === "outbound" ? await getSuppression(env, message.toAddr).catch(() => null) : null,
+      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
     };
   }
 
@@ -620,6 +646,18 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const message = await getMessage(env, outboundJob.messageId);
     const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+    const suppressionLookups = message?.direction === "outbound"
+      ? await Promise.all(
+        message.toAddr
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+          .map(async (email) => ({
+            email,
+            suppression: await getSuppression(env, email).catch(() => null),
+          }))
+      )
+      : [];
     return {
       lookup: { type: "outbound_job", value: outboundJob.id },
       outboundJob,
@@ -627,7 +665,7 @@ async function inspectDeliveryCase(env: Env, input: {
       draft,
       draftPayload: includePayload ? await readDraftPayload(env, outboundJob.draftR2Key) : undefined,
       deliveryEvents: message ? await listDeliveryEventsByMessageId(env, message.id) : [],
-      suppression: message?.direction === "outbound" ? await getSuppression(env, message.toAddr).catch(() => null) : null,
+      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
     };
   }
 
@@ -722,14 +760,58 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
 
     const sub = requireString(args.sub, "sub");
     const tenantId = requireString(args.tenantId, "tenantId");
+    const agentId = optionalString(args.agentId);
+    const mailboxIds = optionalStringArray(args.mailboxIds, "mailboxIds");
     const scopes = requireStringArray(args.scopes, "scopes");
     const exp = Math.floor(Date.now() / 1000) + (optionalInteger(args.expiresInSeconds, "expiresInSeconds") ?? 3600);
+
+    if (agentId) {
+      const agent = await getAgent(env, agentId);
+      if (!agent) {
+        throw new AdminMcpToolError("resource_agent_not_found", "Agent not found");
+      }
+      if (agent.tenantId !== tenantId) {
+        throw new AdminMcpToolError("invalid_arguments", "agentId must belong to tenantId");
+      }
+    }
+
+    if (mailboxIds?.length) {
+      for (const mailboxId of mailboxIds) {
+        const mailbox = await getMailboxById(env, mailboxId);
+        if (!mailbox) {
+          throw new AdminMcpToolError("resource_mailbox_not_found", `Mailbox not found: ${mailboxId}`);
+        }
+        if (mailbox.tenant_id !== tenantId) {
+          throw new AdminMcpToolError("invalid_arguments", "mailboxIds must belong to tenantId");
+        }
+      }
+    }
+    if (agentId && mailboxIds?.length) {
+      for (const mailboxId of mailboxIds) {
+        const hasBinding = await hasActiveMailboxBinding(env, {
+          agentId,
+          mailboxId,
+        });
+        if (hasBinding) {
+          continue;
+        }
+
+        const hasDeployment = await hasActiveMailboxDeployment(env, {
+          agentId,
+          mailboxId,
+        });
+        if (!hasDeployment) {
+          throw new AdminMcpToolError("invalid_arguments", "agentId must be active for every mailboxId");
+        }
+      }
+    }
+
     const token = await mintAccessToken(env.API_SIGNING_SECRET, {
       sub,
       tenantId,
-      agentId: optionalString(args.agentId),
+      agentId,
       scopes,
-      mailboxIds: optionalStringArray(args.mailboxIds, "mailboxIds"),
+      mailboxIds,
       exp,
     });
 
@@ -764,11 +846,28 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       if (agent.tenantId !== tenantId) {
         throw new AdminMcpToolError("invalid_arguments", "Agent does not belong to tenant");
       }
+
+      const hasBinding = await hasActiveMailboxBinding(env, {
+        agentId,
+        mailboxId,
+      });
+      if (!hasBinding) {
+        const hasDeployment = await hasActiveMailboxDeployment(env, {
+          agentId,
+          mailboxId,
+        });
+        if (!hasDeployment) {
+          throw new AdminMcpToolError("invalid_arguments", "Agent is not active for mailbox");
+        }
+      }
     }
 
     const mode = optionalString(args.mode) ?? "send";
     if (!(mode in DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES)) {
       throw new AdminMcpToolError("invalid_arguments", "mode must be read_only, draft_only, or send");
+    }
+    if (mode !== "read_only" && !agentId) {
+      throw new AdminMcpToolError("invalid_arguments", "agentId is required for draft_only and send mailbox bootstrap tokens");
     }
     const scopes = [...DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES[mode as keyof typeof DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES]];
     const exp = Math.floor(Date.now() / 1000) + (optionalInteger(args.expiresInSeconds, "expiresInSeconds") ?? 1800);

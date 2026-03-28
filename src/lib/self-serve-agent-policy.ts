@@ -112,3 +112,40 @@ export async function relaxTenantDefaultAgentRecipientPoliciesForExternalSend(
 
   return { updatedAgentIds };
 }
+
+export async function syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange(
+  env: Env,
+  input: {
+    tenantId: string;
+    previousInternalDomainAllowlist: string[];
+    nextInternalDomainAllowlist: string[];
+  },
+): Promise<{ updatedAgentIds: string[] }> {
+  const agents = await listAgents(env, input.tenantId);
+  const updatedAgentIds: string[] = [];
+
+  for (const agent of agents) {
+    const policy = await getAgentPolicy(env, agent.id);
+    if (!policy) {
+      continue;
+    }
+
+    if (!isDefaultSelfServeInternalOnlyAgentPolicy(policy, input.previousInternalDomainAllowlist)) {
+      continue;
+    }
+
+    await upsertAgentPolicy(env, {
+      agentId: policy.agentId,
+      autoReplyEnabled: policy.autoReplyEnabled,
+      humanReviewRequired: policy.humanReviewRequired,
+      confidenceThreshold: policy.confidenceThreshold,
+      maxAutoRepliesPerThread: policy.maxAutoRepliesPerThread,
+      allowedRecipientDomains: normalizeDomainList(input.nextInternalDomainAllowlist),
+      blockedSenderDomains: policy.blockedSenderDomains,
+      allowedTools: policy.allowedTools,
+    });
+    updatedAgentIds.push(agent.id);
+  }
+
+  return { updatedAgentIds };
+}

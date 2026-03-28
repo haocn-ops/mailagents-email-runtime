@@ -22,10 +22,12 @@ import {
 } from "../lib/self-serve";
 import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
 import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPublishedHostedDidBinding } from "../lib/did-web";
-import { settleOutboundUsageDebit } from "../lib/outbound-billing";
+import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
+import { ensureSystemSendAllowed } from "../lib/system-sends";
+import { syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange } from "../lib/self-serve-agent-policy";
 import {
   bindMailbox,
   createAgent,
@@ -112,6 +114,7 @@ import {
 } from "../repositories/tenant-policies";
 import {
   getX402FacilitatorConfig,
+  parseStoredX402SettlementResponse,
   parseStoredX402VerificationResponse,
   settleX402Payment,
   verifyX402Payment,
@@ -433,6 +436,100 @@ async function validateSendAgentBinding(env: Env, input: {
   }
 }
 
+async function validateDraftAgentBinding(env: Env, input: {
+  tenantId: string;
+  agentId: string;
+  mailboxId: string;
+}) {
+  const agent = await getAgent(env, input.agentId);
+  if (!agent) {
+    throw new RouteRequestError("Agent not found", 404);
+  }
+  if (agent.tenantId !== input.tenantId) {
+    throw new RouteRequestError("Agent does not belong to tenant", 409);
+  }
+
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new RouteRequestError("Mailbox not found", 404);
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new RouteRequestError("Mailbox does not belong to tenant", 409);
+  }
+
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (hasBinding) {
+    return;
+  }
+
+  const hasDeployment = await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (!hasDeployment) {
+    throw new RouteRequestError("Agent is not active for mailbox", 403);
+  }
+}
+
+async function validateTokenAgentMailboxScopes(env: Env, input: {
+  tenantId: string;
+  agentId?: string;
+  mailboxIds?: string[];
+}) {
+  if (!input.agentId || !input.mailboxIds?.length) {
+    return;
+  }
+
+  for (const mailboxId of input.mailboxIds) {
+    const hasBinding = await hasActiveMailboxBinding(env, {
+      agentId: input.agentId,
+      mailboxId,
+    });
+    if (hasBinding) {
+      continue;
+    }
+
+    const hasDeployment = await hasActiveMailboxDeployment(env, {
+      agentId: input.agentId,
+      mailboxId,
+    });
+    if (!hasDeployment) {
+      throw new RouteRequestError("agentId must be active for every mailboxId", 409);
+    }
+  }
+}
+
+async function resolveActiveClaimMailboxIdsForAgent(env: Env, claims: AccessTokenClaims, agentId: string): Promise<string[] | null> {
+  if (!claims.mailboxIds?.length) {
+    return null;
+  }
+
+  const mailboxIds: string[] = [];
+  for (const mailboxId of claims.mailboxIds) {
+    const hasBinding = await hasActiveMailboxBinding(env, {
+      agentId,
+      mailboxId,
+    });
+    if (hasBinding) {
+      mailboxIds.push(mailboxId);
+      continue;
+    }
+
+    const hasDeployment = await hasActiveMailboxDeployment(env, {
+      agentId,
+      mailboxId,
+    });
+    if (hasDeployment) {
+      mailboxIds.push(mailboxId);
+    }
+  }
+
+  return mailboxIds;
+}
+
 async function canAgentSendForMailbox(env: Env, input: {
   agentId: string;
   mailboxId: string;
@@ -558,20 +655,33 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
         }));
       }
     }
-  } catch {
-    // If the rate-limit table is unavailable, fail open and continue with the generic flow.
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      // If rate-limit tables are unavailable, continue with the generic flow without leaking mailbox existence.
+    } else {
+      throw error;
+    }
   }
 
   if (env.API_SIGNING_SECRET) {
+    let reissueQueued = false;
     try {
-      await reissueMailboxAccessToken(env, mailboxAddress);
+      reissueQueued = await reissueMailboxAccessToken(env, mailboxAddress);
     } catch {
       // Intentionally swallow errors so the endpoint does not disclose mailbox existence or operator metadata.
-    } finally {
-      await logTokenReissueRequest(env, {
-        mailboxAddress,
-        requesterIpHash: requesterIpHash ?? undefined,
-      }).catch(() => undefined);
+    }
+
+    if (reissueQueued) {
+      try {
+        await logTokenReissueRequest(env, {
+          mailboxAddress,
+          requesterIpHash: requesterIpHash ?? undefined,
+        });
+      } catch (error) {
+        if (!isMissingTableError(error)) {
+          throw error;
+        }
+      }
     }
   }
 
@@ -605,6 +715,10 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
   let deliveryMailboxId: string | undefined;
 
   if (delivery === "self_mailbox" || delivery === "both") {
+    if (!auth.mailboxIds?.length) {
+      return badRequest("self_mailbox delivery requires a mailbox-scoped token");
+    }
+
     const targetMailboxId = resolveRotateMailboxId(auth, body?.mailboxId);
     if (!targetMailboxId) {
       return badRequest("mailboxId is required for self_mailbox delivery when the token covers multiple or no mailboxes");
@@ -636,6 +750,10 @@ router.on("GET", "/v1/billing/account", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
+  }
 
   return json(await ensureTenantBillingAccount(env, auth.tenantId));
 });
@@ -644,6 +762,10 @@ router.on("GET", "/v1/billing/ledger", async (request, env) => {
   const auth = await requireAuth(request, env, []);
   if (auth instanceof Response) {
     return auth;
+  }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
   }
 
   const url = new URL(request.url);
@@ -656,6 +778,10 @@ router.on("GET", "/v1/billing/receipts", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
+  }
 
   const url = new URL(request.url);
   const limit = parseListLimit(url.searchParams.get("limit"), 50, 200);
@@ -666,6 +792,10 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   const auth = await requireAuth(request, env, []);
   if (auth instanceof Response) {
     return auth;
+  }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
   }
 
   const body = await readJson<{
@@ -774,6 +904,10 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   const auth = await requireAuth(request, env, []);
   if (auth instanceof Response) {
     return auth;
+  }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
   }
 
   const body = await readJson<{
@@ -885,6 +1019,10 @@ router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
   if (auth instanceof Response) {
     return auth;
   }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
+  }
 
   const tenantError = enforceTenantAccess(auth, route.params.tenantId);
   if (tenantError) {
@@ -895,10 +1033,16 @@ router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
 });
 
 router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx, route) => {
+  const routeError = requireAdminRoutesEnabled(request, env);
+  if (routeError) {
+    return routeError;
+  }
   const adminError = requireAdminSecret(request, env);
   if (adminError) {
     return adminError;
   }
+
+  const previousSendPolicy = await ensureTenantSendPolicy(env, route.params.tenantId);
 
   const body = await readJson<{
     pricingTier?: "free" | "paid_review" | "paid_active" | "enterprise";
@@ -926,6 +1070,16 @@ router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
     reviewRequired: body.reviewRequired,
   });
 
+  if (
+    JSON.stringify(previousSendPolicy.internalDomainAllowlist) !== JSON.stringify(sendPolicy.internalDomainAllowlist)
+  ) {
+    await syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange(env, {
+      tenantId: route.params.tenantId,
+      previousInternalDomainAllowlist: previousSendPolicy.internalDomainAllowlist,
+      nextInternalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+    });
+  }
+
   if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
     await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {
       tenantId: route.params.tenantId,
@@ -937,6 +1091,10 @@ router.on("PUT", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
 });
 
 router.on("POST", "/v1/tenants/:tenantId/send-policy/review-decision", async (request, env, _ctx, route) => {
+  const routeError = requireAdminRoutesEnabled(request, env);
+  if (routeError) {
+    return routeError;
+  }
   const adminError = requireAdminSecret(request, env);
   if (adminError) {
     return adminError;
@@ -1033,6 +1191,10 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
+  }
 
   const body = await readJson<{
     receiptId?: string;
@@ -1081,6 +1243,10 @@ router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) 
   if (auth instanceof Response) {
     return auth;
   }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
+  }
 
   const tenantError = enforceTenantAccess(auth, route.params.tenantId);
   if (tenantError) {
@@ -1099,6 +1265,10 @@ router.on("POST", "/v1/tenants/:tenantId/did/hosted", async (request, env, _ctx,
   const auth = await requireAuth(request, env, []);
   if (auth instanceof Response) {
     return auth;
+  }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
   }
 
   const tenantError = enforceTenantAccess(auth, route.params.tenantId);
@@ -1125,6 +1295,10 @@ router.on("PUT", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) 
   const auth = await requireAuth(request, env, []);
   if (auth instanceof Response) {
     return auth;
+  }
+  const tenantScopeError = requireTenantScopedAccess(auth);
+  if (tenantScopeError) {
+    return tenantScopeError;
   }
 
   const tenantError = enforceTenantAccess(auth, route.params.tenantId);
@@ -1204,6 +1378,10 @@ router.on("GET", "/v1/mailboxes/self", async (request, env) => {
   if (mailbox instanceof Response) {
     return mailbox;
   }
+  const selfAgent = auth.agentId ? await resolveSelfAgentForMailbox(env, auth, mailbox.id) : null;
+  if (selfAgent instanceof Response) {
+    return selfAgent;
+  }
 
   return json({
     id: mailbox.id,
@@ -1211,7 +1389,7 @@ router.on("GET", "/v1/mailboxes/self", async (request, env) => {
     address: mailbox.address,
     status: mailbox.status,
     createdAt: mailbox.created_at,
-    agentId: auth.agentId,
+    agentId: selfAgent?.id,
   });
 });
 
@@ -1226,15 +1404,15 @@ router.on("GET", "/v1/mailboxes/self/tasks", async (request, env) => {
     return mailbox;
   }
 
-  const agentId = requireSelfAgent(auth);
-  if (agentId instanceof Response) {
-    return agentId;
+  const selfAgent = await resolveSelfAgentForMailbox(env, auth, mailbox.id);
+  if (selfAgent instanceof Response) {
+    return selfAgent;
   }
 
   const url = new URL(request.url);
   const status = url.searchParams.get("status") as "queued" | "running" | "done" | "needs_review" | "failed" | null;
-  const items = await listTasks(env, agentId, status ?? undefined);
-  return json({ items: items.filter((item) => item.mailboxId === mailbox.id) });
+  const items = await listTasks(env, selfAgent.id, status ?? undefined, [mailbox.id]);
+  return json({ items });
 });
 
 router.on("GET", "/v1/mailboxes/self/messages", async (request, env) => {
@@ -1246,6 +1424,10 @@ router.on("GET", "/v1/mailboxes/self/messages", async (request, env) => {
   const mailbox = await resolveSelfMailbox(env, auth);
   if (mailbox instanceof Response) {
     return mailbox;
+  }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, mailbox.id);
+  if (currentAccessError) {
+    return currentAccessError;
   }
 
   const url = new URL(request.url);
@@ -1261,14 +1443,22 @@ router.on("GET", "/v1/mailboxes/self/messages", async (request, env) => {
     | "failed"
     | null) ?? undefined;
 
-  return json({
-    items: await listMessages(env, {
+  const items = await listMessages(env, {
       mailboxId: mailbox.id,
       limit,
       search,
       direction,
       status,
-    }),
+    });
+  const visibleItems: typeof items = [];
+  for (const item of items) {
+    if (!auth.mailboxIds?.length || !(await isMailboxScopedOperatorTokenDeliveryMessage(env, item.id))) {
+      visibleItems.push(item);
+    }
+  }
+
+  return json({
+    items: visibleItems,
   });
 });
 
@@ -1282,6 +1472,10 @@ router.on("GET", "/v1/mailboxes/self/messages/:messageId", async (request, env, 
   if (mailbox instanceof Response) {
     return mailbox;
   }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, mailbox.id);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
 
   const message = await getMessage(env, route.params.messageId);
   if (!message) {
@@ -1289,6 +1483,10 @@ router.on("GET", "/v1/mailboxes/self/messages/:messageId", async (request, env, 
   }
   if (message.mailboxId !== mailbox.id || message.tenantId !== mailbox.tenant_id) {
     return json({ error: "Mailbox access denied" }, { status: 403 });
+  }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, message.id);
+  if (visibilityError) {
+    return visibilityError;
   }
 
   return json(message);
@@ -1304,6 +1502,10 @@ router.on("GET", "/v1/mailboxes/self/messages/:messageId/content", async (reques
   if (mailbox instanceof Response) {
     return mailbox;
   }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, mailbox.id);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
 
   const message = await getMessage(env, route.params.messageId);
   if (!message) {
@@ -1311,6 +1513,10 @@ router.on("GET", "/v1/mailboxes/self/messages/:messageId/content", async (reques
   }
   if (message.mailboxId !== mailbox.id || message.tenantId !== mailbox.tenant_id) {
     return json({ error: "Mailbox access denied" }, { status: 403 });
+  }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, message.id);
+  if (visibilityError) {
+    return visibilityError;
   }
 
   return json(await getMessageContent(env, route.params.messageId));
@@ -1327,9 +1533,9 @@ router.on("POST", "/v1/mailboxes/self/send", async (request, env) => {
     return mailbox;
   }
 
-  const agentId = requireSelfAgent(auth);
-  if (agentId instanceof Response) {
-    return agentId;
+  const selfAgent = await resolveSelfAgentForMailbox(env, auth, mailbox.id);
+  if (selfAgent instanceof Response) {
+    return selfAgent;
   }
 
   const body = await readJson<{
@@ -1351,7 +1557,7 @@ router.on("POST", "/v1/mailboxes/self/send", async (request, env) => {
 
   const result = await createAndSendDraft(env, {
     tenantId: mailbox.tenant_id,
-    agentId,
+    agentId: selfAgent.id,
     mailboxId: mailbox.id,
     payload: {
       from: mailbox.address,
@@ -1396,9 +1602,9 @@ router.on("POST", "/v1/messages/send", async (request, env) => {
     return mailbox;
   }
 
-  const agentId = requireSelfAgent(auth);
-  if (agentId instanceof Response) {
-    return agentId;
+  const selfAgent = await resolveSelfAgentForMailbox(env, auth, mailbox.id);
+  if (selfAgent instanceof Response) {
+    return selfAgent;
   }
 
   const body = await readJson<{
@@ -1420,7 +1626,7 @@ router.on("POST", "/v1/messages/send", async (request, env) => {
 
   const result = await createAndSendDraft(env, {
     tenantId: mailbox.tenant_id,
-    agentId,
+    agentId: selfAgent.id,
     mailboxId: mailbox.id,
     payload: {
       from: mailbox.address,
@@ -1632,6 +1838,40 @@ router.on("POST", "/v1/auth/tokens", async (request, env) => {
     return badRequest("sub, tenantId, and scopes are required");
   }
 
+  if (body.agentId) {
+    const agent = await getAgent(env, body.agentId);
+    if (!agent) {
+      return json({ error: "Agent not found" }, { status: 404 });
+    }
+    if (agent.tenantId !== body.tenantId) {
+      return badRequest("agentId must belong to tenantId");
+    }
+  }
+
+  if (body.mailboxIds?.length) {
+    for (const mailboxId of body.mailboxIds) {
+      const mailbox = await getMailboxById(env, mailboxId);
+      if (!mailbox) {
+        return json({ error: `Mailbox not found: ${mailboxId}` }, { status: 404 });
+      }
+      if (mailbox.tenant_id !== body.tenantId) {
+        return badRequest("mailboxIds must belong to tenantId");
+      }
+    }
+  }
+  try {
+    await validateTokenAgentMailboxScopes(env, {
+      tenantId: body.tenantId,
+      agentId: body.agentId,
+      mailboxIds: body.mailboxIds,
+    });
+  } catch (error) {
+    if (error instanceof RouteRequestError) {
+      return json({ error: error.message }, { status: error.status });
+    }
+    throw error;
+  }
+
   const exp = Math.floor(Date.now() / 1000) + (body.expiresInSeconds ?? 3600);
   const token = await mintAccessToken(env.API_SIGNING_SECRET, {
     sub: body.sub,
@@ -1652,6 +1892,10 @@ router.on("POST", "/v1/agents", async (request, env) => {
   const auth = await requireAuth(request, env, ["agent:create"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const body = await readJson<{
@@ -1689,21 +1933,36 @@ router.on("GET", "/v1/agents", async (request, env) => {
   }
 
   const url = new URL(request.url);
-  const tenantId = url.searchParams.get("tenantId") ?? undefined;
-  if (tenantId) {
-    const tenantError = enforceTenantAccess(auth, tenantId);
+  const requestedTenantId = url.searchParams.get("tenantId") ?? undefined;
+  if (requestedTenantId) {
+    const tenantError = enforceTenantAccess(auth, requestedTenantId);
     if (tenantError) {
       return tenantError;
     }
   }
 
-  return json({ items: await listAgents(env, tenantId) });
+  if (auth.mailboxIds?.length) {
+    return json({ error: "Mailbox-scoped tokens cannot list tenant agents" }, { status: 403 });
+  }
+
+  if (auth.agentId) {
+    const agent = await getAgent(env, auth.agentId);
+    return json({
+      items: agent && agent.tenantId === auth.tenantId ? [agent] : [],
+    });
+  }
+
+  return json({ items: await listAgents(env, requestedTenantId ?? auth.tenantId) });
 });
 
 router.on("GET", "/v1/agents/:agentId", async (_request, env, _ctx, route) => {
   const auth = await requireAuth(_request, env, ["agent:read"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -1727,6 +1986,10 @@ router.on("PATCH", "/v1/agents/:agentId", async (request, env, _ctx, route) => {
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const existing = await getAgent(env, route.params.agentId);
@@ -1752,6 +2015,16 @@ router.on("PATCH", "/v1/agents/:agentId", async (request, env, _ctx, route) => {
     config?: unknown;
     defaultVersionId?: string;
   }>(request);
+
+  if (body.defaultVersionId !== undefined) {
+    const defaultVersion = body.defaultVersionId
+      ? await getAgentVersion(env, route.params.agentId, body.defaultVersionId)
+      : null;
+    if (body.defaultVersionId && !defaultVersion) {
+      return json({ error: "defaultVersionId must belong to agent" }, { status: 409 });
+    }
+  }
+
   return json(await updateAgent(env, route.params.agentId, body));
 });
 
@@ -1759,6 +2032,10 @@ router.on("POST", "/v1/agents/:agentId/versions", async (request, env, _ctx, rou
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -1810,6 +2087,10 @@ router.on("GET", "/v1/agents/:agentId/versions", async (request, env, _ctx, rout
   if (auth instanceof Response) {
     return auth;
   }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
+  }
 
   const agent = await getAgent(env, route.params.agentId);
   if (!agent) {
@@ -1832,6 +2113,10 @@ router.on("GET", "/v1/agents/:agentId/versions/:versionId", async (request, env,
   const auth = await requireAuth(request, env, ["agent:read"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -1860,6 +2145,10 @@ router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, 
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -1898,6 +2187,13 @@ router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, 
     if (mailboxError) {
       return mailboxError;
     }
+    const mailbox = await getMailboxById(env, body.targetId);
+    if (!mailbox) {
+      return json({ error: "Mailbox not found" }, { status: 404 });
+    }
+    if (mailbox.tenant_id !== body.tenantId) {
+      return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+    }
   }
 
   const version = await getAgentVersion(env, route.params.agentId, body.agentVersionId);
@@ -1927,6 +2223,10 @@ router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, r
   if (auth instanceof Response) {
     return auth;
   }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
+  }
 
   const agent = await getAgent(env, route.params.agentId);
   if (!agent) {
@@ -1942,13 +2242,22 @@ router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, r
     return agentError;
   }
 
-  return json({ items: await listAgentDeployments(env, route.params.agentId) });
+  const items = await listAgentDeployments(env, route.params.agentId);
+  return json({
+    items: auth.mailboxIds?.length
+      ? items.filter((item) => item.targetType === "mailbox" && auth.mailboxIds!.includes(item.targetId))
+      : items,
+  });
 });
 
 router.on("PATCH", "/v1/agents/:agentId/deployments/:deploymentId", async (request, env, _ctx, route) => {
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -1982,11 +2291,19 @@ router.on("PATCH", "/v1/agents/:agentId/deployments/:deploymentId", async (reque
     return badRequest("status is required");
   }
 
-  const updated = await updateAgentDeploymentStatus(env, {
-    agentId: route.params.agentId,
-    deploymentId: route.params.deploymentId,
-    status: body.status,
-  });
+  let updated;
+  try {
+    updated = await updateAgentDeploymentStatus(env, {
+      agentId: route.params.agentId,
+      deploymentId: route.params.deploymentId,
+      status: body.status,
+    });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 
   if (!updated) {
     return json({ error: "Agent deployment not found" }, { status: 404 });
@@ -1999,6 +2316,10 @@ router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const agent = await getAgent(env, route.params.agentId);
@@ -2036,6 +2357,13 @@ router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env
     if (mailboxError) {
       return mailboxError;
     }
+    const mailbox = await getMailboxById(env, body.targetId);
+    if (!mailbox) {
+      return json({ error: "Mailbox not found" }, { status: 404 });
+    }
+    if (mailbox.tenant_id !== body.tenantId) {
+      return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
+    }
   }
 
   const version = await getAgentVersion(env, route.params.agentId, body.agentVersionId);
@@ -2064,6 +2392,10 @@ router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", asyn
   if (auth instanceof Response) {
     return auth;
   }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
+  }
 
   const agent = await getAgent(env, route.params.agentId);
   if (!agent) {
@@ -2091,10 +2423,18 @@ router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", asyn
     }
   }
 
-  const rolledBack = await rollbackAgentDeployment(env, {
-    agentId: route.params.agentId,
-    deploymentId: route.params.deploymentId,
-  });
+  let rolledBack;
+  try {
+    rolledBack = await rollbackAgentDeployment(env, {
+      agentId: route.params.agentId,
+      deploymentId: route.params.deploymentId,
+    });
+  } catch (error) {
+    if (error instanceof DeploymentConflictError) {
+      return json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
 
   if (!rolledBack) {
     return json({ error: "Agent deployment not found" }, { status: 404 });
@@ -2107,6 +2447,10 @@ router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, ro
   const auth = await requireAuth(request, env, ["agent:bind"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
   }
 
   const body = await readJson<{ tenantId?: string; mailboxId?: string; role?: "primary" | "shared" | "send_only" | "receive_only" }>(request);
@@ -2160,18 +2504,47 @@ router.on("GET", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, rou
   if (auth instanceof Response) {
     return auth;
   }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
+  }
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
   const agentError = enforceAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
 
-  return json({ items: await listAgentMailboxes(env, route.params.agentId) });
+  const items = await listAgentMailboxes(env, route.params.agentId);
+  return json({
+    items: auth.mailboxIds?.length
+      ? items.filter((item) => auth.mailboxIds!.includes(item.mailboxId))
+      : items,
+  });
 });
 
 router.on("PUT", "/v1/agents/:agentId/policy", async (request, env, _ctx, route) => {
   const auth = await requireAuth(request, env, ["agent:update"]);
   if (auth instanceof Response) {
     return auth;
+  }
+  const controlPlaneError = requireAgentControlPlaneAccess(auth);
+  if (controlPlaneError) {
+    return controlPlaneError;
+  }
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
   }
   const agentError = enforceAgentAccess(auth, route.params.agentId);
   if (agentError) {
@@ -2214,14 +2587,26 @@ router.on("GET", "/v1/agents/:agentId/tasks", async (request, env, _ctx, route) 
   if (auth instanceof Response) {
     return auth;
   }
+  const agent = await getAgent(env, route.params.agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  const tenantError = enforceTenantAccess(auth, agent.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
   const agentError = enforceAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
+  const authorizedMailboxIds = await resolveActiveClaimMailboxIdsForAgent(env, auth, route.params.agentId);
+  if (auth.mailboxIds?.length && !authorizedMailboxIds?.length) {
+    return json({ error: "Agent is not active for any mailbox in this token" }, { status: 403 });
+  }
 
   const url = new URL(request.url);
   const status = url.searchParams.get("status") as "queued" | "running" | "done" | "needs_review" | "failed" | null;
-  return json({ items: await listTasks(env, route.params.agentId, status ?? undefined) });
+  return json({ items: await listTasks(env, route.params.agentId, status ?? undefined, authorizedMailboxIds ?? auth.mailboxIds) });
 });
 
 router.on("GET", "/v1/messages/:messageId", async (request, env, _ctx, route) => {
@@ -2240,6 +2625,14 @@ router.on("GET", "/v1/messages/:messageId", async (request, env, _ctx, route) =>
   const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
   if (mailboxError) {
     return mailboxError;
+  }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, message.mailboxId);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, message.id);
+  if (visibilityError) {
+    return visibilityError;
   }
 
   return json(message);
@@ -2261,6 +2654,14 @@ router.on("GET", "/v1/messages/:messageId/content", async (request, env, _ctx, r
   const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
   if (mailboxError) {
     return mailboxError;
+  }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, message.mailboxId);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, message.id);
+  if (visibilityError) {
+    return visibilityError;
   }
 
   return json(await getMessageContent(env, route.params.messageId));
@@ -2288,10 +2689,14 @@ router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, ro
   if (mailboxError) {
     return mailboxError;
   }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, message.id);
+  if (visibilityError) {
+    return visibilityError;
+  }
 
-  const agentId = requireSelfAgent(auth);
-  if (agentId instanceof Response) {
-    return agentId;
+  const selfAgent = await resolveSelfAgentForMailbox(env, auth, message.mailboxId);
+  if (selfAgent instanceof Response) {
+    return selfAgent;
   }
 
   const body = await readJson<{
@@ -2304,7 +2709,8 @@ router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, ro
     return badRequest("text or html is required");
   }
 
-  const thread = message.threadId ? await getThread(env, message.threadId) : null;
+  const rawThread = message.threadId ? await getThread(env, message.threadId) : null;
+  const thread = rawThread ? await filterVisibleThreadForClaims(env, auth, rawThread) : null;
   const references = Array.from(new Set(
     (thread?.messages ?? [])
       .map((item) => item.internetMessageId)
@@ -2325,7 +2731,7 @@ router.on("POST", "/v1/messages/:messageId/reply", async (request, env, _ctx, ro
 
   const result = await createAndSendDraft(env, {
     tenantId: message.tenantId,
-    agentId,
+    agentId: selfAgent.id,
     mailboxId: message.mailboxId,
     threadId: message.threadId,
     sourceMessageId: message.id,
@@ -2383,6 +2789,14 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
   if (mailboxError) {
     return mailboxError;
   }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, existingMessage.mailboxId);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
+  const visibilityError = await enforceMailboxScopedMessageVisibility(env, auth, existingMessage.id);
+  if (visibilityError) {
+    return visibilityError;
+  }
 
   const idempotencyKey = body.idempotencyKey?.trim();
   if (body.idempotencyKey !== undefined && !idempotencyKey) {
@@ -2438,9 +2852,14 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       return json({ error: "A replay request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
+      const replayExecution = await resolveReplayExecution();
+      if (replayExecution instanceof Response) {
+        return replayExecution;
+      }
       return accepted(reservation.record.response ?? replayResponse);
     }
 
+    let replayQueued = false;
     try {
       const replayExecution = await resolveReplayExecution();
       if (replayExecution instanceof Response) {
@@ -2459,6 +2878,7 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           mailboxId: existingMessage.mailboxId,
           rawR2Key: replayExecution.replayRawR2Key,
         });
+        replayQueued = true;
       } else {
         await enqueueReplayTask(env, {
           tenantId: existingMessage.tenantId,
@@ -2468,6 +2888,7 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
           agentVersionId: replayExecution.replayAgentTarget!.agentVersionId,
           deploymentId: replayExecution.replayAgentTarget!.deploymentId,
         });
+        replayQueued = true;
       }
 
       await completeIdempotencyKey(env, {
@@ -2479,7 +2900,9 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       });
       return accepted(replayResponse);
     } catch (error) {
-      await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
+      if (!replayQueued) {
+        await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
+      }
       throw error;
     }
   }
@@ -2534,8 +2957,17 @@ router.on("GET", "/v1/threads/:threadId", async (request, env, _ctx, route) => {
   if (mailboxError) {
     return mailboxError;
   }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, thread.mailboxId);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
 
-  return json(thread);
+  const visibleThread = await filterVisibleThreadForClaims(env, auth, thread);
+  if (!visibleThread) {
+    return json({ error: "Thread not found" }, { status: 404 });
+  }
+
+  return json(visibleThread);
 });
 
 router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route) => {
@@ -2589,12 +3021,27 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
   if (mailbox.tenant_id !== body.tenantId) {
     return json({ error: "Mailbox does not belong to tenant" }, { status: 409 });
   }
+  if (body.from.trim().toLowerCase() !== mailbox.address.trim().toLowerCase()) {
+    return badRequest("from must match the mailbox address");
+  }
+  await validateDraftAgentBinding(env, {
+    tenantId: body.tenantId,
+    agentId: route.params.agentId,
+    mailboxId: body.mailboxId,
+  });
   await validateDraftReferences(env, {
     tenantId: body.tenantId,
     mailboxId: body.mailboxId,
     threadId: body.threadId,
     sourceMessageId: body.sourceMessageId,
   });
+  const referenceVisibilityError = await enforceMailboxScopedDraftReferenceVisibility(env, auth, {
+    threadId: body.threadId,
+    sourceMessageId: body.sourceMessageId,
+  });
+  if (referenceVisibilityError) {
+    return referenceVisibilityError;
+  }
   await validateDraftAttachments(env, {
     tenantId: body.tenantId,
     mailboxId: body.mailboxId,
@@ -2644,8 +3091,13 @@ router.on("GET", "/v1/drafts/:draftId", async (request, env, _ctx, route) => {
   if (mailboxError) {
     return mailboxError;
   }
+  await validateDraftAgentBinding(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    mailboxId: draft.mailboxId,
+  });
 
-  return json(draft);
+  return json(await sanitizeDraftReferencesForClaims(env, auth, draft));
 });
 
 router.on("DELETE", "/v1/drafts/:draftId", async (request, env, _ctx, route) => {
@@ -2669,6 +3121,11 @@ router.on("DELETE", "/v1/drafts/:draftId", async (request, env, _ctx, route) => 
   if (mailboxError) {
     return mailboxError;
   }
+  await validateDraftAgentBinding(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    mailboxId: draft.mailboxId,
+  });
 
   if (draft.status === "queued" || draft.status === "sent") {
     return json({ error: `Draft status ${draft.status} cannot be cancelled` }, { status: 409 });
@@ -2706,12 +3163,43 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   if (mailboxError) {
     return mailboxError;
   }
+  await validateDraftAgentBinding(env, {
+    tenantId: draft.tenantId,
+    agentId: draft.agentId,
+    mailboxId: draft.mailboxId,
+  });
 
   const body = await readOptionalJson<{ idempotencyKey?: string }>(request);
   const idempotencyKey = body?.idempotencyKey?.trim();
   if (body?.idempotencyKey !== undefined && !idempotencyKey) {
     return badRequest("idempotencyKey must be a non-empty string");
   }
+  const validateReplayableDraftSend = async () => {
+    await validateDraftReferences(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
+    });
+    const referenceVisibilityError = await enforceMailboxScopedDraftReferenceVisibility(env, auth, {
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
+    });
+    if (referenceVisibilityError) {
+      throw new RouteRequestError("Draft references are not visible for this token", 404);
+    }
+    await validateActiveDraftMailbox(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+    });
+    await validateSendAgentBinding(env, {
+      tenantId: draft.tenantId,
+      agentId: draft.agentId,
+      mailboxId: draft.mailboxId,
+    });
+    await validateDraftOutboundPolicy(env, draft);
+    await validateDraftOutboundCredits(env, draft);
+  };
 
   if (idempotencyKey) {
     const reservation = await reserveIdempotencyKey(env, {
@@ -2729,6 +3217,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
+      await validateReplayableDraftSend();
       return accepted(reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
         draftId: route.params.draftId,
         outboundJobId: reservation.record.resourceId,
@@ -2740,24 +3229,16 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
     }
 
+    let sendEnqueued = false;
     try {
-      await validateActiveDraftMailbox(env, {
-        tenantId: draft.tenantId,
-        mailboxId: draft.mailboxId,
-      });
-      await validateSendAgentBinding(env, {
-        tenantId: draft.tenantId,
-        agentId: draft.agentId,
-        mailboxId: draft.mailboxId,
-      });
-      await validateDraftOutboundPolicy(env, draft);
-      await validateDraftOutboundCredits(env, draft);
+      await validateReplayableDraftSend();
       const result = await enqueueDraftSend(env, route.params.draftId);
       const response = {
         draftId: route.params.draftId,
         outboundJobId: result.outboundJobId,
         status: result.status,
       };
+      sendEnqueued = true;
 
       await completeIdempotencyKey(env, {
         operation: "draft_send",
@@ -2768,7 +3249,9 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       });
       return accepted(response);
     } catch (error) {
-      await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+      if (!sendEnqueued) {
+        await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
+      }
       throw error;
     }
   }
@@ -2797,11 +3280,13 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
 });
 
 router.on("POST", "/v1/webhooks/ses", async (request, env) => {
-  if (env.WEBHOOK_SHARED_SECRET) {
-    const provided = request.headers.get("x-webhook-shared-secret");
-    if (provided !== env.WEBHOOK_SHARED_SECRET) {
-      return json({ error: "Unauthorized webhook" }, { status: 401 });
-    }
+  if (!env.WEBHOOK_SHARED_SECRET) {
+    return json({ error: "WEBHOOK_SHARED_SECRET is not configured" }, { status: 500 });
+  }
+
+  const provided = request.headers.get("x-webhook-shared-secret");
+  if (provided !== env.WEBHOOK_SHARED_SECRET) {
+    return json({ error: "Unauthorized webhook" }, { status: 401 });
   }
 
   const body = await readJson<unknown>(request);
@@ -2845,62 +3330,67 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     || normalized.eventType === "reject";
 
   if (isTerminalSesEvent && message) {
-    const status =
-      normalized.eventType === "delivery" ? "replied" :
-      normalized.eventType === "bounce" ? "failed" :
-      normalized.eventType === "complaint" ? "failed" :
-      "failed";
-    await updateMessageStatus(env, message.id, status);
-  } else if (isTerminalSesEvent && normalized.providerMessageId) {
-    const status =
-      normalized.eventType === "delivery" ? "replied" :
-      normalized.eventType === "bounce" ? "failed" :
-      normalized.eventType === "complaint" ? "failed" :
-      "failed";
-    await updateMessageStatusByProviderMessageId(env, normalized.providerMessageId, status);
-  }
-
-  if (isTerminalSesEvent && message) {
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;
       const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+      const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
+      const hasDeliveryEvidence = deliveryEvents.some((event) => event.eventType === "delivery");
       if (draft) {
         const recipients = await readDraftRecipients(env, outboundJob.draftR2Key);
-        await settleOutboundUsageDebit(env, {
-          tenantId: draft.tenantId,
-          messageId: outboundJob.messageId,
-          outboundJobId: outboundJob.id,
-          draftId: draft.id,
-          draftCreatedVia: draft.createdVia,
-          sourceMessageId: draft.sourceMessageId,
-          ...recipients,
-        });
+        if (normalized.eventType === "delivery") {
+          await settleOutboundUsageDebit(env, {
+            tenantId: draft.tenantId,
+            messageId: outboundJob.messageId,
+            outboundJobId: outboundJob.id,
+            draftId: draft.id,
+            draftCreatedVia: draft.createdVia,
+            sourceMessageId: draft.sourceMessageId,
+            ...recipients,
+          });
+        } else {
+          await releaseOutboundUsageReservation(env, {
+            tenantId: draft.tenantId,
+            outboundJobId: outboundJob.id,
+            sourceMessageId: draft.sourceMessageId,
+            draftCreatedVia: draft.createdVia,
+            ...recipients,
+          });
+        }
       }
-      if (normalized.eventType === "delivery") {
+      if (normalized.eventType === "delivery" || hasDeliveryEvidence) {
+        await updateMessageStatus(env, message.id, "replied");
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
           status: "sent",
           lastError: null,
           nextRetryAt: null,
         });
+        if (draft) {
+          await markDraftStatus(env, draft.id, "sent");
+        }
       } else {
+        await updateMessageStatus(env, message.id, "failed");
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
           status: "failed",
           lastError: deliveryError,
           nextRetryAt: null,
         });
-      }
-
-      if (draft) {
-        await markDraftStatus(env, draft.id, normalized.eventType === "delivery" ? "sent" : "failed");
+        if (draft) {
+          await markDraftStatus(env, draft.id, "failed");
+        }
       }
     }
+  } else if (isTerminalSesEvent && normalized.providerMessageId) {
+    const status = normalized.eventType === "delivery" ? "replied" : "failed";
+    await updateMessageStatusByProviderMessageId(env, normalized.providerMessageId, status);
   }
 
-  if ((normalized.eventType === "bounce" || normalized.eventType === "complaint") && normalized.recipient) {
-    await addSuppression(env, normalized.recipient, normalized.reason ?? normalized.eventType, "ses");
+  if (normalized.eventType === "bounce" || normalized.eventType === "complaint") {
+    for (const recipient of normalized.recipients) {
+      await addSuppression(env, recipient, normalized.reason ?? normalized.eventType, "ses");
+    }
   }
 
   return accepted({
@@ -2989,26 +3479,139 @@ async function hashRequesterIp(ip: string | null): Promise<string | null> {
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Promise<void> {
+function isMissingTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table/i.test(error.message);
+}
+
+async function isMailboxScopedOperatorTokenDeliveryMessage(env: Env, messageId: string): Promise<boolean> {
+  const outboundJob = await getOutboundJobByMessageId(env, messageId);
+  if (!outboundJob) {
+    return false;
+  }
+
+  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+  return draft?.createdVia === "system:token_reissue_operator_email";
+}
+
+async function enforceMailboxScopedMessageVisibility(
+  env: Env,
+  auth: AccessTokenClaims,
+  messageId: string,
+): Promise<Response | null> {
+  if (!auth.mailboxIds?.length) {
+    return null;
+  }
+
+  if (await isMailboxScopedOperatorTokenDeliveryMessage(env, messageId)) {
+    return json({ error: "Message not found" }, { status: 404 });
+  }
+
+  return null;
+}
+
+async function filterVisibleThreadForClaims(
+  env: Env,
+  auth: AccessTokenClaims,
+  thread: NonNullable<Awaited<ReturnType<typeof getThread>>>,
+): Promise<NonNullable<Awaited<ReturnType<typeof getThread>>> | null> {
+  if (!auth.mailboxIds?.length) {
+    return thread;
+  }
+
+  const messages = [];
+  for (const message of thread.messages) {
+    if (!(await isMailboxScopedOperatorTokenDeliveryMessage(env, message.id))) {
+      messages.push(message);
+    }
+  }
+
+  if (messages.length === 0) {
+    return null;
+  }
+
+  return {
+    ...thread,
+    messages,
+  };
+}
+
+async function enforceMailboxScopedDraftReferenceVisibility(env: Env, auth: AccessTokenClaims, input: {
+  threadId?: string;
+  sourceMessageId?: string;
+}): Promise<Response | null> {
+  if (input.sourceMessageId) {
+    const messageError = await enforceMailboxScopedMessageVisibility(env, auth, input.sourceMessageId);
+    if (messageError) {
+      return messageError;
+    }
+  }
+
+  if (input.threadId) {
+    const thread = await getThread(env, input.threadId);
+    if (thread && !(await filterVisibleThreadForClaims(env, auth, thread))) {
+      return json({ error: "Thread not found" }, { status: 404 });
+    }
+  }
+
+  return null;
+}
+
+async function sanitizeDraftReferencesForClaims(
+  env: Env,
+  auth: AccessTokenClaims,
+  draft: NonNullable<Awaited<ReturnType<typeof getDraft>>>,
+): Promise<NonNullable<Awaited<ReturnType<typeof getDraft>>>> {
+  if (!auth.mailboxIds?.length) {
+    return draft;
+  }
+
+  let sourceMessageId = draft.sourceMessageId;
+  if (sourceMessageId) {
+    const messageError = await enforceMailboxScopedMessageVisibility(env, auth, sourceMessageId);
+    if (messageError) {
+      sourceMessageId = undefined;
+    }
+  }
+
+  let threadId = draft.threadId;
+  if (threadId) {
+    const thread = await getThread(env, threadId);
+    if (thread && !(await filterVisibleThreadForClaims(env, auth, thread))) {
+      threadId = undefined;
+    }
+  }
+
+  if (sourceMessageId === draft.sourceMessageId && threadId === draft.threadId) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    sourceMessageId,
+    threadId,
+  };
+}
+
+async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Promise<boolean> {
   const mailbox = await getMailboxByAddress(env, mailboxAddress);
   if (!mailbox || mailbox.status !== "active") {
-    return;
+    return false;
   }
 
   const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
   if (!executionTarget?.agentId) {
-    return;
+    return false;
   }
 
   const agent = await getAgent(env, executionTarget.agentId);
   if (!agent?.configR2Key) {
-    return;
+    return false;
   }
 
   const config = await readAgentConfig(env, agent.configR2Key);
   const operatorEmail = typeof config?.operatorEmail === "string" ? config.operatorEmail.trim().toLowerCase() : "";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorEmail)) {
-    return;
+    return false;
   }
 
   const productName = typeof config?.productName === "string" && config.productName.trim()
@@ -3019,6 +3622,13 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
     tenantId: mailbox.tenant_id,
     agentId: executionTarget.agentId,
     mailboxId: mailbox.id,
+  });
+
+  await ensureSystemSendAllowed(env, {
+    tenantId: mailbox.tenant_id,
+    agentId: executionTarget.agentId,
+    to: [operatorEmail],
+    createdVia: "system:token_reissue_operator_email",
   });
 
   const draft = await createDraft(env, {
@@ -3051,6 +3661,7 @@ async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Prom
   });
 
   await enqueueDraftSend(env, draft.id);
+  return true;
 }
 
 function resolveRotateMailboxId(claims: AccessTokenClaims, requestedMailboxId: string | undefined): string | null {
@@ -3065,6 +3676,73 @@ function requireSelfAgent(claims: AccessTokenClaims): string | Response {
   }
 
   return claims.agentId;
+}
+
+async function resolveSelfAgent(env: Env, claims: AccessTokenClaims) {
+  const agentId = requireSelfAgent(claims);
+  if (agentId instanceof Response) {
+    return agentId;
+  }
+
+  const agent = await getAgent(env, agentId);
+  if (!agent) {
+    return json({ error: "Agent not found" }, { status: 404 });
+  }
+  if (agent.tenantId !== claims.tenantId) {
+    return json({ error: "Tenant access denied" }, { status: 403 });
+  }
+
+  return agent;
+}
+
+async function resolveSelfAgentForMailbox(env: Env, claims: AccessTokenClaims, mailboxId: string) {
+  const agent = await resolveSelfAgent(env, claims);
+  if (agent instanceof Response) {
+    return agent;
+  }
+
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: agent.id,
+    mailboxId,
+  });
+  if (hasBinding) {
+    return agent;
+  }
+
+  const hasDeployment = await hasActiveMailboxDeployment(env, {
+    agentId: agent.id,
+    mailboxId,
+  });
+  if (!hasDeployment) {
+    return json({ error: "Agent is not active for mailbox" }, { status: 403 });
+  }
+
+  return agent;
+}
+
+async function requireCurrentMailboxAccessForClaims(env: Env, claims: AccessTokenClaims, mailboxId: string): Promise<Response | null> {
+  if (!claims.agentId || !claims.mailboxIds?.length) {
+    return null;
+  }
+
+  const selfAgent = await resolveSelfAgentForMailbox(env, claims, mailboxId);
+  return selfAgent instanceof Response ? selfAgent : null;
+}
+
+function requireTenantScopedAccess(claims: AccessTokenClaims): Response | null {
+  if (claims.agentId || claims.mailboxIds?.length) {
+    return json({ error: "Only tenant-scoped tokens can access tenant-level resources" }, { status: 403 });
+  }
+
+  return null;
+}
+
+function requireAgentControlPlaneAccess(claims: AccessTokenClaims): Response | null {
+  if (claims.mailboxIds?.length) {
+    return json({ error: "Mailbox-scoped tokens cannot access agent control-plane resources" }, { status: 403 });
+  }
+
+  return null;
 }
 
 async function resolveSelfMailbox(env: Env, claims: AccessTokenClaims) {
@@ -3196,6 +3874,7 @@ async function createAndSendDraft(env: Env, input: {
     throw new RouteRequestError("A send request with this idempotency key is already in progress", 409);
   }
   if (reservation.status === "completed") {
+    await validateCreateAndSendInput();
     if (reservation.record.response) {
       return reservation.record.response;
     }
@@ -3203,6 +3882,7 @@ async function createAndSendDraft(env: Env, input: {
     return await restoreDraftSendReplay(env, reservation.record.resourceId);
   }
 
+  let sideEffectCommitted = false;
   try {
     await validateCreateAndSendInput();
     const draft = await createDraft(env, {
@@ -3214,6 +3894,7 @@ async function createAndSendDraft(env: Env, input: {
       createdVia: input.createdVia,
       payload: input.payload,
     });
+    sideEffectCommitted = true;
     const sendResult = await enqueueDraftSend(env, draft.id);
     const response = {
       draft,
@@ -3229,7 +3910,9 @@ async function createAndSendDraft(env: Env, input: {
     });
     return response;
   } catch (error) {
-    await releaseIdempotencyKey(env, "draft_send", input.tenantId, idempotencyKey);
+    if (!sideEffectCommitted) {
+      await releaseIdempotencyKey(env, "draft_send", input.tenantId, idempotencyKey);
+    }
     throw error;
   }
 }
@@ -3243,14 +3926,15 @@ async function rotateAccessToken(env: Env, claims: AccessTokenClaims): Promise<{
     return { accessTokenScopes: claims.scopes };
   }
 
+  const rotatedClaims = await validateRotatedAccessClaims(env, claims);
   const ttlSeconds = parseRotateTtlSeconds(env);
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const accessToken = await mintAccessToken(env.API_SIGNING_SECRET, {
     sub: claims.sub,
-    tenantId: claims.tenantId,
-    agentId: claims.agentId,
+    tenantId: rotatedClaims.tenantId,
+    agentId: rotatedClaims.agentId,
     scopes: claims.scopes,
-    mailboxIds: claims.mailboxIds,
+    mailboxIds: rotatedClaims.mailboxIds,
     exp,
   });
 
@@ -3258,6 +3942,41 @@ async function rotateAccessToken(env: Env, claims: AccessTokenClaims): Promise<{
     accessToken,
     accessTokenExpiresAt: new Date(exp * 1000).toISOString(),
     accessTokenScopes: claims.scopes,
+  };
+}
+
+async function validateRotatedAccessClaims(env: Env, claims: AccessTokenClaims): Promise<Pick<AccessTokenClaims, "tenantId" | "agentId" | "mailboxIds">> {
+  if (claims.agentId) {
+    const agent = await getAgent(env, claims.agentId);
+    if (!agent) {
+      throw new RouteRequestError("Bound agent not found", 409);
+    }
+    if (agent.tenantId !== claims.tenantId) {
+      throw new RouteRequestError("Bound agent does not belong to tenant", 409);
+    }
+  }
+
+  if (claims.mailboxIds?.length) {
+    for (const mailboxId of claims.mailboxIds) {
+      const mailbox = await getMailboxById(env, mailboxId);
+      if (!mailbox) {
+        throw new RouteRequestError("Bound mailbox not found", 409);
+      }
+      if (mailbox.tenant_id !== claims.tenantId) {
+        throw new RouteRequestError("Bound mailbox does not belong to tenant", 409);
+      }
+    }
+  }
+  await validateTokenAgentMailboxScopes(env, {
+    tenantId: claims.tenantId,
+    agentId: claims.agentId,
+    mailboxIds: claims.mailboxIds,
+  });
+
+  return {
+    tenantId: claims.tenantId,
+    agentId: claims.agentId,
+    mailboxIds: claims.mailboxIds,
   };
 }
 
@@ -3298,6 +4017,13 @@ async function deliverRotatedTokenToSelfMailbox(
   const agentName = agent?.name ?? "Mailagents Agent";
 
   try {
+    await ensureSystemSendAllowed(env, {
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
+      to: [mailbox.address],
+      createdVia: "system:token_reissue_self_mailbox",
+    });
+
     const draft = await createDraft(env, {
       tenantId: mailbox.tenant_id,
       agentId: executionTarget.agentId,
@@ -3498,7 +4224,11 @@ async function confirmPaymentReceiptWithFacilitator(
   }
 
   if (workingReceipt.status === "pending") {
-    const verifyResult = await verifyX402Payment(env, { paymentPayload, paymentRequirements });
+    const verifyResult = await verifyX402Payment(env, {
+      paymentPayload,
+      paymentRequirements,
+      idempotencyKey: workingReceipt.id,
+    });
     verifyResponse = verifyResult.response;
     if (!verifyResult.ok) {
       const failedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
@@ -3541,9 +4271,23 @@ async function confirmPaymentReceiptWithFacilitator(
     });
   } else {
     verifyResponse = parseStoredX402VerificationResponse(parsedMetadata?.facilitatorVerify);
+    const storedSettleResponse = parseStoredX402SettlementResponse(parsedMetadata?.facilitatorSettle);
+    if (storedSettleResponse?.settled) {
+      return {
+        receipt: workingReceipt,
+        paymentReference: workingReceipt.paymentReference,
+        settlementReference: storedSettleResponse.settlementReference ?? workingReceipt.settlementReference ?? requestedSettlementReference,
+        verifyResponse,
+        settleResponse: storedSettleResponse,
+      };
+    }
   }
 
-  const settleResult = await settleX402Payment(env, { paymentPayload, paymentRequirements });
+  const settleResult = await settleX402Payment(env, {
+    paymentPayload,
+    paymentRequirements,
+    idempotencyKey: workingReceipt.id,
+  });
   if (!settleResult.ok) {
     const verifiedReceipt = await updateTypedTenantPaymentReceiptStatus(env, {
       tenantId: workingReceipt.tenantId,
@@ -3622,9 +4366,13 @@ async function finalizePaymentReceiptSettlement(
     if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
       throw new RouteRequestError("Payment receipt metadata is missing targetPricingTier", 409);
     }
-    const includedCredits = parsedMetadata.includedCredits > 0
-      ? parsedMetadata.includedCredits
-      : getX402Defaults(env).upgradeIncludedCredits;
+    if (parsedMetadata.includedCredits <= 0) {
+      throw new RouteRequestError(
+        "Payment receipt metadata is missing includedCredits for upgrade settlement",
+        409,
+      );
+    }
+    const includedCredits = parsedMetadata.includedCredits;
     const normalizedUpgradeMetadata = {
       ...parsedMetadata,
       includedCredits,
@@ -3636,8 +4384,39 @@ async function finalizePaymentReceiptSettlement(
     const targetPricingTier = parsedMetadata.targetPricingTier;
     const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
 
+    const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
+    if (finalizedReceipt.status === "settled" && existingLedgerEntry) {
+      const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
+      const sendPolicy = await ensureTenantSendPolicy(env, finalizedReceipt.tenantId);
+      return {
+        receipt: finalizedReceipt,
+        ledgerEntry: existingLedgerEntry,
+        includedCredits,
+        account,
+        sendPolicy,
+        verificationStatus: "settled",
+        message: "Payment receipt was already settled.",
+      };
+    }
+
+    const ledgerEntry = includedCredits > 0
+      ? existingLedgerEntry ?? await appendUpgradeCreditGrantLedgerEntry(env, {
+        tenantId: finalizedReceipt.tenantId,
+        creditsDelta: includedCredits,
+        reason: facilitatorOutcome ? "facilitator_upgrade_credit_grant" : "manual_upgrade_credit_grant",
+        paymentReceiptId: finalizedReceipt.id,
+        referenceId: requestedSettlementReference ?? finalizedReceipt.settlementReference,
+        metadata: buildUpgradeCreditGrantLedgerMetadata({
+          receiptMetadata: normalizedUpgradeMetadata,
+          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
+          facilitatorVerify: facilitatorOutcome?.verifyResponse,
+          facilitatorSettle: facilitatorOutcome?.settleResponse,
+        }),
+      })
+      : undefined;
+
     const existingAccount = await ensureTenantBillingAccount(env, finalizedReceipt.tenantId);
-    await updateTenantBillingAccountProfile(env, {
+    let account = await updateTenantBillingAccountProfile(env, {
       tenantId: finalizedReceipt.tenantId,
       status: existingAccount.status === "trial" ? "active" : undefined,
       pricingTier: approvedPricingTier,
@@ -3659,25 +4438,9 @@ async function finalizePaymentReceiptSettlement(
       internalDomainAllowlist: sendPolicy.internalDomainAllowlist,
     });
 
-    const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
-    const ledgerEntry = includedCredits > 0
-      ? existingLedgerEntry ?? await appendUpgradeCreditGrantLedgerEntry(env, {
-        tenantId: finalizedReceipt.tenantId,
-        creditsDelta: includedCredits,
-        reason: facilitatorOutcome ? "facilitator_upgrade_credit_grant" : "manual_upgrade_credit_grant",
-        paymentReceiptId: finalizedReceipt.id,
-        referenceId: requestedSettlementReference ?? finalizedReceipt.settlementReference,
-        metadata: buildUpgradeCreditGrantLedgerMetadata({
-          receiptMetadata: normalizedUpgradeMetadata,
-          confirmationMode: facilitatorOutcome ? "facilitator" : "manual_admin",
-          facilitatorVerify: facilitatorOutcome?.verifyResponse,
-          facilitatorSettle: facilitatorOutcome?.settleResponse,
-        }),
-      })
-      : undefined;
-    const account = ledgerEntry
-      ? await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId)
-      : await ensureTenantBillingAccount(env, finalizedReceipt.tenantId);
+    if (ledgerEntry) {
+      account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
+    }
 
     const metadataNeedsRefresh = finalizedReceipt.status !== "settled"
       || parsedMetadata.includedCredits !== includedCredits

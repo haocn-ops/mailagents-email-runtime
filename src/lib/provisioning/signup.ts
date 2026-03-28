@@ -25,6 +25,7 @@ import {
 import { createDraft, enqueueDraftSend } from "../../repositories/mail";
 import { upsertTenantSendPolicy } from "../../repositories/tenant-policies";
 import type { Env } from "../../types";
+import { OutboundSendValidationError, ensureSystemSendAllowed } from "../system-sends";
 import { issueSelfServeAccessToken } from "./default-access";
 import { buildDefaultSelfServeAgentPolicy } from "../self-serve-agent-policy";
 import { buildWelcomeHtml, buildWelcomeText } from "./welcome";
@@ -80,6 +81,8 @@ export const RESERVED_SELF_SERVE_ALIASES = new Set([
   "www",
 ]);
 
+const MAILBOX_ALIAS_UNAVAILABLE_MESSAGE = "The requested mailbox alias is unavailable. Please choose a different alias.";
+
 export async function parseSelfServeSignup(request: Request): Promise<
   | { ok: true; values: SignupFormValues }
   | { ok: false; values: Partial<SignupFormValues>; error: string }
@@ -125,13 +128,13 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
   const alias = normalizeAlias(values.mailboxAlias);
 
   if (RESERVED_SELF_SERVE_ALIASES.has(alias)) {
-    throw new SignupError(`The mailbox alias "${alias}" is reserved. Please choose a different alias.`, 409);
+    throw new SignupError(MAILBOX_ALIAS_UNAVAILABLE_MESSAGE, 409);
   }
 
   const address = `${alias}@${domain}`;
   const existing = await getMailboxByAddress(env, address);
   if (existing) {
-    throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
+    throw new SignupError(MAILBOX_ALIAS_UNAVAILABLE_MESSAGE, 409);
   }
 
   const routing = await ensureSignupRouting(env);
@@ -159,7 +162,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       });
     } catch (error) {
       if (error instanceof MailboxConflictError) {
-        throw new SignupError(`The mailbox ${address} is already taken. Please choose a different alias.`, 409);
+        throw new SignupError(MAILBOX_ALIAS_UNAVAILABLE_MESSAGE, 409);
       }
       throw error;
     }
@@ -242,12 +245,20 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       agentId: agent.id,
       mailboxId: mailbox.id,
     });
+    const inlineSignupTokenEnabled = shouldIssueInlineSignupToken(env);
 
     let outboundJobId: string | undefined;
     let welcomeStatus: SignupSuccessResult["welcomeStatus"] = "queued";
     let welcomeError: string | undefined;
 
     try {
+      await ensureSystemSendAllowed(env, {
+        tenantId,
+        agentId: agent.id,
+        to: [values.operatorEmail],
+        createdVia: "system:signup_welcome",
+      });
+
       const draft = await createDraft(env, {
         tenantId,
         agentId: agent.id,
@@ -281,7 +292,11 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       outboundJobId = sendResult.outboundJobId;
     } catch (error) {
       welcomeStatus = "failed";
-      welcomeError = error instanceof Error ? error.message : "Unable to queue onboarding email";
+      welcomeError = error instanceof OutboundSendValidationError
+        ? error.message
+        : error instanceof Error
+        ? error.message
+        : "Unable to queue onboarding email";
     }
 
     return {
@@ -293,8 +308,8 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       agentId: agent.id,
       agentVersionId: version.id,
       deploymentId: deployment.id,
-      accessToken: access.accessToken,
-      accessTokenExpiresAt: access.accessTokenExpiresAt,
+      accessToken: inlineSignupTokenEnabled ? access.accessToken : undefined,
+      accessTokenExpiresAt: inlineSignupTokenEnabled ? access.accessTokenExpiresAt : undefined,
       accessTokenScopes: access.accessTokenScopes,
       outboundJobId,
       routingStatus: routing.status,
@@ -323,6 +338,16 @@ function shouldRequireConfiguredSignupRouting(env: Env): boolean {
   }
 
   return !domain.endsWith(".test") && !domain.endsWith(".example") && !domain.endsWith(".example.com");
+}
+
+function shouldIssueInlineSignupToken(env: Env): boolean {
+  const explicit = env.SELF_SERVE_PUBLIC_SIGNUP_INLINE_TOKEN_ENABLED?.trim().toLowerCase();
+  return explicit ? ["1", "true", "yes", "on"].includes(explicit) : false;
+}
+
+function shouldAutoconfigureSignupRouting(env: Env): boolean {
+  const explicit = env.SELF_SERVE_PUBLIC_SIGNUP_ROUTING_AUTOCONFIG_ENABLED?.trim().toLowerCase();
+  return explicit ? ["1", "true", "yes", "on"].includes(explicit) : false;
 }
 
 async function cleanupPartialSelfServeSignup(env: Env, tenantId: string): Promise<void> {
@@ -431,6 +456,13 @@ async function ensureSignupRouting(env: Env): Promise<{
   status: SignupSuccessResult["routingStatus"];
   error?: string;
 }> {
+  if (!shouldAutoconfigureSignupRouting(env)) {
+    return {
+      status: "skipped",
+      error: "Self-serve signup routing autoconfiguration is disabled for public requests in this environment.",
+    };
+  }
+
   if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ZONE_ID || !env.CLOUDFLARE_EMAIL_WORKER) {
     return {
       status: "skipped",

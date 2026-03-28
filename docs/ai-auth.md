@@ -15,15 +15,15 @@ For AI agents, bearer tokens are the default integration method.
 
 ## Signup API Tokens
 
-The signup API at `POST /public/signup` can issue a default bearer token for
-the newly created mailbox when `API_SIGNING_SECRET` is configured.
+The signup API at `POST /public/signup` issues a default bearer token for the
+newly created mailbox when `API_SIGNING_SECRET` is configured.
 
 The default signup API token is:
 
 - mailbox-scoped to the new mailbox
 - agent-scoped to the default agent created during signup
-- returned in the signup API response
-- included in the welcome email
+- delivered through the configured operator channel
+- returned in the signup API response only when `SELF_SERVE_PUBLIC_SIGNUP_INLINE_TOKEN_ENABLED` is explicitly enabled
 
 Default scopes:
 

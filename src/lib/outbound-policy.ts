@@ -82,15 +82,16 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   }
 
   const tenantPolicy = await ensureTenantSendPolicy(env, input.tenantId);
-  const account = externalDomains.length > 0
-    ? await ensureTenantBillingAccount(env, input.tenantId)
-    : null;
-  const externalSendingUnlockedByPolicy =
+  const account = await ensureTenantBillingAccount(env, input.tenantId);
+  const sendingUnlockedByPolicy =
     tenantPolicy.externalSendEnabled && tenantPolicy.outboundStatus === "external_enabled";
-  const externalSendingUnlockedByCredits = (account?.availableCredits ?? 0) > 0;
+  const sendingUnlockedByCredits = account.availableCredits > 0;
+  const externalSendingUnlockedByPolicy = sendingUnlockedByPolicy;
+  const externalSendingUnlockedByCredits = sendingUnlockedByCredits;
   const externalSendingUnlocked =
     externalDomains.length > 0 &&
     (externalSendingUnlockedByPolicy || externalSendingUnlockedByCredits);
+  const quotaBypassUnlocked = sendingUnlockedByPolicy || sendingUnlockedByCredits;
 
   if (tenantPolicy.outboundStatus === "suspended") {
     return {
@@ -116,7 +117,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   if (agentPolicy?.allowedRecipientDomains.length) {
     const bypassDefaultInternalOnlyAllowlist =
       externalDomains.length > 0 &&
-      externalSendingUnlockedByCredits &&
+      sendingUnlockedByCredits &&
       isDefaultSelfServeInternalOnlyAgentPolicy(agentPolicy, tenantPolicy.internalDomainAllowlist);
 
     if (!bypassDefaultInternalOnlyAllowlist) {
@@ -135,7 +136,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   }
 
   if (
-    !externalSendingUnlocked &&
+    !quotaBypassUnlocked &&
     (tenantPolicy.effectiveDailySendLimit !== null || tenantPolicy.effectiveHourlySendLimit !== null)
   ) {
     const usage = await getTenantOutboundUsageWindowCounts(env, {

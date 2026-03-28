@@ -14,8 +14,6 @@ export interface OutboundCreditRequirement {
 
 const DEFAULT_OUTBOUND_CREDITS_PER_SEND = 1;
 const CREDIT_EXEMPT_CREATED_VIA = new Set([
-  "system:signup_welcome",
-  "system:token_reissue_operator_email",
   "system:token_reissue_self_mailbox",
 ]);
 

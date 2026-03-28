@@ -10,6 +10,11 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
+import {
+  DraftSendValidationError,
+  ensureDraftSendAllowed,
+  reserveDraftSendCredits,
+} from "../lib/draft-send-guards";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import { allRows, firstRow } from "../lib/db";
@@ -56,6 +61,8 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
   <path d="M14 45V19h8l10 13 10-13h8v26h-7V29L32 41 21 29v16z" fill="#f6f0e7" />
 </svg>`;
 const SITE_ADMIN_SESSION_COOKIE = "mailagents_admin_session";
+const SITE_ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const textEncoder = new TextEncoder();
 
 class SiteRequestError extends Error {
   readonly status: number;
@@ -1166,7 +1173,7 @@ site.on("GET", "/admin", async (_request, env, _ctx, route) => {
   }
 
   const requestUrl = new URL(_request.url);
-  const initiallyAuthenticated = hasValidSiteAdminSession(_request, env);
+  const initiallyAuthenticated = await hasValidSiteAdminSession(_request, env);
   const errorCode = requestUrl.searchParams.get("error");
   const authError = errorCode === "invalid_admin_secret"
     ? "Invalid admin secret."
@@ -1199,14 +1206,14 @@ site.on("GET", "/admin", async (_request, env, _ctx, route) => {
     },
   });
 });
-site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
+site.on("HEAD", "/admin", async (_request, env, _ctx, route) => {
   const routeError = requireAdminRoutesEnabled(_request, env);
   if (routeError) {
     return routeError;
   }
 
   return html(layout("admin", "Admin Dashboard", renderAdmin(route.url, {
-    initiallyAuthenticated: hasValidSiteAdminSession(_request, env),
+    initiallyAuthenticated: await hasValidSiteAdminSession(_request, env),
   })), {
     headers: {
       "cache-control": "private, no-store, max-age=0",
@@ -1237,7 +1244,8 @@ site.on("POST", "/admin/login", async (request, env) => {
   }
 
   const response = redirect("/admin", 303);
-  response.headers.append("set-cookie", buildSiteAdminSessionCookie(new URL(request.url), env.ADMIN_API_SECRET));
+  response.headers.append("set-cookie", await buildSiteAdminSessionCookie(new URL(request.url), env.ADMIN_API_SECRET));
+  response.headers.set("cache-control", "private, no-store, max-age=0");
   return response;
 });
 site.on("POST", "/admin/logout", (request, env) => {
@@ -1248,10 +1256,11 @@ site.on("POST", "/admin/logout", (request, env) => {
 
   const response = redirect("/admin", 303);
   response.headers.append("set-cookie", buildExpiredSiteAdminSessionCookie(new URL(request.url)));
+  response.headers.set("cache-control", "private, no-store, max-age=0");
   return response;
 });
 site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1259,7 +1268,7 @@ site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
   return json(buildRuntimeMetadata(request, env));
 });
 site.on("GET", "/admin/api/session/verify", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1270,7 +1279,7 @@ site.on("GET", "/admin/api/session/verify", async (request, env) => {
   });
 });
 site.on("GET", "/admin/api/overview-stats", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1283,7 +1292,7 @@ site.on("GET", "/admin/api/overview-stats", async (request, env) => {
 });
 
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1340,7 +1349,7 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1379,7 +1388,7 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1426,7 +1435,7 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
   }
 });
 site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1454,7 +1463,7 @@ site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx
   }
 });
 site.on("GET", "/admin/api/mailboxes", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1466,7 +1475,7 @@ site.on("GET", "/admin/api/mailboxes", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1491,7 +1500,7 @@ site.on("GET", "/admin/api/messages", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1507,19 +1516,23 @@ site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, rout
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/content", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     return json(await getMessageContent(env, route.params.messageId));
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load message content" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1535,19 +1548,23 @@ site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route)
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/events", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     return json({ items: await listDeliveryEventsByMessageId(env, route.params.messageId) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load delivery events" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1568,12 +1585,16 @@ site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/outbound-job", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     const job = await getOutboundJobByMessageId(env, route.params.messageId);
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
@@ -1584,7 +1605,7 @@ site.on("GET", "/admin/api/messages/:messageId/outbound-job", async (request, en
   }
 });
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1594,6 +1615,25 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
+    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    if (!draft) {
+      return json({ error: "Outbound draft not found" }, { status: 409 });
+    }
+    await ensureDraftSendAllowed(env, {
+      tenantId: draft.tenantId,
+      agentId: draft.agentId,
+      mailboxId: draft.mailboxId,
+      draftR2Key: draft.draftR2Key,
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
+    });
+    await reserveDraftSendCredits(env, {
+      tenantId: draft.tenantId,
+      draftR2Key: draft.draftR2Key,
+      sourceMessageId: draft.sourceMessageId,
+      createdVia: draft.createdVia,
+    });
+
     const message = await getMessage(env, job.messageId);
     const previousMessageStatus = message?.status;
     const deliveryEvents = message ? await listDeliveryEventsByMessageId(env, message.id) : [];
@@ -1617,7 +1657,6 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       nextRetryAt: null,
     });
     await updateMessageStatus(env, job.messageId, "tasked");
-    const draft = await getDraftByR2Key(env, job.draftR2Key);
     const previousDraftStatus = draft?.status;
     if (draft) {
       await markDraftStatus(env, draft.id, "queued");
@@ -1638,16 +1677,31 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       if (draft && previousDraftStatus) {
         await markDraftStatus(env, draft.id, previousDraftStatus).catch(() => undefined);
       }
+      try {
+        const recipients = await readDraftRecipientsForAdmin(env, job.draftR2Key);
+        await releaseOutboundUsageReservation(env, {
+          tenantId: draft.tenantId,
+          outboundJobId: job.id,
+          sourceMessageId: draft.sourceMessageId,
+          draftCreatedVia: draft.createdVia,
+          ...recipients,
+        });
+      } catch {
+        // Best-effort rollback for credit reservations after queue re-enqueue failure.
+      }
       throw error;
     }
 
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
   } catch (error) {
+    if (error instanceof DraftSendValidationError) {
+      return json({ error: error.message }, { status: error.status });
+    }
     return json({ error: error instanceof Error ? error.message : "Unable to retry outbound job" }, { status: 502 });
   }
 });
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1723,7 +1777,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", asy
   }
 });
 site.on("GET", "/admin/api/drafts", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1746,7 +1800,7 @@ site.on("GET", "/admin/api/drafts", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1762,7 +1816,7 @@ site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) =
   }
 });
 site.on("POST", "/admin/api/send", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1801,6 +1855,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   }
   const mailboxId = body.mailboxId;
   const tenantId = body.tenantId;
+  let sideEffectCommitted = false;
 
   try {
     const validateAdminSendInput = async () => {
@@ -1892,6 +1947,10 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         return json({ error: "An admin send request with this idempotency key is already in progress" }, { status: 409 });
       }
       if (reservation.status === "completed") {
+        const validationError = await validateAdminSendInput();
+        if (validationError) {
+          return validationError;
+        }
         if (reservation.record.response) {
           return json(reservation.record.response);
         }
@@ -1926,6 +1985,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         attachments: [],
       },
     });
+    sideEffectCommitted = true;
     const result = await enqueueDraftSend(env, draft.id);
     const response = {
       ok: true,
@@ -1946,7 +2006,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 
     return json(response);
   } catch (error) {
-    if (idempotencyKey) {
+    if (idempotencyKey && !sideEffectCommitted) {
       await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
     }
     if (error instanceof SiteRequestError) {
@@ -1957,7 +2017,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 });
 
 site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1976,7 +2036,7 @@ site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, en
 });
 
 site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -2002,13 +2062,14 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
 
 export async function handleSiteRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   try {
-    return await site.handle(request, env, ctx);
+    const response = await site.handle(request, env, ctx);
+    return response ? applyAdminApiResponseHeaders(request, response) : null;
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
-      return badRequest(error.message);
+      return applyAdminApiResponseHeaders(request, badRequest(error.message));
     }
     if (error instanceof SiteRequestError) {
-      return json({ error: error.message }, { status: error.status });
+      return applyAdminApiResponseHeaders(request, json({ error: error.message }, { status: error.status }));
     }
 
     throw error;
@@ -2038,26 +2099,111 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function hasValidSiteAdminSession(request: Request, env: Env): boolean {
-  if (!env.ADMIN_API_SECRET) {
+interface SiteAdminSessionValidation {
+  viaHeader: boolean;
+}
+
+function toBase64Url(input: Uint8Array): string {
+  let binary = "";
+  for (const byte of input) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(input: string): Uint8Array {
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(input.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function importSiteAdminSessionKey(secret: string): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+async function signSiteAdminSession(secret: string, payload: string): Promise<string> {
+  const key = await importSiteAdminSessionKey(secret);
+  const signature = await crypto.subtle.sign("HMAC", key, textEncoder.encode(payload));
+  return toBase64Url(new Uint8Array(signature));
+}
+
+async function verifySiteAdminSession(secret: string, payload: string, signature: string): Promise<boolean> {
+  try {
+    const key = await importSiteAdminSessionKey(secret);
+    return await crypto.subtle.verify("HMAC", key, fromBase64Url(signature), textEncoder.encode(payload));
+  } catch {
     return false;
+  }
+}
+
+async function readValidSiteAdminSession(request: Request, env: Env): Promise<SiteAdminSessionValidation | null> {
+  if (!env.ADMIN_API_SECRET) {
+    return null;
   }
 
   const headerSecret = request.headers.get("x-admin-secret");
   if (headerSecret === env.ADMIN_API_SECRET) {
-    return true;
+    return { viaHeader: true };
   }
 
-  return readCookie(request, SITE_ADMIN_SESSION_COOKIE) === env.ADMIN_API_SECRET;
+  const token = readCookie(request, SITE_ADMIN_SESSION_COOKIE);
+  if (!token) {
+    return null;
+  }
+
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) {
+    return null;
+  }
+
+  const valid = await verifySiteAdminSession(env.ADMIN_API_SECRET, payload, signature);
+  if (!valid) {
+    return null;
+  }
+
+  try {
+    const claims = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as {
+      scope?: string;
+      exp?: number;
+    };
+    if (claims.scope !== "site-admin" || typeof claims.exp !== "number") {
+      return null;
+    }
+    if (claims.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    return { viaHeader: false };
+  } catch {
+    return null;
+  }
 }
 
-function buildSiteAdminSessionCookie(url: URL, secret: string): string {
+async function hasValidSiteAdminSession(request: Request, env: Env): Promise<boolean> {
+  return Boolean(await readValidSiteAdminSession(request, env));
+}
+
+async function buildSiteAdminSessionCookie(url: URL, secret: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = toBase64Url(textEncoder.encode(JSON.stringify({
+    scope: "site-admin",
+    iat: now,
+    exp: now + SITE_ADMIN_SESSION_TTL_SECONDS,
+  })));
+  const signature = await signSiteAdminSession(secret, payload);
+  const token = `${payload}.${signature}`;
   const parts = [
-    `${SITE_ADMIN_SESSION_COOKIE}=${encodeURIComponent(secret)}`,
+    `${SITE_ADMIN_SESSION_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=604800",
+    `Max-Age=${SITE_ADMIN_SESSION_TTL_SECONDS}`,
   ];
 
   if (url.protocol === "https:") {
@@ -2084,7 +2230,20 @@ function buildExpiredSiteAdminSessionCookie(url: URL): string {
   return parts.join("; ");
 }
 
-function requireSiteAdminAccess(request: Request, env: Env): Response | null {
+function isSafeRequestMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+function hasSameOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    return false;
+  }
+
+  return origin === new URL(request.url).origin;
+}
+
+async function requireSiteAdminAccess(request: Request, env: Env): Promise<Response | null> {
   const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
@@ -2094,11 +2253,25 @@ function requireSiteAdminAccess(request: Request, env: Env): Response | null {
     return json({ error: "ADMIN_API_SECRET is not configured" }, { status: 500 });
   }
 
-  if (!hasValidSiteAdminSession(request, env)) {
+  const session = await readValidSiteAdminSession(request, env);
+  if (!session) {
     return json({ error: "Invalid admin secret" }, { status: 401 });
   }
 
+  if (!session.viaHeader && !isSafeRequestMethod(request.method) && !hasSameOrigin(request)) {
+    return json({ error: "Admin request origin denied" }, { status: 403 });
+  }
+
   return null;
+}
+
+function applyAdminApiResponseHeaders(request: Request, response: Response): Response {
+  if (!new URL(request.url).pathname.startsWith("/admin/api/")) {
+    return response;
+  }
+
+  response.headers.set("cache-control", "private, no-store, max-age=0");
+  return response;
 }
 
 function html(markup: string, init: ResponseInit = {}): Response {
@@ -2534,7 +2707,7 @@ function renderHome(url: URL): string {
 
 <h2>For Agents First</h2>
 
-<p>If you only read one thing: sign up at <code>${signupApi}</code>, keep the mailbox-scoped token, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
+<p>If you only read one thing: sign up at <code>${signupApi}</code>, retrieve the mailbox-scoped token from the configured operator delivery channel, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
 
 <h2>Summary</h2>
 
@@ -2544,7 +2717,7 @@ function renderHome(url: URL): string {
   <li><strong>Recommended first surface:</strong> MCP plus mailbox-scoped self routes</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
-  <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
+  <li><strong>Default signup access:</strong> mailbox-scoped bearer token delivered through the configured operator channel; inline return is opt-in</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
   <li><strong>GitHub repo:</strong> <a href="${githubRepo}"><code>${githubRepo}</code></a></li>
@@ -2579,13 +2752,13 @@ function renderHome(url: URL): string {
 
 <h2>Availability And Constraints</h2>
 
-<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
+<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat operator-channel token delivery and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
 
 <ul>
-  <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
+  <li><strong>Available now:</strong> signup API, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
   <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
-  <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
+  <li><strong>Recommended fallback:</strong> use <code>POST /v1/auth/token/rotate</code> while the current token is still valid; legacy inline signup token return now requires explicit runtime opt-in.</li>
   <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
 
@@ -2634,7 +2807,7 @@ content-type: application/json
 
 <h3>Signup Response</h3>
 
-<p>A successful signup returns mailbox metadata plus a default mailbox-scoped bearer token that can immediately read inbound messages, create drafts, inspect drafts, and send drafts for the newly created mailbox.</p>
+<p>A successful signup returns mailbox metadata plus the default mailbox-scoped scopes. By default the token itself is delivered only through the configured operator channel; inline token return is a legacy opt-in.</p>
 
 <pre><code>{
   "tenantId": "tnt_example",
@@ -2643,8 +2816,6 @@ content-type: application/json
   "agentId": "agt_example",
   "agentVersionId": "agv_example",
   "deploymentId": "agd_example",
-  "accessToken": "REDACTED",
-  "accessTokenExpiresAt": "2026-04-17T05:24:03.000Z",
   "accessTokenScopes": [
     "task:read",
     "mail:read",
@@ -2661,8 +2832,8 @@ content-type: application/json
 <p>This path intentionally prefers mailbox-scoped self routes and high-level send/reply routes first. Treat explicit draft lifecycle control as the advanced path.</p>
 
 <ol>
-  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code> and <code>mailboxAddress</code>.</li>
-  <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
+  <li>Call the signup API at <code>${signupApi}</code> and save <code>mailboxAddress</code>.</li>
+  <li>Retrieve the issued bearer token from the configured operator delivery channel, unless your runtime explicitly enables legacy inline signup token return.</li>
   <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
   <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
   <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
@@ -2675,7 +2846,7 @@ content-type: application/json
 
 <h2>Token Lifecycle</h2>
 
-<p>Every new signup returns a mailbox-scoped bearer token. That token lets the agent read inbound mail, create drafts, and send messages for the mailbox.</p>
+<p>Every new signup issues a mailbox-scoped bearer token. By default that token is delivered through the configured operator channel instead of the anonymous HTTP response.</p>
 
 <ul>
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
@@ -2964,7 +3135,7 @@ function renderLimits(): string {
     <section>
       <h2>How To Work Safely While Limited</h2>
       <ul>
-        <li>Save the inline <code>accessToken</code> returned by signup and use mailbox-scoped routes immediately.</li>
+        <li>Retrieve the issued token from the configured operator delivery channel, or explicitly enable legacy inline signup token return if that risk is acceptable in your environment.</li>
         <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
         <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
       </ul>

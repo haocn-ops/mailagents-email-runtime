@@ -136,7 +136,7 @@ export function enforceTenantAccess(claims: AccessTokenClaims, tenantId: string)
 }
 
 export function enforceAgentAccess(claims: AccessTokenClaims, agentId: string): Response | null {
-  if (claims.agentId && claims.agentId !== agentId) {
+  if (!claims.agentId || claims.agentId !== agentId) {
     return json({ error: "Agent access denied" }, { status: 403 });
   }
 

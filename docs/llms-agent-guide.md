@@ -87,8 +87,10 @@ Current shared `dev` URLs:
 
 Default integration auth is a signed bearer token.
 
-For mailboxes created through the signup API, the first bearer token may come
-directly from `POST /public/signup` instead of a separate admin mint flow.
+For mailboxes created through the signup API, the first bearer token is usually
+delivered through the configured operator channel after `POST /public/signup`.
+Legacy inline return from the anonymous HTTP response now requires explicit
+runtime opt-in.
 
 If that signup API token later expires, recovery should use
 `POST /public/token/reissue`. That endpoint only emails a refreshed token to
@@ -213,7 +215,7 @@ If you are trying to:
 
 1. read `/v2/meta/compatibility`
 2. validate against `/v2/meta/compatibility/schema`
-3. obtain a mailbox-scoped token, usually from `POST /public/signup`
+3. obtain a mailbox-scoped token, usually via the configured operator delivery path triggered by `POST /public/signup`
 4. call `tools/list`
 5. filter out tools that require human review when automation is not allowed
 6. prefer read tools first

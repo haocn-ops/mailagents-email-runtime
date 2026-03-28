@@ -46,8 +46,8 @@ Recommended usage:
 
 ## 2. Obtain a Scoped Bearer Token
 
-For signup API onboarding, call `POST /public/signup` first and store the
-returned mailbox-scoped bearer token from the signup response.
+For signup API onboarding, call `POST /public/signup` first and retrieve the
+mailbox-scoped bearer token from the configured operator delivery channel.
 
 If that token expires later, call `POST /public/token/reissue`. The runtime
 will only email the refreshed token to the original `operatorEmail` from signup;
@@ -469,7 +469,7 @@ For long-lived integrations:
 
 1. read `/v2/meta/compatibility`
 2. validate the response against `/v2/meta/compatibility/schema`
-3. obtain a least-privilege token, usually from `POST /public/signup`
+3. obtain a least-privilege token, usually via the configured operator delivery path triggered by `POST /public/signup`
 4. call `tools/list`
 5. plan with `riskLevel`, `humanReviewRequired`, and `sendAdditionalScopes`
 6. prefer read calls before side effects

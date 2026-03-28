@@ -1,4 +1,10 @@
 import { mintAccessToken } from "../auth";
+import {
+  getAgent,
+  getMailboxById,
+  hasActiveMailboxBinding,
+  hasActiveMailboxDeployment,
+} from "../../repositories/agents";
 import type { Env } from "../../types";
 
 export const SELF_SERVE_DEFAULT_SCOPES = [
@@ -24,6 +30,36 @@ export async function issueSelfServeAccessToken(input: {
     return {
       accessTokenScopes,
     };
+  }
+
+  const agent = await getAgent(input.env, input.agentId);
+  if (!agent) {
+    throw new Error("Agent not found for self-serve access token");
+  }
+  if (agent.tenantId !== input.tenantId) {
+    throw new Error("Agent does not belong to tenant for self-serve access token");
+  }
+
+  const mailbox = await getMailboxById(input.env, input.mailboxId);
+  if (!mailbox) {
+    throw new Error("Mailbox not found for self-serve access token");
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new Error("Mailbox does not belong to tenant for self-serve access token");
+  }
+
+  const hasBinding = await hasActiveMailboxBinding(input.env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+  if (!hasBinding) {
+    const hasDeployment = await hasActiveMailboxDeployment(input.env, {
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    if (!hasDeployment) {
+      throw new Error("Agent is not active for mailbox for self-serve access token");
+    }
   }
 
   const ttlSeconds = parsePositiveInteger(input.env.SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS) ?? 60 * 60 * 24 * 30;
