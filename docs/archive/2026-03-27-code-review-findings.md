@@ -3,8 +3,9 @@
 This note archives the source-code review findings collected on 2026-03-27.
 It is intentionally dated and may become stale as fixes land.
 
-No remediation is included in this document. It records the findings snapshot
-only.
+The original findings snapshot is preserved below. A short remediation update
+was added on 2026-03-28 to record the follow-up fixes completed after the
+initial review.
 
 Use the main guides for current product behavior and supported workflows:
 
@@ -24,6 +25,122 @@ Reviewed areas included:
 - self-serve signup and token reissue flows
 - draft, replay, and idempotency paths
 - task execution and agent deployment behavior
+
+## Remediation Update (2026-03-28)
+
+The current tree includes follow-up fixes beyond the original 2026-03-27
+snapshot. This pass specifically addressed the outbound billing and retry
+follow-ups below:
+
+1. Fixed: admin outbound retry now validates job status, provider delivery
+   evidence, and draft send eligibility before re-reserving credits, so a
+   rejected retry no longer leaks a fresh reservation.
+   Refs: `src/routes/site.ts:1619`, `src/routes/site.ts:1627`,
+   `src/routes/site.ts:1634`, `src/routes/site.ts:1645`
+
+2. Fixed: SES webhook reconciliation now treats any outbound with delivery
+   evidence as delivered for billing/state resolution, so later bounce,
+   complaint, or reject events no longer release credits for an already
+   delivered send.
+   Refs: `src/routes/api.ts:3338`, `src/routes/api.ts:3339`,
+   `src/routes/api.ts:3342`, `src/routes/api.ts:3362`
+
+3. Fixed: outbound settlement now treats an existing ledger entry as the
+   durable settlement record and skips duplicate reserved-credit capture during
+   replayed queue/webhook settlement paths.
+   Refs: `src/lib/outbound-billing.ts:37`, `src/lib/outbound-billing.ts:61`
+
+4. Fixed: `POST /v1/billing/payment/confirm` no longer replays local settlement
+   side effects for receipts already marked `settled`. If a settled receipt is
+   missing its local ledger record, the API now returns `409` and requires
+   manual reconciliation instead of re-granting credits or re-enabling tenant
+   send policy.
+   Refs: `src/routes/api.ts:1189`, `src/routes/api.ts:4362`,
+   `src/routes/api.ts:4373`
+
+5. Fixed: REST draft/send helper paths now validate `from` against the mailbox
+   address before draft creation, and they surface a `409` partial-success
+   response when server-side state was already committed before a later error.
+   This reduces blind client retries after ambiguous failures.
+   Refs: `src/routes/api.ts:342`, `src/routes/api.ts:3470`,
+   `src/routes/api.ts:3836`, `src/routes/api.ts:3890`
+
+6. Fixed: admin MCP mailbox token minting now requires send-capable mailbox
+   access before granting `draft:send` scope or `send` bootstrap mode. This
+   prevents admin-issued mailbox tokens from advertising send flows that would
+   later fail at runtime due to receive-only bindings.
+   Refs: `src/routes/admin-mcp.ts:69`, `src/routes/admin-mcp.ts:545`,
+   `src/routes/admin-mcp.ts:828`, `src/routes/admin-mcp.ts:902`
+
+7. Fixed: generic admin `create_access_token` minting now rejects mailbox-
+   scoped task/draft/replay tokens that omit `agentId`. This prevents issuing
+   mailbox tokens whose scopes imply agent-bound workflows but whose claims
+   could never satisfy runtime agent checks.
+   Refs: `src/routes/admin-mcp.ts:70`, `src/routes/admin-mcp.ts:803`,
+   `src/routes/admin-mcp.ts:813`
+
+8. Hardening: `GET /v1/mailboxes/self/messages` now clamps `limit` with the
+   same bounded parser used by other list endpoints instead of accepting an
+   unbounded numeric query value.
+   Refs: `src/routes/api.ts:1452`, `src/routes/api.ts:1468`,
+   `src/routes/api.ts:4191`
+
+9. Residual: `AGENT_EXECUTE_QUEUE` is still a manual-review placeholder rather
+   than a full execution pipeline. The worker now safely lands in
+   `needs_review` and acknowledges the queue item, but it still does not
+   execute agent logic end-to-end.
+   Refs: `src/handlers/queues.ts:267`, `src/handlers/queues.ts:293`,
+   `src/handlers/queues.ts:297`
+
+## Additional Follow-up (2026-03-29)
+
+1. Fixed: `POST /v1/auth/token/rotate` self-mailbox delivery now enforces the
+   same current mailbox-access check used by other mailbox-scoped routes.
+   Mailbox-scoped tokens whose bound agent is no longer active for the target
+   mailbox can no longer use stale claims to trigger self-mailbox token
+   delivery.
+   Refs: `src/routes/api.ts:727`, `src/routes/api.ts:765`,
+   `src/routes/api.ts:3767`
+
+2. Fixed: admin `inspect_delivery_case` now derives suppression lookups from
+   draft payload `to/cc/bcc` recipients when available instead of relying only
+   on stored `message.toAddr`. Multi-recipient outbound inspection now covers
+   CC and BCC suppressions as well.
+   Refs: `src/routes/admin-mcp.ts:542`, `src/routes/admin-mcp.ts:580`,
+   `src/routes/admin-mcp.ts:654`
+
+3. Fixed: inbound normalization now degrades to `needs_review` if
+   `AGENT_EXECUTE_QUEUE` dispatch fails after task creation, instead of failing
+   the whole ingest path. The runtime now records a review trace and dead-letter
+   entry while preserving normalized inbound state.
+   Refs: `src/handlers/queues.ts:88`, `src/handlers/queues.ts:249`,
+   `src/handlers/queues.ts:328`
+
+4. Fixed: deployment rollout now pauses the previously active target before
+   activating the newly created deployment, with rollback restore on failure.
+   This removes the deterministic unique-index conflict caused by trying to
+   activate the new deployment while the old active deployment was still live.
+   Refs: `src/repositories/agents.ts:656`, `src/repositories/agents.ts:679`,
+   `src/repositories/agents.ts:684`
+
+5. Fixed: token mint and rotate validation now refuse to perpetuate malformed
+   mailbox-scoped task/draft/replay/send tokens. Mailbox-scoped tokens that
+   imply agent-bound workflows now require `agentId`, and `draft:send` tokens
+   must still resolve to send-capable mailbox access at validation time.
+   Refs: `src/routes/api.ts:153`, `src/routes/api.ts:522`,
+   `src/routes/api.ts:1927`, `src/routes/api.ts:4056`
+
+6. Hardening: deployment activate, rollout, and rollback transitions now keep
+   a status snapshot and restore prior deployment states if pause, activate, or
+   finalize steps fail mid-flight. This reduces the chance that a partial
+   failure leaves a target with no active deployment.
+   Refs: `src/repositories/agents.ts:557`, `src/repositories/agents.ts:634`,
+   `src/repositories/agents.ts:692`, `src/repositories/agents.ts:733`
+
+7. Hardening: token rotation now also rejects mailbox-scoped claims bound to
+   inactive mailboxes, so stale mailbox tokens cannot be renewed inline after
+   the mailbox itself has been disabled.
+   Refs: `src/routes/api.ts:4045`, `src/routes/api.ts:4053`
 
 ## Findings
 

@@ -105,6 +105,12 @@ interface AgentPolicyRow {
   updated_at: string;
 }
 
+interface DeploymentStatusSnapshot {
+  id: string;
+  agentId: string;
+  status: AgentDeploymentRecord["status"];
+}
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) {
     return [];
@@ -548,20 +554,21 @@ export async function updateAgentDeploymentStatus(env: Env, input: {
       targetId: current.targetId,
       excludeDeploymentId: current.id,
     });
-
-    await setDeploymentStatus(env, current.agentId, current.id, "paused", timestamp);
-    await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), "paused", timestamp);
+    const snapshots: DeploymentStatusSnapshot[] = [
+      { id: current.id, agentId: current.agentId, status: current.status },
+      ...previouslyActive.map((deployment) => ({
+        id: deployment.id,
+        agentId: deployment.agentId,
+        status: deployment.status,
+      })),
+    ];
 
     try {
+      await setDeploymentStatus(env, current.agentId, current.id, "paused", timestamp);
+      await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), "paused", timestamp);
       await setDeploymentStatus(env, current.agentId, current.id, "active", timestamp);
     } catch (error) {
-      await setDeploymentStatus(env, current.agentId, current.id, current.status, timestamp).catch(() => undefined);
-      await setDeploymentsStatus(
-        env,
-        previouslyActive.map((deployment) => deployment.id),
-        "active",
-        timestamp,
-      ).catch(() => undefined);
+      await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
 
       if (isUniqueConstraintError(error)) {
         throw new DeploymentConflictError(
@@ -570,9 +577,6 @@ export async function updateAgentDeploymentStatus(env: Env, input: {
       }
       throw error;
     }
-
-    const finalStatusForPrior = input.status === "active" ? "paused" : input.status;
-    await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), finalStatusForPrior, timestamp);
   } else {
     try {
       await setDeploymentStatus(env, input.agentId, input.deploymentId, input.status, timestamp);
@@ -627,6 +631,16 @@ async function setDeploymentsStatus(
   }
 }
 
+async function restoreDeploymentStatuses(
+  env: Env,
+  snapshots: DeploymentStatusSnapshot[],
+  updatedAt: string,
+): Promise<void> {
+  for (const snapshot of snapshots) {
+    await setDeploymentStatus(env, snapshot.agentId, snapshot.id, snapshot.status, updatedAt);
+  }
+}
+
 async function listActiveDeploymentsForTarget(env: Env, input: {
   tenantId: string;
   targetType: AgentDeploymentRecord["targetType"];
@@ -675,11 +689,21 @@ export async function rolloutAgentDeployment(env: Env, input: {
     targetId: input.targetId,
     status: "paused",
   });
+  const snapshots: DeploymentStatusSnapshot[] = [
+    { id: created.id, agentId: created.agentId, status: "paused" },
+    ...previouslyActive.map((deployment) => ({
+      id: deployment.id,
+      agentId: deployment.agentId,
+      status: deployment.status,
+    })),
+  ];
 
   try {
+    await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), "paused", timestamp);
     await setDeploymentStatus(env, created.agentId, created.id, "active", timestamp);
+    await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), "rolled_back", timestamp);
   } catch (error) {
-    await setDeploymentStatus(env, created.agentId, created.id, "rolled_back", timestamp).catch(() => undefined);
+    await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
     if (isUniqueConstraintError(error)) {
       throw new DeploymentConflictError(
         `An active deployment already exists for ${input.targetType} ${input.targetId}`
@@ -687,8 +711,6 @@ export async function rolloutAgentDeployment(env: Env, input: {
     }
     throw error;
   }
-
-  await setDeploymentsStatus(env, previouslyActive.map((deployment) => deployment.id), "rolled_back", timestamp);
   return requireRow(await getAgentDeployment(env, input.agentId, created.id), "Failed to load rolled out deployment");
 }
 
@@ -708,13 +730,21 @@ export async function rollbackAgentDeployment(env: Env, input: {
     targetId: deployment.targetId,
     excludeDeploymentId: deployment.id,
   });
-
-  await setDeploymentsStatus(env, previouslyActive.map((activeDeployment) => activeDeployment.id), "paused", timestamp);
+  const snapshots: DeploymentStatusSnapshot[] = [
+    { id: deployment.id, agentId: deployment.agentId, status: deployment.status },
+    ...previouslyActive.map((activeDeployment) => ({
+      id: activeDeployment.id,
+      agentId: activeDeployment.agentId,
+      status: activeDeployment.status,
+    })),
+  ];
 
   try {
+    await setDeploymentsStatus(env, previouslyActive.map((activeDeployment) => activeDeployment.id), "paused", timestamp);
     await setDeploymentStatus(env, deployment.agentId, deployment.id, "active", timestamp);
+    await setDeploymentsStatus(env, previouslyActive.map((activeDeployment) => activeDeployment.id), "rolled_back", timestamp);
   } catch (error) {
-    await setDeploymentsStatus(env, previouslyActive.map((activeDeployment) => activeDeployment.id), "active", timestamp).catch(() => undefined);
+    await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
     if (isUniqueConstraintError(error)) {
       throw new DeploymentConflictError(
         `An active deployment already exists for ${deployment.targetType} ${deployment.targetId}`
@@ -722,8 +752,6 @@ export async function rollbackAgentDeployment(env: Env, input: {
     }
     throw error;
   }
-
-  await setDeploymentsStatus(env, previouslyActive.map((activeDeployment) => activeDeployment.id), "rolled_back", timestamp);
 
   return await getAgentDeployment(env, input.agentId, input.deploymentId);
 }

@@ -1619,20 +1619,6 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (!draft) {
       return json({ error: "Outbound draft not found" }, { status: 409 });
     }
-    await ensureDraftSendAllowed(env, {
-      tenantId: draft.tenantId,
-      agentId: draft.agentId,
-      mailboxId: draft.mailboxId,
-      draftR2Key: draft.draftR2Key,
-      threadId: draft.threadId ?? undefined,
-      sourceMessageId: draft.sourceMessageId ?? undefined,
-    });
-    await reserveDraftSendCredits(env, {
-      tenantId: draft.tenantId,
-      draftR2Key: draft.draftR2Key,
-      sourceMessageId: draft.sourceMessageId,
-      createdVia: draft.createdVia,
-    });
 
     const message = await getMessage(env, job.messageId);
     const previousMessageStatus = message?.status;
@@ -1648,6 +1634,20 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
     }
+    await ensureDraftSendAllowed(env, {
+      tenantId: draft.tenantId,
+      agentId: draft.agentId,
+      mailboxId: draft.mailboxId,
+      draftR2Key: draft.draftR2Key,
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
+    });
+    await reserveDraftSendCredits(env, {
+      tenantId: draft.tenantId,
+      draftR2Key: draft.draftR2Key,
+      sourceMessageId: draft.sourceMessageId,
+      createdVia: draft.createdVia,
+    });
 
     await updateOutboundJobStatus(env, {
       outboundJobId: job.id,

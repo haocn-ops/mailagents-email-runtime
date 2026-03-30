@@ -57,6 +57,11 @@ export async function settleOutboundUsageDebit(env: Env, input: {
         externalDomains: requirement.externalDomains,
       }),
     });
+  } else {
+    // The ledger entry is the durable settlement record. Avoid duplicate captures on retries
+    // because another outbound job may now own the remaining reserved credits.
+    await reconcileTenantAvailableCredits(env, input.tenantId);
+    return;
   }
 
   await captureTenantReservedCredits(env, input.tenantId, requirement.creditsRequired).catch(() => null);

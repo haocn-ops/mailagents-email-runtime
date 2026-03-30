@@ -66,6 +66,8 @@ import type {
 
 const ADMIN_MCP_ALLOW_METHODS = "GET, POST, OPTIONS";
 const ADMIN_MCP_ALLOW_HEADERS = "accept, content-type, mcp-protocol-version, mcp-session-id, x-admin-secret";
+const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+const AGENT_REQUIRED_MAILBOX_SCOPES = ["task:read", "draft:create", "draft:read", "draft:send", "mail:replay"] as const;
 const DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES = {
   read_only: ["mail:read", "task:read"],
   draft_only: ["mail:read", "task:read", "draft:create", "draft:read"],
@@ -537,8 +539,98 @@ async function readDraftPayload(env: Env, draftR2Key: string): Promise<unknown |
   return draftObject ? await draftObject.json<unknown>() : null;
 }
 
+function collectRecipientEmails(input: {
+  messageToAddr?: string;
+  draftPayload?: unknown;
+}): string[] {
+  const recipients = new Set<string>();
+  const payload = input.draftPayload && typeof input.draftPayload === "object" && !Array.isArray(input.draftPayload)
+    ? input.draftPayload as Record<string, unknown>
+    : null;
+
+  for (const field of ["to", "cc", "bcc"] as const) {
+    const values = payload?.[field];
+    if (!Array.isArray(values)) {
+      continue;
+    }
+
+    for (const value of values) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const normalized = value.trim().toLowerCase();
+      if (normalized) {
+        recipients.add(normalized);
+      }
+    }
+  }
+
+  if (recipients.size === 0 && input.messageToAddr) {
+    for (const value of input.messageToAddr.split(",")) {
+      const normalized = value.trim().toLowerCase();
+      if (normalized) {
+        recipients.add(normalized);
+      }
+    }
+  }
+
+  return [...recipients];
+}
+
+async function lookupSuppressionsForRecipients(env: Env, input: {
+  messageToAddr?: string;
+  draftPayload?: unknown;
+}) {
+  const recipients = collectRecipientEmails(input);
+  return (
+    await Promise.all(
+      recipients.map(async (email) => ({
+        email,
+        suppression: await getSuppression(env, email).catch(() => null),
+      }))
+    )
+  ).filter((entry) => entry.suppression).map((entry) => entry.suppression);
+}
+
 function listMailboxToolsForScopes(scopes: string[]) {
   return RUNTIME_TOOL_CATALOG.filter((tool) => tool.requiredScopes.every((scope) => scopes.includes(scope)));
+}
+
+async function assertAgentActiveForMailbox(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+  requireSendCapability?: boolean;
+}): Promise<void> {
+  const hasBinding = await hasActiveMailboxBinding(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+    roles: input.requireSendCapability ? [...SEND_CAPABLE_MAILBOX_ROLES] : undefined,
+  });
+  if (hasBinding) {
+    return;
+  }
+
+  const hasAnyBinding = input.requireSendCapability
+    ? await hasActiveMailboxBinding(env, {
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    })
+    : false;
+  const hasDeployment = await hasActiveMailboxDeployment(env, {
+    agentId: input.agentId,
+    mailboxId: input.mailboxId,
+  });
+
+  if (!input.requireSendCapability) {
+    if (!hasDeployment) {
+      throw new AdminMcpToolError("invalid_arguments", "agentId must be active for every mailboxId");
+    }
+    return;
+  }
+
+  if (!hasDeployment || hasAnyBinding) {
+    throw new AdminMcpToolError("invalid_arguments", "agentId must have send-capable access for every mailboxId");
+  }
 }
 
 function summarizeTenantReviewActions(input: {
@@ -586,17 +678,12 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     const draft = outboundJob ? await getDraftByR2Key(env, outboundJob.draftR2Key) : null;
-    const suppressionLookups = message.direction === "outbound"
-      ? await Promise.all(
-        message.toAddr
-          .split(",")
-          .map((value) => value.trim().toLowerCase())
-          .filter(Boolean)
-          .map(async (email) => ({
-            email,
-            suppression: await getSuppression(env, email).catch(() => null),
-          }))
-      )
+    const draftPayload = outboundJob ? await readDraftPayload(env, outboundJob.draftR2Key) : null;
+    const suppressions = message.direction === "outbound"
+      ? await lookupSuppressionsForRecipients(env, {
+        messageToAddr: message.toAddr,
+        draftPayload,
+      })
       : [];
     return {
       lookup: { type: "message", value: message.id },
@@ -604,8 +691,8 @@ async function inspectDeliveryCase(env: Env, input: {
       deliveryEvents: await listDeliveryEventsByMessageId(env, message.id),
       outboundJob,
       draft,
-      draftPayload: includePayload && outboundJob ? await readDraftPayload(env, outboundJob.draftR2Key) : undefined,
-      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
+      draftPayload: includePayload ? draftPayload ?? undefined : undefined,
+      suppressions,
     };
   }
 
@@ -616,26 +703,21 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
     const message = outboundJob ? await getMessage(env, outboundJob.messageId) : null;
-    const suppressionLookups = message?.direction === "outbound"
-      ? await Promise.all(
-        message.toAddr
-          .split(",")
-          .map((value) => value.trim().toLowerCase())
-          .filter(Boolean)
-          .map(async (email) => ({
-            email,
-            suppression: await getSuppression(env, email).catch(() => null),
-          }))
-      )
+    const draftPayload = await readDraftPayload(env, draft.draftR2Key);
+    const suppressions = message?.direction === "outbound"
+      ? await lookupSuppressionsForRecipients(env, {
+        messageToAddr: message.toAddr,
+        draftPayload,
+      })
       : [];
     return {
       lookup: { type: "draft", value: draft.id },
       draft,
-      draftPayload: includePayload ? await readDraftPayload(env, draft.draftR2Key) : undefined,
+      draftPayload: includePayload ? draftPayload ?? undefined : undefined,
       outboundJob,
       message,
       deliveryEvents: message ? await listDeliveryEventsByMessageId(env, message.id) : [],
-      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
+      suppressions,
     };
   }
 
@@ -646,26 +728,21 @@ async function inspectDeliveryCase(env: Env, input: {
     }
     const message = await getMessage(env, outboundJob.messageId);
     const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
-    const suppressionLookups = message?.direction === "outbound"
-      ? await Promise.all(
-        message.toAddr
-          .split(",")
-          .map((value) => value.trim().toLowerCase())
-          .filter(Boolean)
-          .map(async (email) => ({
-            email,
-            suppression: await getSuppression(env, email).catch(() => null),
-          }))
-      )
+    const draftPayload = await readDraftPayload(env, outboundJob.draftR2Key);
+    const suppressions = message?.direction === "outbound"
+      ? await lookupSuppressionsForRecipients(env, {
+        messageToAddr: message.toAddr,
+        draftPayload,
+      })
       : [];
     return {
       lookup: { type: "outbound_job", value: outboundJob.id },
       outboundJob,
       message,
       draft,
-      draftPayload: includePayload ? await readDraftPayload(env, outboundJob.draftR2Key) : undefined,
+      draftPayload: includePayload ? draftPayload ?? undefined : undefined,
       deliveryEvents: message ? await listDeliveryEventsByMessageId(env, message.id) : [],
-      suppressions: suppressionLookups.filter((entry) => entry.suppression).map((entry) => entry.suppression),
+      suppressions,
     };
   }
 
@@ -764,6 +841,16 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
     const mailboxIds = optionalStringArray(args.mailboxIds, "mailboxIds");
     const scopes = requireStringArray(args.scopes, "scopes");
     const exp = Math.floor(Date.now() / 1000) + (optionalInteger(args.expiresInSeconds, "expiresInSeconds") ?? 3600);
+    const requiresAgentForMailboxScopes = mailboxIds?.length
+      ? scopes.some((scope) => AGENT_REQUIRED_MAILBOX_SCOPES.includes(scope as typeof AGENT_REQUIRED_MAILBOX_SCOPES[number]))
+      : false;
+
+    if (requiresAgentForMailboxScopes && !agentId) {
+      throw new AdminMcpToolError(
+        "invalid_arguments",
+        "agentId is required when mailboxIds are combined with task, draft, or replay scopes",
+      );
+    }
 
     if (agentId) {
       const agent = await getAgent(env, agentId);
@@ -787,22 +874,13 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       }
     }
     if (agentId && mailboxIds?.length) {
+      const requiresSendCapability = scopes.includes("draft:send");
       for (const mailboxId of mailboxIds) {
-        const hasBinding = await hasActiveMailboxBinding(env, {
+        await assertAgentActiveForMailbox(env, {
           agentId,
           mailboxId,
+          requireSendCapability: requiresSendCapability,
         });
-        if (hasBinding) {
-          continue;
-        }
-
-        const hasDeployment = await hasActiveMailboxDeployment(env, {
-          agentId,
-          mailboxId,
-        });
-        if (!hasDeployment) {
-          throw new AdminMcpToolError("invalid_arguments", "agentId must be active for every mailboxId");
-        }
       }
     }
 
@@ -868,6 +946,13 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
     }
     if (mode !== "read_only" && !agentId) {
       throw new AdminMcpToolError("invalid_arguments", "agentId is required for draft_only and send mailbox bootstrap tokens");
+    }
+    if (agentId) {
+      await assertAgentActiveForMailbox(env, {
+        agentId,
+        mailboxId,
+        requireSendCapability: mode === "send",
+      });
     }
     const scopes = [...DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES[mode as keyof typeof DEFAULT_MAILBOX_AGENT_SCOPE_PROFILES]];
     const exp = Math.floor(Date.now() / 1000) + (optionalInteger(args.expiresInSeconds, "expiresInSeconds") ?? 1800);

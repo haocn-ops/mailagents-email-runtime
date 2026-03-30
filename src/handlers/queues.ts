@@ -85,6 +85,72 @@ async function deleteR2Objects(env: Env, r2Keys: string[]): Promise<void> {
   await Promise.all(uniqueKeys.map((key) => env.R2_EMAIL.delete(key).catch(() => undefined)));
 }
 
+async function recordTaskNeedsReview(env: Env, input: {
+  taskId: string;
+  sourceMessageId: string;
+  mailboxId: string;
+  agentId?: string;
+  agentVersionId?: string;
+  deploymentId?: string;
+  queuedAgentId?: string;
+  queuedAgentVersionId?: string;
+  queuedDeploymentId?: string;
+  reviewReason: string;
+  sourceMessageStatus?: string | null;
+}): Promise<string> {
+  const runId = `run_${input.taskId}`;
+  const timestamp = nowIso();
+  const effectiveAgentId = input.agentId ?? input.queuedAgentId;
+  const version = effectiveAgentId && input.agentVersionId
+    ? await getAgentVersion(env, effectiveAgentId, input.agentVersionId)
+    : null;
+  const traceR2Key = `traces/${runId}.json`;
+
+  await env.R2_EMAIL.put(traceR2Key, JSON.stringify({
+    runId,
+    taskId: input.taskId,
+    sourceMessageId: input.sourceMessageId,
+    mailboxId: input.mailboxId,
+    queuedAgentId: input.queuedAgentId ?? null,
+    queuedAgentVersionId: input.queuedAgentVersionId ?? null,
+    queuedDeploymentId: input.queuedDeploymentId ?? null,
+    agentId: effectiveAgentId ?? null,
+    agentVersionId: input.agentVersionId ?? null,
+    deploymentId: input.deploymentId ?? null,
+    model: version?.model ?? "gpt-5",
+    status: "needs_review",
+    reviewReason: input.reviewReason,
+    sourceMessageStatus: input.sourceMessageStatus ?? null,
+    startedAt: timestamp,
+    completedAt: timestamp,
+  }, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+
+  await env.D1_DB.prepare(
+    `INSERT OR REPLACE INTO agent_runs (
+      id, task_id, agent_id, model, status, trace_r2_key, started_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    runId,
+    input.taskId,
+    effectiveAgentId ?? null,
+    version?.model ?? "gpt-5",
+    "needs_review",
+    traceR2Key,
+    timestamp,
+    timestamp
+  ).run();
+
+  await updateTaskStatus(env, {
+    taskId: input.taskId,
+    status: "needs_review",
+    resultR2Key: traceR2Key,
+  });
+
+  return traceR2Key;
+}
+
 export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Promise<void> {
   const existingMessage = await getMessage(env, job.messageId);
   const rawObject = await env.R2_EMAIL.get(job.rawR2Key);
@@ -183,12 +249,29 @@ export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Prom
   }
 
   if (executionTarget && task?.status === "queued") {
-    await env.AGENT_EXECUTE_QUEUE.send({
-      taskId: task.id,
-      agentId: executionTarget.agentId,
-      agentVersionId: executionTarget.agentVersionId,
-      deploymentId: executionTarget.deploymentId,
-    });
+    try {
+      await env.AGENT_EXECUTE_QUEUE.send({
+        taskId: task.id,
+        agentId: executionTarget.agentId,
+        agentVersionId: executionTarget.agentVersionId,
+        deploymentId: executionTarget.deploymentId,
+      });
+    } catch (error) {
+      await recordTaskNeedsReview(env, {
+        taskId: task.id,
+        sourceMessageId: task.sourceMessageId,
+        mailboxId: task.mailboxId,
+        agentId: executionTarget.agentId,
+        agentVersionId: executionTarget.agentVersionId,
+        deploymentId: executionTarget.deploymentId,
+        queuedAgentId: executionTarget.agentId,
+        queuedAgentVersionId: executionTarget.agentVersionId,
+        queuedDeploymentId: executionTarget.deploymentId,
+        reviewReason: "agent_execute_queue_unavailable",
+        sourceMessageStatus: existingMessage?.status ?? "normalized",
+      });
+      await enqueueDeadLetter(env, deadLetterFromError("agent-execute-dispatch", task.id, error)).catch(() => undefined);
+    }
   }
 
   await deleteR2Objects(env, staleAttachmentKeys);
@@ -235,13 +318,6 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
         });
       }
 
-      const effectiveAgentId = resolvedExecutionTarget?.agentId ?? task.assignedAgent ?? message.body.agentId;
-      const runId = `run_${message.body.taskId}`;
-      const timestamp = nowIso();
-      const version = resolvedExecutionTarget?.agentVersionId
-        ? await getAgentVersion(env, effectiveAgentId, resolvedExecutionTarget.agentVersionId)
-        : null;
-      const traceR2Key = `traces/${runId}.json`;
       const reviewReason = !sourceMessage
         ? "source_message_missing"
         : !resolvedExecutionTarget
@@ -252,46 +328,18 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
         ? "stale_queue_assignment"
         : "agent_execution_not_implemented";
 
-      await env.R2_EMAIL.put(traceR2Key, JSON.stringify({
-        runId,
+      await recordTaskNeedsReview(env, {
         taskId: task.id,
         sourceMessageId: task.sourceMessageId,
         mailboxId: task.mailboxId,
+        agentId: resolvedExecutionTarget?.agentId ?? task.assignedAgent ?? message.body.agentId,
+        agentVersionId: resolvedExecutionTarget?.agentVersionId,
+        deploymentId: resolvedExecutionTarget?.deploymentId,
         queuedAgentId: message.body.agentId,
-        queuedAgentVersionId: message.body.agentVersionId ?? null,
-        queuedDeploymentId: message.body.deploymentId ?? null,
-        agentId: effectiveAgentId,
-        agentVersionId: resolvedExecutionTarget?.agentVersionId ?? null,
-        deploymentId: resolvedExecutionTarget?.deploymentId ?? null,
-        model: version?.model ?? "gpt-5",
-        status: "needs_review",
+        queuedAgentVersionId: message.body.agentVersionId,
+        queuedDeploymentId: message.body.deploymentId,
         reviewReason,
         sourceMessageStatus: sourceMessage?.status ?? null,
-        startedAt: timestamp,
-        completedAt: timestamp,
-      }, null, 2), {
-        httpMetadata: { contentType: "application/json; charset=utf-8" },
-      });
-
-      await env.D1_DB.prepare(
-        `INSERT OR REPLACE INTO agent_runs (
-          id, task_id, agent_id, model, status, trace_r2_key, started_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        runId,
-        task.id,
-        effectiveAgentId,
-        version?.model ?? "gpt-5",
-        "needs_review",
-        traceR2Key,
-        timestamp,
-        timestamp
-      ).run();
-
-      await updateTaskStatus(env, {
-        taskId: task.id,
-        status: "needs_review",
-        resultR2Key: traceR2Key,
       });
 
       message.ack();

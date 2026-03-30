@@ -150,6 +150,7 @@ import type { AccessTokenClaims, Env } from "../types";
 const router = new Router<Env>();
 const RECEIVE_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "receive_only"] as const;
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+const AGENT_REQUIRED_MAILBOX_SCOPES = ["task:read", "draft:create", "draft:read", "draft:send", "mail:replay"] as const;
 
 async function findPaymentReceiptReplay(
   env: Env,
@@ -188,6 +189,17 @@ class RouteRequestError extends Error {
     this.name = "RouteRequestError";
     this.status = status;
   }
+}
+
+function markSideEffectCommitted(error: unknown): unknown {
+  if (error instanceof Error) {
+    Object.assign(error, { sideEffectCommitted: true });
+  }
+  return error;
+}
+
+function hasCommittedSideEffect(error: unknown): boolean {
+  return error instanceof Error && (error as Error & { sideEffectCommitted?: boolean }).sideEffectCommitted === true;
 }
 
 async function enqueueReplayTask(env: Env, input: {
@@ -328,6 +340,29 @@ async function validateDraftAttachments(env: Env, input: {
     if (owner.mailboxId !== input.mailboxId) {
       throw new RouteRequestError("Attachment does not belong to mailbox", 409);
     }
+  }
+}
+
+async function validateDraftFromAddress(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  from: string;
+}) {
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!mailbox) {
+    throw new RouteRequestError("Mailbox not found", 404);
+  }
+  if (mailbox.tenant_id !== input.tenantId) {
+    throw new RouteRequestError("Mailbox does not belong to tenant", 409);
+  }
+
+  const expected = mailbox.address.trim().toLowerCase();
+  const provided = input.from.trim().toLowerCase();
+  if (!provided) {
+    throw new RouteRequestError("from must match the mailbox address", 400);
+  }
+  if (provided !== expected) {
+    throw new RouteRequestError("from must match the mailbox address", 400);
   }
 }
 
@@ -478,26 +513,51 @@ async function validateTokenAgentMailboxScopes(env: Env, input: {
   tenantId: string;
   agentId?: string;
   mailboxIds?: string[];
+  scopes?: string[];
 }) {
-  if (!input.agentId || !input.mailboxIds?.length) {
+  if (!input.mailboxIds?.length) {
     return;
   }
 
+  const requiresAgentForMailboxScopes = input.scopes?.some((scope) => (
+    AGENT_REQUIRED_MAILBOX_SCOPES.includes(scope as typeof AGENT_REQUIRED_MAILBOX_SCOPES[number])
+  )) ?? false;
+  if (requiresAgentForMailboxScopes && !input.agentId) {
+    throw new RouteRequestError(
+      "agentId is required when mailboxIds are combined with task, draft, or replay scopes",
+      409,
+    );
+  }
+  if (!input.agentId) {
+    return;
+  }
+
+  const requiresSendCapability = input.scopes?.includes("draft:send") ?? false;
   for (const mailboxId of input.mailboxIds) {
     const hasBinding = await hasActiveMailboxBinding(env, {
       agentId: input.agentId,
       mailboxId,
+      roles: requiresSendCapability ? [...SEND_CAPABLE_MAILBOX_ROLES] : undefined,
     });
     if (hasBinding) {
       continue;
     }
 
+    const hasAnyBinding = requiresSendCapability
+      ? await hasActiveMailboxBinding(env, {
+        agentId: input.agentId,
+        mailboxId,
+      })
+      : false;
     const hasDeployment = await hasActiveMailboxDeployment(env, {
       agentId: input.agentId,
       mailboxId,
     });
-    if (!hasDeployment) {
+    if (!requiresSendCapability && !hasDeployment) {
       throw new RouteRequestError("agentId must be active for every mailboxId", 409);
+    }
+    if (requiresSendCapability && (!hasDeployment || hasAnyBinding)) {
+      throw new RouteRequestError("agentId must have send-capable access for every mailboxId", 409);
     }
   }
 }
@@ -727,6 +787,10 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
     const mailboxError = enforceMailboxAccess(auth, targetMailboxId);
     if (mailboxError) {
       return mailboxError;
+    }
+    const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, targetMailboxId);
+    if (currentAccessError) {
+      return currentAccessError;
     }
 
     const delivered = await deliverRotatedTokenToSelfMailbox(env, auth, targetMailboxId, rotated.accessToken, rotated.accessTokenExpiresAt, rotated.accessTokenScopes);
@@ -1431,7 +1495,7 @@ router.on("GET", "/v1/mailboxes/self/messages", async (request, env) => {
   }
 
   const url = new URL(request.url);
-  const limit = Number(url.searchParams.get("limit") ?? "50");
+  const limit = parseListLimit(url.searchParams.get("limit"), 50, 200);
   const search = url.searchParams.get("search")?.trim() || undefined;
   const direction = (url.searchParams.get("direction")?.trim() as "inbound" | "outbound" | null) ?? undefined;
   const status = (url.searchParams.get("status")?.trim() as
@@ -1864,6 +1928,7 @@ router.on("POST", "/v1/auth/tokens", async (request, env) => {
       tenantId: body.tenantId,
       agentId: body.agentId,
       mailboxIds: body.mailboxIds,
+      scopes: body.scopes,
     });
   } catch (error) {
     if (error instanceof RouteRequestError) {
@@ -3336,9 +3401,10 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
       const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
       const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
       const hasDeliveryEvidence = deliveryEvents.some((event) => event.eventType === "delivery");
+      const treatAsDelivered = normalized.eventType === "delivery" || hasDeliveryEvidence;
       if (draft) {
         const recipients = await readDraftRecipients(env, outboundJob.draftR2Key);
-        if (normalized.eventType === "delivery") {
+        if (treatAsDelivered) {
           await settleOutboundUsageDebit(env, {
             tenantId: draft.tenantId,
             messageId: outboundJob.messageId,
@@ -3348,7 +3414,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
             sourceMessageId: draft.sourceMessageId,
             ...recipients,
           });
-        } else {
+        } else if (outboundJob.status !== "failed") {
           await releaseOutboundUsageReservation(env, {
             tenantId: draft.tenantId,
             outboundJobId: outboundJob.id,
@@ -3358,7 +3424,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
           });
         }
       }
-      if (normalized.eventType === "delivery" || hasDeliveryEvidence) {
+      if (treatAsDelivered) {
         await updateMessageStatus(env, message.id, "replied");
         await updateOutboundJobStatus(env, {
           outboundJobId: outboundJob.id,
@@ -3430,6 +3496,15 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
     }
     if (error instanceof RouteRequestError) {
       const response = json({ error: error.message }, { status: error.status });
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
+    }
+    if (hasCommittedSideEffect(error)) {
+      const response = json({
+        error: "Request may have partially succeeded after creating server-side state. Retry only with the same idempotency key or inspect draft/outbound state before retrying.",
+      }, { status: 409 });
       if (isPublicSelfServeRequest(request)) {
         return withPublicSelfServeCors(response);
       }
@@ -3792,6 +3867,11 @@ async function createAndSendDraft(env: Env, input: {
     if (!input.payload.text && !input.payload.html) {
       throw new RouteRequestError("text or html is required", 400);
     }
+    await validateDraftFromAddress(env, {
+      tenantId: input.tenantId,
+      mailboxId: input.mailboxId,
+      from: input.payload.from,
+    });
     await validateActiveDraftMailbox(env, {
       tenantId: input.tenantId,
       mailboxId: input.mailboxId,
@@ -3841,22 +3921,28 @@ async function createAndSendDraft(env: Env, input: {
   };
 
   if (!idempotencyKey) {
-    await validateCreateAndSendInput();
-    const draft = await createDraft(env, {
-      tenantId: input.tenantId,
-      agentId: input.agentId,
-      mailboxId: input.mailboxId,
-      threadId: input.threadId,
-      sourceMessageId: input.sourceMessageId,
-      createdVia: input.createdVia,
-      payload: input.payload,
-    });
-    const sendResult = await enqueueDraftSend(env, draft.id);
-    return {
-      draft,
-      outboundJobId: sendResult.outboundJobId,
-      status: sendResult.status,
-    };
+    let sideEffectCommitted = false;
+    try {
+      await validateCreateAndSendInput();
+      const draft = await createDraft(env, {
+        tenantId: input.tenantId,
+        agentId: input.agentId,
+        mailboxId: input.mailboxId,
+        threadId: input.threadId,
+        sourceMessageId: input.sourceMessageId,
+        createdVia: input.createdVia,
+        payload: input.payload,
+      });
+      sideEffectCommitted = true;
+      const sendResult = await enqueueDraftSend(env, draft.id);
+      return {
+        draft,
+        outboundJobId: sendResult.outboundJobId,
+        status: sendResult.status,
+      };
+    } catch (error) {
+      throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
+    }
   }
 
   const reservation = await reserveIdempotencyKey(env, {
@@ -3913,7 +3999,7 @@ async function createAndSendDraft(env: Env, input: {
     if (!sideEffectCommitted) {
       await releaseIdempotencyKey(env, "draft_send", input.tenantId, idempotencyKey);
     }
-    throw error;
+    throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
   }
 }
 
@@ -3965,12 +4051,16 @@ async function validateRotatedAccessClaims(env: Env, claims: AccessTokenClaims):
       if (mailbox.tenant_id !== claims.tenantId) {
         throw new RouteRequestError("Bound mailbox does not belong to tenant", 409);
       }
+      if (mailbox.status !== "active") {
+        throw new RouteRequestError("Bound mailbox is not active", 409);
+      }
     }
   }
   await validateTokenAgentMailboxScopes(env, {
     tenantId: claims.tenantId,
     agentId: claims.agentId,
     mailboxIds: claims.mailboxIds,
+    scopes: claims.scopes,
   });
 
   return {
@@ -4361,6 +4451,18 @@ async function finalizePaymentReceiptSettlement(
 ): Promise<Record<string, unknown>> {
   const finalizedReceipt = facilitatorOutcome?.receipt ?? receipt;
   const parsedMetadata = finalizedReceipt.metadata;
+  const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(
+    env,
+    finalizedReceipt.tenantId,
+    finalizedReceipt.id,
+  );
+
+  if (finalizedReceipt.status === "settled" && !existingLedgerEntry) {
+    throw new RouteRequestError(
+      "Payment receipt is already settled but local settlement records are incomplete; manual reconciliation is required",
+      409,
+    );
+  }
 
   if (finalizedReceipt.receiptType === "upgrade") {
     if (!parsedMetadata || parsedMetadata.receiptType !== "upgrade") {
@@ -4384,7 +4486,6 @@ async function finalizePaymentReceiptSettlement(
     const targetPricingTier = parsedMetadata.targetPricingTier;
     const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
 
-    const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
     if (finalizedReceipt.status === "settled" && existingLedgerEntry) {
       const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
       const sendPolicy = await ensureTenantSendPolicy(env, finalizedReceipt.tenantId);
@@ -4475,7 +4576,6 @@ async function finalizePaymentReceiptSettlement(
     };
   }
 
-  const existingLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(env, finalizedReceipt.tenantId, finalizedReceipt.id);
   if (existingLedgerEntry) {
     const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
     const settledReceipt = finalizedReceipt.status === "settled"
