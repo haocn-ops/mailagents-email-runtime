@@ -789,6 +789,36 @@ export async function assignDraftThreadId(env: Env, draftId: string, threadId: s
   ));
 }
 
+async function restoreDraftSendState(env: Env, input: {
+  draftId: string;
+  status: DraftRecord["status"];
+  threadId: string | null;
+}): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `UPDATE drafts
+     SET status = ?, thread_id = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.status,
+    input.threadId,
+    nowIso(),
+    input.draftId,
+  ));
+}
+
+export async function deleteThreadIfUnreferenced(env: Env, threadId: string): Promise<void> {
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM threads
+     WHERE id = ?
+       AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM drafts WHERE thread_id = ?)`
+  ).bind(
+    threadId,
+    threadId,
+    threadId,
+  ));
+}
+
 export async function assignMessageThreadId(env: Env, messageId: string, threadId: string): Promise<void> {
   await execute(env.D1_DB.prepare(
     `UPDATE messages
@@ -902,7 +932,12 @@ export async function findThreadByReplyContext(env: Env, input: {
     threadKey: selected.internet_message_id ?? selected.provider_message_id ?? `outbound:${selected.message_id}`,
     subjectNorm,
   });
-  await assignMessageThreadId(env, selected.message_id, thread.id);
+  try {
+    await assignMessageThreadId(env, selected.message_id, thread.id);
+  } catch (error) {
+    await deleteThreadIfUnreferenced(env, thread.id).catch(() => undefined);
+    throw error;
+  }
   return thread;
 }
 
@@ -1110,6 +1145,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     throw new Error(`Draft status ${draft.status} cannot be enqueued for send`);
   }
   const priorDraftStatus = draft.status;
+  const priorThreadId = draft.threadId ?? null;
   const outboundJobId = createId("obj");
   const timestamp = nowIso();
   const claimed = await claimDraftForSend(env, draftId, timestamp);
@@ -1118,83 +1154,88 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
     throw new Error(`Draft status ${latestDraft?.status ?? "unknown"} cannot be enqueued for send`);
   }
   const outboundMessageId = createId("msg");
-  const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
-  const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
-  let outboundThreadId = draft.threadId ?? null;
-  const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
-  const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
-  const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
-  const subject = typeof draftPayload.subject === "string" ? draftPayload.subject : "";
-  const normalizedSubject = normalizeSubject(subject);
-  const creditRequirement = await getOutboundCreditRequirement(env, {
-    tenantId: draft.tenantId,
-    to,
-    cc,
-    bcc,
-    sourceMessageId: draft.sourceMessageId,
-    createdVia: draft.createdVia,
-  });
-  const attachmentRefs = Array.isArray(draftPayload.attachments)
-    ? draftPayload.attachments.filter((item): item is { r2Key?: unknown } => typeof item === "object" && item !== null)
-    : [];
-  const mailbox = await firstRow<MailboxAddressRow>(
-    env.D1_DB.prepare(
-      `SELECT address, status
-       FROM mailboxes
-       WHERE id = ?`
-    ).bind(draft.mailboxId)
-  );
-  const fromAddress = typeof draftPayload.from === "string" ? draftPayload.from.trim().toLowerCase() : "";
-  const mailboxAddress = mailbox?.address.trim().toLowerCase() ?? "";
-
-  if (!mailboxAddress) {
-    throw new Error("Mailbox not found");
-  }
-  if (mailbox?.status !== "active") {
-    throw new Error("Mailbox is not active");
-  }
-  if (!fromAddress) {
-    throw new Error("Draft from address is required");
-  }
-  if (fromAddress !== mailboxAddress) {
-    throw new Error("Draft from address must match the mailbox address");
-  }
-  if (!outboundThreadId && normalizedSubject) {
-    const outboundThread = await getOrCreateThread(env, {
-      tenantId: draft.tenantId,
-      mailboxId: draft.mailboxId,
-      threadKey: `outbound:${outboundMessageId}`,
-      subjectNorm: normalizedSubject,
-    });
-    outboundThreadId = outboundThread.id;
-    await assignDraftThreadId(env, draft.id, outboundThread.id);
-  }
-  for (const ref of attachmentRefs) {
-    const r2Key = typeof ref.r2Key === "string" ? ref.r2Key.trim() : "";
-    if (!r2Key) {
-      throw new Error("Attachment r2Key is required");
-    }
-
-    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
-    if (!owner) {
-      throw new Error(`Attachment not found: ${r2Key}`);
-    }
-    if (owner.tenantId !== draft.tenantId) {
-      throw new Error("Attachment does not belong to tenant");
-    }
-    if (owner.mailboxId !== draft.mailboxId) {
-      throw new Error("Attachment does not belong to mailbox");
-    }
-  }
-
-  if (creditRequirement.requiresCredits) {
-    const reserved = await reserveTenantAvailableCredits(env, draft.tenantId, creditRequirement.creditsRequired);
-    if (!reserved) {
-      throw new Error(`Insufficient credits for external sending. Required: ${creditRequirement.creditsRequired}`);
-    }
-  }
+  let creditReservationAmount = 0;
+  let createdThreadId: string | null = null;
 
   try {
+    const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
+    const draftPayload = draftObject ? await draftObject.json<Record<string, unknown>>() : {};
+    let outboundThreadId = draft.threadId ?? null;
+    const to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+    const cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+    const bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+    const subject = typeof draftPayload.subject === "string" ? draftPayload.subject : "";
+    const normalizedSubject = normalizeSubject(subject);
+    const creditRequirement = await getOutboundCreditRequirement(env, {
+      tenantId: draft.tenantId,
+      to,
+      cc,
+      bcc,
+      sourceMessageId: draft.sourceMessageId,
+      createdVia: draft.createdVia,
+    });
+    const attachmentRefs = Array.isArray(draftPayload.attachments)
+      ? draftPayload.attachments.filter((item): item is { r2Key?: unknown } => typeof item === "object" && item !== null)
+      : [];
+    const mailbox = await firstRow<MailboxAddressRow>(
+      env.D1_DB.prepare(
+        `SELECT address, status
+         FROM mailboxes
+         WHERE id = ?`
+      ).bind(draft.mailboxId)
+    );
+    const fromAddress = typeof draftPayload.from === "string" ? draftPayload.from.trim().toLowerCase() : "";
+    const mailboxAddress = mailbox?.address.trim().toLowerCase() ?? "";
+
+    if (!mailboxAddress) {
+      throw new Error("Mailbox not found");
+    }
+    if (mailbox?.status !== "active") {
+      throw new Error("Mailbox is not active");
+    }
+    if (!fromAddress) {
+      throw new Error("Draft from address is required");
+    }
+    if (fromAddress !== mailboxAddress) {
+      throw new Error("Draft from address must match the mailbox address");
+    }
+    if (!outboundThreadId && normalizedSubject) {
+      const outboundThread = await getOrCreateThread(env, {
+        tenantId: draft.tenantId,
+        mailboxId: draft.mailboxId,
+        threadKey: `outbound:${outboundMessageId}`,
+        subjectNorm: normalizedSubject,
+      });
+      outboundThreadId = outboundThread.id;
+      createdThreadId = outboundThread.id;
+      await assignDraftThreadId(env, draft.id, outboundThread.id);
+    }
+    for (const ref of attachmentRefs) {
+      const r2Key = typeof ref.r2Key === "string" ? ref.r2Key.trim() : "";
+      if (!r2Key) {
+        throw new Error("Attachment r2Key is required");
+      }
+
+      const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+      if (!owner) {
+        throw new Error(`Attachment not found: ${r2Key}`);
+      }
+      if (owner.tenantId !== draft.tenantId) {
+        throw new Error("Attachment does not belong to tenant");
+      }
+      if (owner.mailboxId !== draft.mailboxId) {
+        throw new Error("Attachment does not belong to mailbox");
+      }
+    }
+
+    if (creditRequirement.requiresCredits) {
+      const reserved = await reserveTenantAvailableCredits(env, draft.tenantId, creditRequirement.creditsRequired);
+      if (!reserved) {
+        throw new Error(`Insufficient credits for external sending. Required: ${creditRequirement.creditsRequired}`);
+      }
+      creditReservationAmount = creditRequirement.creditsRequired;
+    }
+
     await execute(env.D1_DB.prepare(
       `INSERT INTO messages (
          id, tenant_id, mailbox_id, thread_id, direction, provider, from_addr, to_addr,
@@ -1237,15 +1278,20 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
   } catch (error) {
     await execute(env.D1_DB.prepare(
       `DELETE FROM outbound_jobs WHERE id = ?`
-    ).bind(outboundJobId)).catch(() => undefined);
+      ).bind(outboundJobId)).catch(() => undefined);
     await execute(env.D1_DB.prepare(
       `DELETE FROM messages WHERE id = ?`
     ).bind(outboundMessageId)).catch(() => undefined);
-    await execute(env.D1_DB.prepare(
-      `UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?`
-    ).bind(priorDraftStatus, nowIso(), draftId)).catch(() => undefined);
-    if (creditRequirement.requiresCredits) {
-      await releaseTenantReservedCredits(env, draft.tenantId, creditRequirement.creditsRequired).catch(() => undefined);
+    await restoreDraftSendState(env, {
+      draftId,
+      status: priorDraftStatus,
+      threadId: priorThreadId,
+    }).catch(() => undefined);
+    if (createdThreadId && createdThreadId !== priorThreadId) {
+      await deleteThreadIfUnreferenced(env, createdThreadId).catch(() => undefined);
+    }
+    if (creditReservationAmount > 0) {
+      await releaseTenantReservedCredits(env, draft.tenantId, creditReservationAmount).catch(() => undefined);
     }
     throw error;
   }

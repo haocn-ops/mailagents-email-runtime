@@ -142,6 +142,144 @@ follow-ups below:
    the mailbox itself has been disabled.
    Refs: `src/routes/api.ts:4045`, `src/routes/api.ts:4053`
 
+## Additional Follow-up (2026-03-30)
+
+1. Fixed: agent-targeted REST and MCP routes no longer require tenant-scoped
+   provisioning tokens to carry a matching `agentId`. The runtime now enforces
+   exact agent matching only when the bearer token is itself agent-scoped,
+   aligning implementation with the documented "matching agent when the token
+   is agent-scoped" rule while preserving tenant and mailbox boundary checks.
+   Refs: `src/lib/auth.ts:146`, `src/routes/api.ts:2043`,
+   `src/routes/mcp.ts:1292`, `src/routes/api.ts:4165`
+
+2. Hardening: `/admin/api/send` now returns a partial-success `409` once draft
+   state has already been created, instead of falling through as a generic
+   `502`. This reduces accidental duplicate admin sends after enqueue or
+   idempotency-record persistence failures.
+   Refs: `src/routes/site.ts:1858`, `src/routes/site.ts:1988`,
+   `src/routes/site.ts:2012`
+
+3. Hardening: REST `POST /v1/drafts/:draftId/send` and MCP `send_draft` now
+   re-validate the stored draft payload `from` address and attachment
+   ownership before enqueue. Legacy malformed drafts now fail as explicit
+   client errors instead of bubbling generic repository-layer `500`s during
+   send.
+   Refs: `src/routes/api.ts:387`, `src/routes/api.ts:405`,
+   `src/routes/mcp.ts:286`, `src/routes/mcp.ts:304`
+
+4. Hardening: admin console list endpoints now clamp `limit` consistently
+   instead of accepting arbitrary numeric query values. This applies to admin
+   message, outbound job, draft, and idempotency-record listings.
+   Refs: `src/routes/site.ts:1486`, `src/routes/site.ts:1581`,
+   `src/routes/site.ts:1796`, `src/routes/site.ts:2242`
+
+5. Hardening: the shared draft-send guard used by queue delivery and admin
+   outbound-job retry now also re-validates the stored draft payload `from`
+   address plus attachment ownership and shape before any async send path can
+   proceed. Legacy malformed drafts therefore fail as explicit client-facing
+   validation errors instead of surfacing later as generic send or repository
+   failures during retry execution.
+   Refs: `src/lib/draft-send-guards.ts:24`, `src/lib/draft-send-guards.ts:63`,
+   `src/handlers/queues.ts:552`, `src/routes/site.ts:1637`
+
+6. Verified: free-tier quota bypass for unlocked tenants now applies even on
+   internal-only sends. The current outbound-policy path derives
+   `quotaBypassUnlocked` directly from tenant credits or enabled policy rather
+   than gating it on the presence of external recipients.
+   Refs: `src/lib/outbound-policy.ts:86`, `src/lib/outbound-policy.ts:94`,
+   `src/lib/outbound-policy.ts:138`
+
+7. Verified: tenant `internalDomainAllowlist` updates now resync default
+   self-serve agent recipient policies when the allowlist changes, so the
+   default per-agent policy no longer drifts from tenant send policy.
+   Refs: `src/routes/api.ts:1196`,
+   `src/lib/self-serve-agent-policy.ts:102`
+
+8. Verified: the site-admin browser session cookie now stores a signed
+   `site-admin` session token rather than the raw `ADMIN_API_SECRET`, and
+   `/admin/api/*` responses are normalized to `private, no-store` headers.
+   Refs: `src/routes/site.ts:2142`, `src/routes/site.ts:2197`,
+   `src/routes/site.ts:2282`
+
+9. Hardening: `enqueueDraftSend()` now rolls draft state back fully when any
+   pre-enqueue validation or credit reservation step fails after the draft has
+   been claimed for send. Previously, malformed legacy drafts or insufficient
+   credits could leave the draft stuck in `queued` with a speculative
+   thread assignment even though no outbound job was created.
+   Refs: `src/repositories/mail.ts:792`, `src/repositories/mail.ts:1124`
+
+10. Verified: reply-thread fallback no longer relies solely on
+    `messages.to_addr`; when outbound history came from a stored draft, the
+    fallback recipient matcher now supplements recipients from the draft
+    payload's `to`, `cc`, and `bcc` fields.
+    Refs: `src/repositories/mail.ts:750`, `src/repositories/mail.ts:873`
+
+11. Verified: subject normalization now strips repeated `Re:`, `Fwd:`, and
+    `Fw:` prefixes instead of only one layer, improving thread matching for
+    longer reply/forward chains.
+    Refs: `src/lib/email-parser.ts:183`
+
+12. Verified: tenant billing and DID routes now reject mailbox- or
+    agent-scoped tokens by enforcing tenant-scoped access, and site-admin
+    cookie-authenticated write actions now require same-origin requests.
+    Refs: `src/routes/api.ts:876`, `src/routes/api.ts:1031`,
+    `src/routes/api.ts:1369`, `src/routes/site.ts:2275`
+
+13. Hardening: draft-send rollback now also deletes any brand-new outbound
+    thread created speculatively for the failed enqueue attempt, as long as no
+    draft or message still references it. This prevents malformed drafts or
+    failed pre-enqueue checks from accumulating orphan thread rows.
+    Refs: `src/repositories/mail.ts:809`, `src/repositories/mail.ts:1197`
+
+14. Hardening: inbound email normalization now cleans up newly written R2
+    blobs when later persistence fails. If normalized message state cannot be
+    committed, the fresh normalized JSON blob is deleted; if attachment-row
+    persistence fails, the just-uploaded attachment blobs are deleted; and
+    stale superseded attachment blobs are now deleted immediately after a
+    successful row swap instead of waiting until the end of the ingest path.
+    Refs: `src/handlers/queues.ts:181`, `src/handlers/queues.ts:195`,
+    `src/handlers/queues.ts:212`, `src/handlers/queues.ts:230`
+
+15. Hardening: review-escalation trace creation now rolls back its persistence
+    artifacts if the later `agent_runs` insert or task status update fails.
+    This prevents `recordTaskNeedsReview()` from leaving orphan trace blobs or
+    half-written run rows behind when the queue fallback path itself hits a D1
+    error.
+    Refs: `src/handlers/queues.ts:109`, `src/handlers/queues.ts:130`,
+    `src/handlers/queues.ts:151`
+
+16. Hardening: agent creation and agent-version creation now clean up newly
+    written config/manifest R2 blobs if later D1 inserts fail, and
+    `createAgentVersion()` also removes any partially inserted capability/tool
+    rows during rollback. This prevents orphan agent artifacts from surviving
+    failed create flows.
+    Refs: `src/repositories/agents.ts:262`, `src/repositories/agents.ts:266`,
+    `src/repositories/agents.ts:421`, `src/repositories/agents.ts:475`
+
+17. Hardening: the SES webhook path now defers writing the raw event payload
+    blob until after message/tag consistency checks pass, and it deletes that
+    blob if the `delivery_events` row insert fails. This prevents mismatch
+    rejections or insert errors from leaving orphan webhook payload objects in
+    R2.
+    Refs: `src/routes/api.ts:3420`, `src/routes/api.ts:3442`,
+    `src/routes/api.ts:3447`
+
+18. Hardening: `updateAgent()` no longer overwrites the existing config blob
+    in place before the SQL update commits. Config updates now write a fresh
+    R2 object, switch the database pointer atomically, delete that fresh blob
+    on SQL failure, and only then best-effort delete the superseded prior
+    config blob. This prevents failed agent updates from silently mutating live
+    config content.
+    Refs: `src/repositories/agents.ts:321`, `src/repositories/agents.ts:337`,
+    `src/repositories/agents.ts:344`, `src/repositories/agents.ts:367`
+
+19. Hardening: orphan thread cleanup now also covers inbound normalization and
+    reply-thread fallback attachment paths. If a newly created thread cannot be
+    attached to a message because the later message update fails, the runtime
+    now deletes that thread when it remains unreferenced.
+    Refs: `src/repositories/mail.ts:809`, `src/repositories/mail.ts:929`,
+    `src/handlers/queues.ts:204`
+
 ## Findings
 
 1. Free-tier quota bypass only applies when `externalDomains.length > 0`, so

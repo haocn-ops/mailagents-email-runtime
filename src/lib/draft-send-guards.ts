@@ -1,11 +1,23 @@
 import { hasActiveMailboxBinding, hasActiveMailboxDeployment, getAgent, getMailboxById } from "../repositories/agents";
 import { reserveTenantAvailableCredits } from "../repositories/billing";
-import { getMessage, getThread } from "../repositories/mail";
+import { getAttachmentOwnerByR2Key, getMessage, getThread } from "../repositories/mail";
 import { checkOutboundCreditRequirement } from "./outbound-credits";
 import { evaluateOutboundPolicy } from "./outbound-policy";
 import type { Env } from "../types";
 
 const SEND_CAPABLE_MAILBOX_ROLES = ["primary", "shared", "send_only"] as const;
+
+type DraftAttachment = {
+  filename: string;
+  contentType: string;
+  r2Key: string;
+};
+
+type DraftRecipients = {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+};
 
 export class DraftSendValidationError extends Error {
   readonly status: number;
@@ -17,22 +29,84 @@ export class DraftSendValidationError extends Error {
   }
 }
 
-export async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
-  to: string[];
-  cc: string[];
-  bcc: string[];
-}> {
+async function readDraftPayload(env: Env, draftR2Key: string): Promise<Record<string, unknown>> {
   const object = await env.R2_EMAIL.get(draftR2Key);
   if (!object) {
     throw new DraftSendValidationError("Draft payload not found", 404);
   }
 
-  const payload = await object.json<Record<string, unknown>>();
+  return object.json<Record<string, unknown>>();
+}
+
+function parseDraftRecipients(payload: Record<string, unknown>): DraftRecipients {
   return {
     to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
     cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
     bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
   };
+}
+
+function parseDraftAttachments(payload: Record<string, unknown>): DraftAttachment[] {
+  if (!Array.isArray(payload.attachments)) {
+    return [];
+  }
+
+  return payload.attachments.map((item) => {
+    if (
+      typeof item !== "object"
+      || item === null
+      || typeof (item as { filename?: unknown }).filename !== "string"
+      || typeof (item as { contentType?: unknown }).contentType !== "string"
+      || typeof (item as { r2Key?: unknown }).r2Key !== "string"
+    ) {
+      throw new DraftSendValidationError("Draft attachments must include filename, contentType, and r2Key", 400);
+    }
+
+    return {
+      filename: (item as { filename: string }).filename,
+      contentType: (item as { contentType: string }).contentType,
+      r2Key: (item as { r2Key: string }).r2Key,
+    };
+  });
+}
+
+async function validateStoredDraftPayload(env: Env, input: {
+  tenantId: string;
+  mailboxId: string;
+  mailboxAddress: string;
+  draftR2Key: string;
+}): Promise<DraftRecipients> {
+  const payload = await readDraftPayload(env, input.draftR2Key);
+  const from = typeof payload.from === "string" ? payload.from.trim().toLowerCase() : "";
+  const expectedFrom = input.mailboxAddress.trim().toLowerCase();
+  if (!from || from !== expectedFrom) {
+    throw new DraftSendValidationError("from must match the mailbox address", 400);
+  }
+
+  const attachments = parseDraftAttachments(payload);
+  for (const attachment of attachments) {
+    const r2Key = attachment.r2Key.trim();
+    if (!r2Key) {
+      throw new DraftSendValidationError("Attachment r2Key is required", 400);
+    }
+
+    const owner = await getAttachmentOwnerByR2Key(env, r2Key);
+    if (!owner) {
+      throw new DraftSendValidationError("Attachment not found", 404);
+    }
+    if (owner.tenantId !== input.tenantId) {
+      throw new DraftSendValidationError("Attachment does not belong to tenant", 409);
+    }
+    if (owner.mailboxId !== input.mailboxId) {
+      throw new DraftSendValidationError("Attachment does not belong to mailbox", 409);
+    }
+  }
+
+  return parseDraftRecipients(payload);
+}
+
+export async function readDraftRecipients(env: Env, draftR2Key: string): Promise<DraftRecipients> {
+  return parseDraftRecipients(await readDraftPayload(env, draftR2Key));
 }
 
 export async function ensureDraftSendAllowed(env: Env, input: {
@@ -108,7 +182,12 @@ export async function ensureDraftSendAllowed(env: Env, input: {
     }
   }
 
-  const recipients = await readDraftRecipients(env, input.draftR2Key);
+  const recipients = await validateStoredDraftPayload(env, {
+    tenantId: input.tenantId,
+    mailboxId: input.mailboxId,
+    mailboxAddress: mailbox.address,
+    draftR2Key: input.draftR2Key,
+  });
   const decision = await evaluateOutboundPolicy(env, {
     tenantId: input.tenantId,
     agentId: input.agentId,

@@ -22,4 +22,6 @@ Current records:
 
 - [docs/archive/2026-03-runtime-verification.md](./2026-03-runtime-verification.md) — dated `dev` and production verification details from the March 2026 rollout window
 - [docs/archive/2026-03-23-black-box-followup.md](./2026-03-23-black-box-followup.md) — archived black-box findings received through `hello@mailagents.net` and the corresponding remediation pass
+- [docs/archive/2026-03-24-production-black-box-report.md](./2026-03-24-production-black-box-report.md) — archived production black-box snapshot from 2026-03-24 before the current production hardening state
 - [docs/archive/2026-03-27-code-review-findings.md](./2026-03-27-code-review-findings.md) — archived source-code review findings snapshot collected on 2026-03-27
+- [docs/archive/2026-03-30-production-black-box-report.md](./2026-03-30-production-black-box-report.md) — archived read-only production black-box verification from 2026-03-30

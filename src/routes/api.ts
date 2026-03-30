@@ -1,7 +1,7 @@
 import { createId } from "../lib/ids";
 import {
-  enforceAgentAccess,
   enforceMailboxAccess,
+  enforceScopedAgentAccess,
   enforceTenantAccess,
   mintAccessToken,
   requireAdminRoutesEnabled,
@@ -382,6 +382,65 @@ async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
     cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
     bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
   };
+}
+
+async function validateStoredDraftFromAddress(env: Env, draft: {
+  tenantId: string;
+  mailboxId: string;
+  draftR2Key: string;
+}) {
+  const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
+  if (!draftObject) {
+    throw new RouteRequestError("Draft payload not found", 404);
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  await validateDraftFromAddress(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+    from: typeof payload.from === "string" ? payload.from : "",
+  });
+}
+
+async function validateStoredDraftAttachments(env: Env, draft: {
+  tenantId: string;
+  mailboxId: string;
+  draftR2Key: string;
+}) {
+  const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
+  if (!draftObject) {
+    throw new RouteRequestError("Draft payload not found", 404);
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  const attachments = payload.attachments;
+  if (!Array.isArray(attachments)) {
+    return;
+  }
+
+  const normalizedAttachments = attachments.map((item) => {
+    if (
+      typeof item !== "object"
+      || item === null
+      || typeof (item as { filename?: unknown }).filename !== "string"
+      || typeof (item as { contentType?: unknown }).contentType !== "string"
+      || typeof (item as { r2Key?: unknown }).r2Key !== "string"
+    ) {
+      throw new RouteRequestError("Draft attachments must include filename, contentType, and r2Key", 400);
+    }
+
+    return {
+      filename: (item as { filename: string }).filename,
+      contentType: (item as { contentType: string }).contentType,
+      r2Key: (item as { r2Key: string }).r2Key,
+    };
+  });
+
+  await validateDraftAttachments(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+    attachments: normalizedAttachments,
+  });
 }
 
 async function validateDraftOutboundCredits(env: Env, draft: {
@@ -2039,7 +2098,7 @@ router.on("GET", "/v1/agents/:agentId", async (_request, env, _ctx, route) => {
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2066,7 +2125,7 @@ router.on("PATCH", "/v1/agents/:agentId", async (request, env, _ctx, route) => {
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, existing.id);
+  const agentError = enforceScopedAgentAccess(auth, existing.id);
   if (agentError) {
     return agentError;
   }
@@ -2112,7 +2171,7 @@ router.on("POST", "/v1/agents/:agentId/versions", async (request, env, _ctx, rou
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2166,7 +2225,7 @@ router.on("GET", "/v1/agents/:agentId/versions", async (request, env, _ctx, rout
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2193,7 +2252,7 @@ router.on("GET", "/v1/agents/:agentId/versions/:versionId", async (request, env,
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2225,7 +2284,7 @@ router.on("POST", "/v1/agents/:agentId/deployments", async (request, env, _ctx, 
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2302,7 +2361,7 @@ router.on("GET", "/v1/agents/:agentId/deployments", async (request, env, _ctx, r
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2334,7 +2393,7 @@ router.on("PATCH", "/v1/agents/:agentId/deployments/:deploymentId", async (reque
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2396,7 +2455,7 @@ router.on("POST", "/v1/agents/:agentId/deployments/rollout", async (request, env
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2471,7 +2530,7 @@ router.on("POST", "/v1/agents/:agentId/deployments/:deploymentId/rollback", asyn
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, agent.id);
+  const agentError = enforceScopedAgentAccess(auth, agent.id);
   if (agentError) {
     return agentError;
   }
@@ -2526,7 +2585,7 @@ router.on("POST", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, ro
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, route.params.agentId);
+  const agentError = enforceScopedAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
@@ -2581,7 +2640,7 @@ router.on("GET", "/v1/agents/:agentId/mailboxes", async (request, env, _ctx, rou
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, route.params.agentId);
+  const agentError = enforceScopedAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
@@ -2611,7 +2670,7 @@ router.on("PUT", "/v1/agents/:agentId/policy", async (request, env, _ctx, route)
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, route.params.agentId);
+  const agentError = enforceScopedAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
@@ -2660,7 +2719,7 @@ router.on("GET", "/v1/agents/:agentId/tasks", async (request, env, _ctx, route) 
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, route.params.agentId);
+  const agentError = enforceScopedAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
@@ -3040,7 +3099,7 @@ router.on("POST", "/v1/agents/:agentId/drafts", async (request, env, _ctx, route
   if (auth instanceof Response) {
     return auth;
   }
-  const agentError = enforceAgentAccess(auth, route.params.agentId);
+  const agentError = enforceScopedAgentAccess(auth, route.params.agentId);
   if (agentError) {
     return agentError;
   }
@@ -3148,7 +3207,7 @@ router.on("GET", "/v1/drafts/:draftId", async (request, env, _ctx, route) => {
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, draft.agentId);
+  const agentError = enforceScopedAgentAccess(auth, draft.agentId);
   if (agentError) {
     return agentError;
   }
@@ -3178,7 +3237,7 @@ router.on("DELETE", "/v1/drafts/:draftId", async (request, env, _ctx, route) => 
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, draft.agentId);
+  const agentError = enforceScopedAgentAccess(auth, draft.agentId);
   if (agentError) {
     return agentError;
   }
@@ -3220,7 +3279,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   if (tenantError) {
     return tenantError;
   }
-  const agentError = enforceAgentAccess(auth, draft.agentId);
+  const agentError = enforceScopedAgentAccess(auth, draft.agentId);
   if (agentError) {
     return agentError;
   }
@@ -3246,6 +3305,8 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       threadId: draft.threadId ?? undefined,
       sourceMessageId: draft.sourceMessageId ?? undefined,
     });
+    await validateStoredDraftFromAddress(env, draft);
+    await validateStoredDraftAttachments(env, draft);
     const referenceVisibilityError = await enforceMailboxScopedDraftReferenceVisibility(env, auth, {
       threadId: draft.threadId ?? undefined,
       sourceMessageId: draft.sourceMessageId ?? undefined,
@@ -3328,6 +3389,8 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
     tenantId: draft.tenantId,
     mailboxId: draft.mailboxId,
   });
+  await validateStoredDraftFromAddress(env, draft);
+  await validateStoredDraftAttachments(env, draft);
   await validateSendAgentBinding(env, {
     tenantId: draft.tenantId,
     agentId: draft.agentId,
@@ -3356,11 +3419,6 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
 
   const body = await readJson<unknown>(request);
   const normalized = normalizeSesEvent(body);
-  const payloadR2Key = `events/ses/${createId("evt")}.json`;
-  await env.R2_EMAIL.put(payloadR2Key, JSON.stringify(body, null, 2), {
-    httpMetadata: { contentType: "application/json; charset=utf-8" },
-  });
-
   const providerMessage = normalized.providerMessageId
     ? await getMessageByProviderMessageId(env, normalized.providerMessageId)
     : null;
@@ -3381,12 +3439,22 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     return json({ error: "Webhook provider message mismatch" }, { status: 409 });
   }
 
-  await insertDeliveryEvent(env, {
-    messageId: message?.id,
-    providerMessageId: normalized.providerMessageId,
-    eventType: normalized.eventType,
-    payloadR2Key,
+  const payloadR2Key = `events/ses/${createId("evt")}.json`;
+  await env.R2_EMAIL.put(payloadR2Key, JSON.stringify(body, null, 2), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
+
+  try {
+    await insertDeliveryEvent(env, {
+      messageId: message?.id,
+      providerMessageId: normalized.providerMessageId,
+      eventType: normalized.eventType,
+      payloadR2Key,
+    });
+  } catch (error) {
+    await env.R2_EMAIL.delete(payloadR2Key).catch(() => undefined);
+    throw error;
+  }
 
   const isTerminalSesEvent =
     normalized.eventType === "delivery"
@@ -4161,7 +4229,7 @@ async function resolveReplayAgentTarget(
 > {
   const agentId = requestedAgentId?.trim();
   if (agentId) {
-    const agentError = enforceAgentAccess(claims, agentId);
+    const agentError = enforceScopedAgentAccess(claims, agentId);
     if (agentError) {
       return agentError;
     }
@@ -4187,7 +4255,7 @@ async function resolveReplayAgentTarget(
     return badRequest("agentId is required when the mailbox has no active agent deployment");
   }
 
-  const agentError = enforceAgentAccess(claims, target.agentId);
+  const agentError = enforceScopedAgentAccess(claims, target.agentId);
   if (agentError) {
     return agentError;
   }

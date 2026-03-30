@@ -143,6 +143,14 @@ export function enforceAgentAccess(claims: AccessTokenClaims, agentId: string): 
   return null;
 }
 
+export function enforceScopedAgentAccess(claims: AccessTokenClaims, agentId: string): Response | null {
+  if (!claims.agentId) {
+    return null;
+  }
+
+  return enforceAgentAccess(claims, agentId);
+}
+
 export function enforceMailboxAccess(claims: AccessTokenClaims, mailboxId: string): Response | null {
   if (claims.mailboxIds?.length && !claims.mailboxIds.includes(mailboxId)) {
     return json({ error: "Mailbox access denied" }, { status: 403 });

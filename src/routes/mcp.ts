@@ -1,6 +1,6 @@
 import {
-  enforceAgentAccess,
   enforceMailboxAccess,
+  enforceScopedAgentAccess,
   enforceTenantAccess,
   requireAuth,
 } from "../lib/auth";
@@ -281,6 +281,65 @@ async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
     cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
     bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
   };
+}
+
+async function validateStoredDraftFromAddress(env: Env, draft: {
+  tenantId: string;
+  mailboxId: string;
+  draftR2Key: string;
+}) {
+  const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
+  if (!draftObject) {
+    throw new McpToolError("resource_draft_not_found", "Draft payload not found");
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  await validateDraftFromAddress(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+    from: typeof payload.from === "string" ? payload.from : "",
+  });
+}
+
+async function validateStoredDraftAttachments(env: Env, draft: {
+  tenantId: string;
+  mailboxId: string;
+  draftR2Key: string;
+}) {
+  const draftObject = await env.R2_EMAIL.get(draft.draftR2Key);
+  if (!draftObject) {
+    throw new McpToolError("resource_draft_not_found", "Draft payload not found");
+  }
+
+  const payload = await draftObject.json<Record<string, unknown>>();
+  const attachments = payload.attachments;
+  if (!Array.isArray(attachments)) {
+    return;
+  }
+
+  const normalizedAttachments = attachments.map((item) => {
+    if (
+      typeof item !== "object"
+      || item === null
+      || typeof (item as { filename?: unknown }).filename !== "string"
+      || typeof (item as { contentType?: unknown }).contentType !== "string"
+      || typeof (item as { r2Key?: unknown }).r2Key !== "string"
+    ) {
+      throw new McpToolError("invalid_arguments", "Draft attachments must include filename, contentType, and r2Key");
+    }
+
+    return {
+      filename: (item as { filename: string }).filename,
+      contentType: (item as { contentType: string }).contentType,
+      r2Key: (item as { r2Key: string }).r2Key,
+    };
+  });
+
+  await validateDraftAttachments(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+    attachments: normalizedAttachments,
+  });
 }
 
 async function validateDraftOutboundCredits(env: Env, draft: {
@@ -1288,7 +1347,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -1325,7 +1384,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -1394,7 +1453,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       await throwIfResponseError(mailboxError);
     }
     await enforceMailboxScopedMessageVisibility(env, auth, message.id);
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -1582,7 +1641,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -1771,7 +1830,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2024,7 +2083,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, agentId);
+    const agentError = enforceScopedAgentAccess(auth, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2088,7 +2147,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, draft.agentId);
+    const agentError = enforceScopedAgentAccess(auth, draft.agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2116,7 +2175,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, draft.agentId);
+    const agentError = enforceScopedAgentAccess(auth, draft.agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2138,6 +2197,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         threadId: draft.threadId ?? undefined,
         sourceMessageId: draft.sourceMessageId ?? undefined,
       });
+      await validateStoredDraftFromAddress(env, draft);
+      await validateStoredDraftAttachments(env, draft);
       await enforceMailboxScopedDraftReferenceVisibility(env, auth, {
         threadId: draft.threadId ?? undefined,
         sourceMessageId: draft.sourceMessageId ?? undefined,
@@ -2211,6 +2272,8 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       tenantId: draft.tenantId,
       mailboxId: draft.mailboxId,
     });
+    await validateStoredDraftFromAddress(env, draft);
+    await validateStoredDraftAttachments(env, draft);
     await validateBindingResources(env, draft.tenantId, draft.agentId, draft.mailboxId, [...SEND_CAPABLE_MAILBOX_ROLES]);
     await validateDraftOutboundPolicy(env, draft);
     await validateDraftOutboundCredits(env, draft);
@@ -2235,7 +2298,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     if (tenantError) {
       await throwIfResponseError(tenantError);
     }
-    const agentError = enforceAgentAccess(auth, draft.agentId);
+    const agentError = enforceScopedAgentAccess(auth, draft.agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2419,7 +2482,7 @@ async function resolveReplayAgentTarget(
 ): Promise<{ agentId: string; agentVersionId?: string; deploymentId?: string }> {
   const agentId = requestedAgentId?.trim();
   if (agentId) {
-    const agentError = enforceAgentAccess(claims, agentId);
+    const agentError = enforceScopedAgentAccess(claims, agentId);
     if (agentError) {
       await throwIfResponseError(agentError);
     }
@@ -2445,7 +2508,7 @@ async function resolveReplayAgentTarget(
     throw new McpToolError("invalid_arguments", "agentId is required when the mailbox has no active agent deployment");
   }
 
-  const agentError = enforceAgentAccess(claims, target.agentId);
+  const agentError = enforceScopedAgentAccess(claims, target.agentId);
   if (agentError) {
     await throwIfResponseError(agentError);
   }

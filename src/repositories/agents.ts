@@ -263,23 +263,28 @@ export async function createAgent(env: Env, input: {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agents (
-       id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.slug ?? null,
-    input.name,
-    input.description ?? null,
-    "active",
-    input.mode,
-    configR2Key,
-    null,
-    timestamp,
-    timestamp
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO agents (
+         id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.slug ?? null,
+      input.name,
+      input.description ?? null,
+      "active",
+      input.mode,
+      configR2Key,
+      null,
+      timestamp,
+      timestamp
+    ));
+  } catch (error) {
+    await env.R2_EMAIL.delete(configR2Key).catch(() => undefined);
+    throw error;
+  }
 
   return requireRow(await getAgent(env, id), "Failed to load created agent");
 }
@@ -325,29 +330,43 @@ export async function updateAgent(env: Env, agentId: string, patch: {
   const current = requireRow(await getAgent(env, agentId), "Agent not found");
   const updatedAt = nowIso();
   let configR2Key = current.configR2Key;
+  const nextConfigR2Key = patch.config !== undefined
+    ? `agent-config/${agentId}/${createId("cfg")}.json`
+    : undefined;
 
-  if (patch.config !== undefined) {
-    configR2Key = `agent-config/${agentId}.json`;
+  if (patch.config !== undefined && nextConfigR2Key) {
+    configR2Key = nextConfigR2Key;
     await env.R2_EMAIL.put(configR2Key, JSON.stringify(patch.config, null, 2), {
       httpMetadata: { contentType: "application/json; charset=utf-8" },
     });
   }
 
-  await execute(env.D1_DB.prepare(
-    `UPDATE agents
-     SET slug = ?, name = ?, description = ?, status = ?, mode = ?, config_r2_key = ?, default_version_id = ?, updated_at = ?
-     WHERE id = ?`
-  ).bind(
-    patch.slug ?? current.slug ?? null,
-    patch.name ?? current.name,
-    patch.description ?? current.description ?? null,
-    patch.status ?? current.status,
-    patch.mode ?? current.mode,
-    configR2Key ?? null,
-    patch.defaultVersionId ?? current.defaultVersionId ?? null,
-    updatedAt,
-    agentId
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `UPDATE agents
+       SET slug = ?, name = ?, description = ?, status = ?, mode = ?, config_r2_key = ?, default_version_id = ?, updated_at = ?
+       WHERE id = ?`
+    ).bind(
+      patch.slug ?? current.slug ?? null,
+      patch.name ?? current.name,
+      patch.description ?? current.description ?? null,
+      patch.status ?? current.status,
+      patch.mode ?? current.mode,
+      configR2Key ?? null,
+      patch.defaultVersionId ?? current.defaultVersionId ?? null,
+      updatedAt,
+      agentId
+    ));
+  } catch (error) {
+    if (nextConfigR2Key && configR2Key === nextConfigR2Key) {
+      await env.R2_EMAIL.delete(nextConfigR2Key).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (nextConfigR2Key && current.configR2Key && current.configR2Key !== nextConfigR2Key) {
+    await env.R2_EMAIL.delete(current.configR2Key).catch(() => undefined);
+  }
 
   return requireRow(await getAgent(env, agentId), "Failed to load updated agent");
 }
@@ -425,46 +444,65 @@ export async function createAgentVersion(env: Env, input: {
     });
   }
 
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO agent_versions (
-       id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.agentId,
-    input.version,
-    input.model ?? null,
-    configR2Key,
-    manifestR2Key,
-    input.status ?? "draft",
-    timestamp
-  ));
-
-  for (const capability of input.capabilities ?? []) {
+  try {
     await execute(env.D1_DB.prepare(
-      `INSERT INTO agent_capabilities (id, agent_version_id, capability, config_json, created_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO agent_versions (
+         id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
-      createId("agc"),
       id,
-      capability.capability,
-      capability.config ? JSON.stringify(capability.config) : null,
+      input.agentId,
+      input.version,
+      input.model ?? null,
+      configR2Key,
+      manifestR2Key,
+      input.status ?? "draft",
       timestamp
     ));
-  }
 
-  for (const tool of input.tools ?? []) {
+    for (const capability of input.capabilities ?? []) {
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO agent_capabilities (id, agent_version_id, capability, config_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(
+        createId("agc"),
+        id,
+        capability.capability,
+        capability.config ? JSON.stringify(capability.config) : null,
+        timestamp
+      ));
+    }
+
+    for (const tool of input.tools ?? []) {
+      await execute(env.D1_DB.prepare(
+        `INSERT INTO agent_tool_bindings (id, agent_version_id, tool_name, enabled, config_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(
+        createId("agtb"),
+        id,
+        tool.toolName,
+        Number(tool.enabled ?? true),
+        tool.config ? JSON.stringify(tool.config) : null,
+        timestamp
+      ));
+    }
+  } catch (error) {
     await execute(env.D1_DB.prepare(
-      `INSERT INTO agent_tool_bindings (id, agent_version_id, tool_name, enabled, config_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(
-      createId("agtb"),
-      id,
-      tool.toolName,
-      Number(tool.enabled ?? true),
-      tool.config ? JSON.stringify(tool.config) : null,
-      timestamp
-    ));
+      `DELETE FROM agent_tool_bindings WHERE agent_version_id = ?`
+    ).bind(id)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_capabilities WHERE agent_version_id = ?`
+    ).bind(id)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_versions WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    if (configR2Key) {
+      await env.R2_EMAIL.delete(configR2Key).catch(() => undefined);
+    }
+    if (manifestR2Key) {
+      await env.R2_EMAIL.delete(manifestR2Key).catch(() => undefined);
+    }
+    throw error;
   }
 
   return requireRow(await getAgentVersion(env, input.agentId, id), "Failed to load created agent version");

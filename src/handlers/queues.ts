@@ -10,6 +10,7 @@ import {
 import {
   findThreadByReplyContext,
   claimTaskForExecution,
+  deleteThreadIfUnreferenced,
   getDraftByR2Key,
   getMessage,
   getOrCreateTaskForSourceMessage,
@@ -127,26 +128,34 @@ async function recordTaskNeedsReview(env: Env, input: {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  await env.D1_DB.prepare(
-    `INSERT OR REPLACE INTO agent_runs (
-      id, task_id, agent_id, model, status, trace_r2_key, started_at, completed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    runId,
-    input.taskId,
-    effectiveAgentId ?? null,
-    version?.model ?? "gpt-5",
-    "needs_review",
-    traceR2Key,
-    timestamp,
-    timestamp
-  ).run();
+  try {
+    await env.D1_DB.prepare(
+      `INSERT OR REPLACE INTO agent_runs (
+        id, task_id, agent_id, model, status, trace_r2_key, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      runId,
+      input.taskId,
+      effectiveAgentId ?? null,
+      version?.model ?? "gpt-5",
+      "needs_review",
+      traceR2Key,
+      timestamp,
+      timestamp
+    ).run();
 
-  await updateTaskStatus(env, {
-    taskId: input.taskId,
-    status: "needs_review",
-    resultR2Key: traceR2Key,
-  });
+    await updateTaskStatus(env, {
+      taskId: input.taskId,
+      status: "needs_review",
+      resultR2Key: traceR2Key,
+    });
+  } catch (error) {
+    await env.D1_DB.prepare(
+      `DELETE FROM agent_runs WHERE id = ?`
+    ).bind(runId).run().catch(() => undefined);
+    await deleteR2Objects(env, [traceR2Key]);
+    throw error;
+  }
 
   return traceR2Key;
 }
@@ -192,25 +201,33 @@ export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Prom
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
 
-  await updateInboundMessageNormalized(env, {
-    messageId: job.messageId,
-    threadId: thread.id,
-    normalizedR2Key,
-    subject: parsed.subject,
-    snippet: parsed.snippet,
-    internetMessageId: parsed.messageId,
-    fromAddr: parsed.replyTo ?? parsed.from,
-    status: "normalized",
-  });
+  try {
+    await updateInboundMessageNormalized(env, {
+      messageId: job.messageId,
+      threadId: thread.id,
+      normalizedR2Key,
+      subject: parsed.subject,
+      snippet: parsed.snippet,
+      internetMessageId: parsed.messageId,
+      fromAddr: parsed.replyTo ?? parsed.from,
+      status: "normalized",
+    });
+  } catch (error) {
+    await deleteR2Objects(env, [normalizedR2Key]);
+    await deleteThreadIfUnreferenced(env, thread.id).catch(() => undefined);
+    throw error;
+  }
   await updateThreadTimestamp(env, thread.id);
 
   const attachmentRows = [];
+  const uploadedAttachmentKeys: string[] = [];
   for (const [index, attachment] of parsed.attachments.entries()) {
     const attachmentId = `att_${job.messageId}_${index + 1}`;
     const r2Key = `attachments/${job.messageId}/${attachmentId}`;
     await env.R2_EMAIL.put(r2Key, attachment.content, {
       httpMetadata: { contentType: attachment.contentType ?? "application/octet-stream" },
     });
+    uploadedAttachmentKeys.push(r2Key);
     attachmentRows.push({
       id: attachmentId,
       filename: attachment.filename,
@@ -220,10 +237,17 @@ export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Prom
     });
   }
 
-  const staleAttachmentKeys = await insertAttachments(env, {
-    messageId: job.messageId,
-    attachments: attachmentRows,
-  });
+  let staleAttachmentKeys: string[] = [];
+  try {
+    staleAttachmentKeys = await insertAttachments(env, {
+      messageId: job.messageId,
+      attachments: attachmentRows,
+    });
+  } catch (error) {
+    await deleteR2Objects(env, uploadedAttachmentKeys);
+    throw error;
+  }
+  await deleteR2Objects(env, staleAttachmentKeys);
 
   const executionTarget = await resolveAgentExecutionTarget(env, job.mailboxId, undefined, [...RECEIVE_CAPABLE_MAILBOX_ROLES]);
   const task = executionTarget
@@ -274,7 +298,6 @@ export async function processEmailIngestJob(job: EmailIngestJob, env: Env): Prom
     }
   }
 
-  await deleteR2Objects(env, staleAttachmentKeys);
 }
 
 async function handleEmailIngest(batch: MessageBatch<EmailIngestJob>, env: Env): Promise<void> {

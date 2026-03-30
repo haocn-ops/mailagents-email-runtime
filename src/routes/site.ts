@@ -1483,7 +1483,7 @@ site.on("GET", "/admin/api/messages", async (request, env) => {
   try {
     const url = new URL(request.url);
     const mailboxId = url.searchParams.get("mailboxId") ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     const search = url.searchParams.get("search")?.trim() || undefined;
     const direction = (url.searchParams.get("direction")?.trim() as "inbound" | "outbound" | null) ?? undefined;
     const status = (url.searchParams.get("status")?.trim() as
@@ -1578,7 +1578,7 @@ site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
       | "retry"
       | "failed"
       | null) ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     return json({ items: await listOutboundJobs(env, { status, limit }) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load outbound jobs" }, { status: 502 });
@@ -1793,7 +1793,7 @@ site.on("GET", "/admin/api/drafts", async (request, env) => {
       | "cancelled"
       | "failed"
       | null) ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     return json({ items: await listDrafts(env, { mailboxId, status, limit }) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load drafts" }, { status: 502 });
@@ -2009,6 +2009,11 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     if (idempotencyKey && !sideEffectCommitted) {
       await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
     }
+    if (sideEffectCommitted) {
+      return json({
+        error: "Request may have partially succeeded after creating server-side state. Retry only with the same idempotency key or inspect draft/outbound state before retrying.",
+      }, { status: 409 });
+    }
     if (error instanceof SiteRequestError) {
       return json({ error: error.message }, { status: error.status });
     }
@@ -2046,7 +2051,7 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
     const operation = url.searchParams.get("operation")?.trim() || undefined;
     const statusParam = url.searchParams.get("status")?.trim();
     const status = statusParam === "pending" || statusParam === "completed" ? statusParam : undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
 
     return json({
       items: await listIdempotencyRecords(env, {
@@ -2232,6 +2237,15 @@ function buildExpiredSiteAdminSessionCookie(url: URL): string {
 
 function isSafeRequestMethod(method: string): boolean {
   return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+function parseSiteListLimit(raw: string | null, fallback: number, max: number): number {
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.trunc(parsed), max));
 }
 
 function hasSameOrigin(request: Request): boolean {
