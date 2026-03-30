@@ -19,6 +19,9 @@ type DraftRecipients = {
   bcc: string[];
 };
 
+const DRAFT_RECIPIENTS_VALIDATION_MESSAGE =
+  "Draft recipients must include a non-empty to array and optional cc/bcc string arrays";
+
 export class DraftSendValidationError extends Error {
   readonly status: number;
 
@@ -38,17 +41,46 @@ async function readDraftPayload(env: Env, draftR2Key: string): Promise<Record<st
   return object.json<Record<string, unknown>>();
 }
 
+function parseDraftRecipientList(
+  value: unknown,
+  field: "to" | "cc" | "bcc",
+): string[] {
+  if (value === undefined || value === null) {
+    if (field === "to") {
+      throw new DraftSendValidationError(DRAFT_RECIPIENTS_VALIDATION_MESSAGE, 400);
+    }
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new DraftSendValidationError(DRAFT_RECIPIENTS_VALIDATION_MESSAGE, 400);
+  }
+
+  const items = value.map((item) => typeof item === "string" ? item.trim() : "");
+  if (items.some((item) => !item)) {
+    throw new DraftSendValidationError(DRAFT_RECIPIENTS_VALIDATION_MESSAGE, 400);
+  }
+  if (field === "to" && items.length === 0) {
+    throw new DraftSendValidationError(DRAFT_RECIPIENTS_VALIDATION_MESSAGE, 400);
+  }
+
+  return items;
+}
+
 function parseDraftRecipients(payload: Record<string, unknown>): DraftRecipients {
   return {
-    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
-    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
-    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+    to: parseDraftRecipientList(payload.to, "to"),
+    cc: parseDraftRecipientList(payload.cc, "cc"),
+    bcc: parseDraftRecipientList(payload.bcc, "bcc"),
   };
 }
 
 function parseDraftAttachments(payload: Record<string, unknown>): DraftAttachment[] {
-  if (!Array.isArray(payload.attachments)) {
+  if (payload.attachments === undefined || payload.attachments === null) {
     return [];
+  }
+  if (!Array.isArray(payload.attachments)) {
+    throw new DraftSendValidationError("Draft attachments must be an array when provided", 400);
   }
 
   return payload.attachments.map((item) => {

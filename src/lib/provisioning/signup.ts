@@ -6,14 +6,16 @@ import {
   listEmailRoutingRules,
   upsertCatchAllWorkerRule,
 } from "../cloudflare-email";
-import { execute } from "../db";
+import { allRows, execute } from "../db";
 import { readJson } from "../http";
 import { createId } from "../ids";
 import {
+  AgentRegistryConflictError,
   bindMailbox,
   createAgent,
   createAgentDeployment,
   createAgentVersion,
+  DeploymentConflictError,
   ensureMailbox,
   getMailboxByAddress,
   listAgents,
@@ -22,7 +24,7 @@ import {
   updateAgent,
   upsertAgentPolicy,
 } from "../../repositories/agents";
-import { createDraft, enqueueDraftSend } from "../../repositories/mail";
+import { createDraft, deleteDraftIfUnqueued, enqueueDraftSend } from "../../repositories/mail";
 import { upsertTenantSendPolicy } from "../../repositories/tenant-policies";
 import type { Env } from "../../types";
 import { OutboundSendValidationError, ensureSystemSendAllowed } from "../system-sends";
@@ -73,6 +75,10 @@ export interface SignupSuccessResult {
   welcomeError?: string;
 }
 
+interface NullableR2KeyRow {
+  r2_key: string | null;
+}
+
 export const RESERVED_SELF_SERVE_ALIASES = new Set([
   "admin",
   "api",
@@ -82,6 +88,8 @@ export const RESERVED_SELF_SERVE_ALIASES = new Set([
 ]);
 
 const MAILBOX_ALIAS_UNAVAILABLE_MESSAGE = "The requested mailbox alias is unavailable. Please choose a different alias.";
+const SIGNUP_PROVISIONING_CONFLICT_MESSAGE =
+  "Self-serve signup could not be completed because mailbox provisioning state already exists. Please choose a different alias and try again.";
 
 export async function parseSelfServeSignup(request: Request): Promise<
   | { ok: true; values: SignupFormValues }
@@ -250,6 +258,7 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
     let outboundJobId: string | undefined;
     let welcomeStatus: SignupSuccessResult["welcomeStatus"] = "queued";
     let welcomeError: string | undefined;
+    let welcomeDraftId: string | undefined;
 
     try {
       await ensureSystemSendAllowed(env, {
@@ -287,10 +296,14 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
           attachments: [],
         },
       });
+      welcomeDraftId = draft.id;
 
       const sendResult = await enqueueDraftSend(env, draft.id);
       outboundJobId = sendResult.outboundJobId;
     } catch (error) {
+      if (welcomeDraftId) {
+        await deleteDraftIfUnqueued(env, welcomeDraftId).catch(() => undefined);
+      }
       welcomeStatus = "failed";
       welcomeError = error instanceof OutboundSendValidationError
         ? error.message
@@ -322,6 +335,13 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
       const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
       console.error(`[signup] cleanup failed for tenant ${tenantId}: ${message}`);
     });
+    if (
+      error instanceof AgentRegistryConflictError
+      || error instanceof DeploymentConflictError
+      || error instanceof MailboxConflictError
+    ) {
+      throw new SignupError(SIGNUP_PROVISIONING_CONFLICT_MESSAGE, 409);
+    }
     throw error;
   }
 }
@@ -354,6 +374,64 @@ async function cleanupPartialSelfServeSignup(env: Env, tenantId: string): Promis
   const agents = await listAgents(env, tenantId);
   const versionRecords = await Promise.all(agents.map((agent) => listAgentVersions(env, agent.id)));
   const r2Keys = new Set<string>();
+  const [
+    taskTraceRows,
+    agentRunTraceRows,
+    messageBlobRows,
+    draftBlobRows,
+    attachmentBlobRows,
+    deliveryEventBlobRows,
+  ] = await Promise.all([
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT result_r2_key AS r2_key
+         FROM tasks
+         WHERE tenant_id = ?`
+      ).bind(tenantId)
+    ),
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT ar.trace_r2_key AS r2_key
+         FROM agent_runs ar
+         INNER JOIN tasks t ON t.id = ar.task_id
+         WHERE t.tenant_id = ?`
+      ).bind(tenantId)
+    ),
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT raw_r2_key AS r2_key
+         FROM messages
+         WHERE tenant_id = ?
+         UNION ALL
+         SELECT normalized_r2_key AS r2_key
+         FROM messages
+         WHERE tenant_id = ?`
+      ).bind(tenantId, tenantId)
+    ),
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT draft_r2_key AS r2_key
+         FROM drafts
+         WHERE tenant_id = ?`
+      ).bind(tenantId)
+    ),
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT a.r2_key AS r2_key
+         FROM attachments a
+         INNER JOIN messages m ON m.id = a.message_id
+         WHERE m.tenant_id = ?`
+      ).bind(tenantId)
+    ),
+    allRows<NullableR2KeyRow>(
+      env.D1_DB.prepare(
+        `SELECT de.payload_r2_key AS r2_key
+         FROM delivery_events de
+         INNER JOIN messages m ON m.id = de.message_id
+         WHERE m.tenant_id = ?`
+      ).bind(tenantId)
+    ),
+  ]);
 
   for (const agent of agents) {
     if (agent.configR2Key) {
@@ -368,6 +446,18 @@ async function cleanupPartialSelfServeSignup(env: Env, tenantId: string): Promis
       if (version.manifestR2Key) {
         r2Keys.add(version.manifestR2Key);
       }
+    }
+  }
+  for (const row of [
+    ...taskTraceRows,
+    ...agentRunTraceRows,
+    ...messageBlobRows,
+    ...draftBlobRows,
+    ...attachmentBlobRows,
+    ...deliveryEventBlobRows,
+  ]) {
+    if (row.r2_key) {
+      r2Keys.add(row.r2_key);
     }
   }
 
@@ -407,6 +497,10 @@ async function cleanupPartialSelfServeSignup(env: Env, tenantId: string): Promis
   ).bind(tenantId));
   await execute(env.D1_DB.prepare(
     `DELETE FROM tenant_send_policies WHERE tenant_id = ?`
+  ).bind(tenantId));
+  await execute(env.D1_DB.prepare(
+    `DELETE FROM agent_runs
+     WHERE task_id IN (SELECT id FROM tasks WHERE tenant_id = ?)`
   ).bind(tenantId));
   await execute(env.D1_DB.prepare(
     `DELETE FROM tasks WHERE tenant_id = ?`

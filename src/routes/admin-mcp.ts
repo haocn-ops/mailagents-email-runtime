@@ -20,7 +20,10 @@ import {
   RUNTIME_TOOL_CATALOG,
   buildRuntimeMetadata,
 } from "../lib/runtime-metadata";
-import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/self-serve-agent-policy";
+import {
+  relaxTenantDefaultAgentRecipientPoliciesForExternalSend,
+  syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange,
+} from "../lib/self-serve-agent-policy";
 import {
   ADMIN_MCP_AUTH,
   ADMIN_MCP_METHODS,
@@ -46,7 +49,7 @@ import {
 import {
   addSuppression,
   getDraft,
-  getDraftByR2Key,
+  getDraftByR2KeyForOutboundLifecycle,
   getMessage,
   getOutboundJob,
   getOutboundJobByDraftR2Key,
@@ -677,7 +680,7 @@ async function inspectDeliveryCase(env: Env, input: {
       throw new AdminMcpToolError("resource_message_not_found", "Message not found");
     }
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
-    const draft = outboundJob ? await getDraftByR2Key(env, outboundJob.draftR2Key) : null;
+    const draft = outboundJob ? await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key) : null;
     const draftPayload = outboundJob ? await readDraftPayload(env, outboundJob.draftR2Key) : null;
     const suppressions = message.direction === "outbound"
       ? await lookupSuppressionsForRecipients(env, {
@@ -727,7 +730,7 @@ async function inspectDeliveryCase(env: Env, input: {
       throw new AdminMcpToolError("resource_outbound_job_not_found", "Outbound job not found");
     }
     const message = await getMessage(env, outboundJob.messageId);
-    const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+    const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
     const draftPayload = await readDraftPayload(env, outboundJob.draftR2Key);
     const suppressions = message?.direction === "outbound"
       ? await lookupSuppressionsForRecipients(env, {
@@ -1047,6 +1050,7 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
   if (toolName === "upsert_tenant_send_policy") {
     const pricingTier = requireString(args.pricingTier, "pricingTier") as PricingTier;
     const outboundStatus = requireString(args.outboundStatus, "outboundStatus") as TenantOutboundStatus;
+    const tenantId = requireString(args.tenantId, "tenantId");
     if (!["free", "paid_review", "paid_active", "enterprise"].includes(pricingTier)) {
       throw new AdminMcpToolError("invalid_arguments", "pricingTier is invalid");
     }
@@ -1054,14 +1058,25 @@ async function callAdminTool(env: Env, toolName: string, args: Record<string, un
       throw new AdminMcpToolError("invalid_arguments", "outboundStatus is invalid");
     }
 
+    const previousSendPolicy = await ensureTenantSendPolicy(env, tenantId);
     const sendPolicy = await upsertTenantSendPolicy(env, {
-      tenantId: requireString(args.tenantId, "tenantId"),
+      tenantId,
       pricingTier,
       outboundStatus,
       internalDomainAllowlist: optionalStringArray(args.internalDomainAllowlist, "internalDomainAllowlist") ?? ["mailagents.net"],
       externalSendEnabled: requireBoolean(args.externalSendEnabled, "externalSendEnabled"),
       reviewRequired: requireBoolean(args.reviewRequired, "reviewRequired"),
     });
+
+    if (
+      JSON.stringify(previousSendPolicy.internalDomainAllowlist) !== JSON.stringify(sendPolicy.internalDomainAllowlist)
+    ) {
+      await syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange(env, {
+        tenantId,
+        previousInternalDomainAllowlist: previousSendPolicy.internalDomainAllowlist,
+        nextInternalDomainAllowlist: sendPolicy.internalDomainAllowlist,
+      });
+    }
 
     if (sendPolicy.outboundStatus === "external_enabled" && sendPolicy.externalSendEnabled) {
       await relaxTenantDefaultAgentRecipientPoliciesForExternalSend(env, {

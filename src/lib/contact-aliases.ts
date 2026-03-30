@@ -1,5 +1,10 @@
 import { deleteEmailRoutingRule, listEmailRoutingRules, upsertWorkerRule } from "./cloudflare-email";
-import { ensureMailbox, getMailboxByAddress, MailboxConflictError } from "../repositories/agents";
+import {
+  ensureMailboxWithStatus,
+  getMailboxByAddress,
+  MailboxConflictError,
+  updateMailboxStatus,
+} from "../repositories/agents";
 import type { Env } from "../types";
 
 export const CONTACT_ALIAS_LOCALPARTS = ["hello", "security", "privacy", "dmarc"] as const;
@@ -29,10 +34,15 @@ export function isManagedContactAliasAddress(env: Env, address: string): boolean
 
 export async function ensureManagedContactAliasMailbox(env: Env, address: string) {
   try {
-    return await ensureMailbox(env, {
+    const ensured = await ensureMailboxWithStatus(env, {
       tenantId: CONTACT_ALIAS_TENANT_ID,
       address,
     });
+    if (ensured.mailbox.status === "active") {
+      return ensured.mailbox;
+    }
+
+    return await updateMailboxStatus(env, ensured.mailbox.id, "active");
   } catch (error) {
     if (!(error instanceof MailboxConflictError)) {
       throw error;
@@ -43,7 +53,7 @@ export async function ensureManagedContactAliasMailbox(env: Env, address: string
       throw error;
     }
     if (existing.tenant_id !== CONTACT_ALIAS_TENANT_ID) {
-      throw new Error(`Managed contact alias ${address} is already owned by tenant ${existing.tenant_id}`);
+      throw new MailboxConflictError(`Managed contact alias ${address} is already owned by tenant ${existing.tenant_id}`);
     }
 
     return {

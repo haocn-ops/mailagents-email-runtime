@@ -280,6 +280,1318 @@ follow-ups below:
     Refs: `src/repositories/mail.ts:809`, `src/repositories/mail.ts:929`,
     `src/handlers/queues.ts:204`
 
+20. Hardening: idempotent replay/send flows now consistently mark
+    queue-enqueued work as partial-success if `completeIdempotencyKey()`
+    fails after the replay or draft-send job has already been accepted. This
+    now covers REST `message_replay` and idempotent draft-send plus the MCP
+    `reply_to_inbound_email`, `operator_manual_send`, `send_draft`, and
+    `replay_message` tools, which previously could surface a generic internal
+    error after side effects had already been committed.
+    Refs: `src/routes/api.ts:2986`, `src/routes/api.ts:3358`,
+    `src/routes/mcp.ts:1609`, `src/routes/mcp.ts:1813`,
+    `src/routes/mcp.ts:2260`, `src/routes/mcp.ts:2438`,
+    `src/routes/mcp.ts:2612`
+
+21. Hardening: self-serve signup rollback now deletes tenant-scoped mail blobs
+    and review traces in addition to agent config artifacts. If onboarding
+    fails after partial mailbox/message creation, cleanup now removes raw and
+    normalized message blobs, draft payloads, attachment objects, SES webhook
+    payloads, task result blobs, and `agent_runs` trace artifacts instead of
+    leaving those objects orphaned in R2 or D1.
+    Refs: `src/lib/provisioning/signup.ts:357`,
+    `src/lib/provisioning/signup.ts:367`,
+    `src/lib/provisioning/signup.ts:478`
+
+22. Hardening: site-admin idempotent `/admin/api/send` recovery now stores the
+    accepted outbound job id on the still-pending idempotency row before the
+    completion record is finalized. If `completeIdempotencyKey()` fails after
+    queue acceptance, a same-key retry can now restore the queued send result
+    instead of staying stuck on an unrecoverable generic "in progress"
+    response until background idempotency cleanup deletes the row.
+    Refs: `src/repositories/mail.ts:1412`, `src/routes/site.ts:1923`,
+    `src/routes/site.ts:1955`, `src/routes/site.ts:2004`
+
+23. Hardening: the same recoverable-pending idempotency pattern now also
+    covers REST and MCP draft-send flows. Shared create-and-send helpers plus
+    direct `send_draft` routes now persist the committed draft or outbound job
+    id onto the pending idempotency row before final completion, allowing a
+    same-key retry to restore the already-queued send result instead of being
+    trapped behind a stale `pending` response after a late completion-write
+    failure.
+    Refs: `src/routes/api.ts:3331`, `src/routes/api.ts:4015`,
+    `src/routes/mcp.ts:1251`, `src/routes/mcp.ts:1527`,
+    `src/routes/mcp.ts:1722`, `src/routes/mcp.ts:2214`
+
+24. Hardening: admin contact-alias creation/bootstrap now rolls back a
+    just-created local mailbox row if the later Cloudflare Email Routing
+    upsert fails. Previously, `/admin/api/contact-aliases` could leave
+    half-configured aliases in D1 that appeared provisioned locally even
+    though no worker routing rule was actually created upstream.
+    Refs: `src/repositories/agents.ts:1243`, `src/repositories/agents.ts:1304`,
+    `src/routes/site.ts:1381`, `src/routes/site.ts:1434`
+
+25. Hardening: contact-alias deletion now disables the local mailbox in
+    addition to removing the explicit routing rule, and later admin/bootstrap
+    provisioning re-activates the mailbox when recreating the alias. This
+    closes the gap where a "deleted" alias could still accept mail through a
+    catch-all worker route, and it prevents recreated aliases from remaining
+    silently inactive in D1.
+    Refs: `src/repositories/agents.ts:1304`, `src/repositories/agents.ts:1325`,
+    `src/routes/site.ts:1380`, `src/routes/site.ts:1490`,
+    `src/lib/contact-aliases.ts:31`
+
+26. Hardening: `public/token/reissue` no longer fails with a late server error
+    after the operator-email reissue message has already been queued. If the
+    post-send cooldown log insert fails, the endpoint now records an internal
+    error but still returns the same generic accepted response instead of
+    surfacing a misleading failure after side effects were already committed.
+    Refs: `src/routes/api.ts:774`, `src/routes/api.ts:796`,
+    `src/repositories/token-reissue.ts:52`
+
+27. Hardening: admin contact-alias creation is now restricted to the fixed
+    public aliases that the dashboard and site actually manage:
+    `hello`, `security`, `privacy`, and `dmarc`. This prevents the control
+    plane from creating hidden worker-routed aliases that never appeared in
+    the alias list or public-site configuration flows.
+    Refs: `src/routes/site.ts:1358`, `src/routes/site.ts:1372`,
+    `src/routes/site.ts:4793`, `src/routes/site.ts:5202`
+
+28. Hardening: automatic x402 settlement paths now retry once against the
+    freshly reloaded receipt when the first settlement/finalization attempt
+    fails after mutating local receipt state. This lets topup, upgrade-intent,
+    and receipt-confirm requests recover within the same call when the first
+    pass already advanced the receipt or ledger locally before a later write
+    failed.
+    Refs: `src/routes/api.ts:966`, `src/routes/api.ts:1078`,
+    `src/routes/api.ts:1355`, `src/routes/api.ts:4529`
+
+29. Hardening: contact-alias deletion now refuses manual removal when managed
+    bootstrap maintenance is enabled, and alias-delete rollback restores the
+    mailbox status if the later Cloudflare rule deletion fails. This prevents
+    a misleading "deleted" control-plane action that would be auto-recreated
+    on the next request, and it avoids leaving the local mailbox disabled when
+    upstream rule deletion errors out.
+    Refs: `src/index.ts:22`, `src/routes/site.ts:1298`,
+    `src/routes/site.ts:1480`, `src/routes/site.ts:6070`
+
+30. Hardening: idempotent `message_replay` now uses the same recoverable
+    pending pattern as draft-send. Once normalize/rerun replay has already
+    been queued, the pending idempotency row is marked with committed state so
+    a same-key retry returns the accepted replay result instead of remaining
+    stuck on a stale `pending` response after a late completion-write failure.
+    Refs: `src/routes/api.ts:2973`, `src/routes/api.ts:3017`,
+    `src/routes/mcp.ts:2424`, `src/routes/mcp.ts:2480`
+
+31. Hardening: `/admin/api/contact-aliases/bootstrap` now rehydrates the local
+    mailbox even when `overwrite=false` and the Cloudflare routing rule already
+    exists. Previously this path skipped immediately on existing rules, so a
+    drifted or inactive local alias mailbox could remain broken while the
+    dashboard still reported the alias as already configured upstream.
+    Refs: `src/routes/site.ts:1443`, `src/routes/site.ts:1457`,
+    `src/handlers/email.ts:58`
+
+32. Hardening: admin alias inspection now reports the local mailbox state for
+    each contact alias instead of only showing upstream Cloudflare rule state.
+    This makes drift visible when a routing rule still exists but the worker
+    would reject mail because the corresponding local mailbox is missing or
+    inactive.
+    Refs: `src/routes/site.ts:1323`, `src/routes/site.ts:6079`,
+    `src/handlers/email.ts:58`
+
+33. Hardening: sensitive system-send failures now best-effort delete the
+    underlying draft when enqueue never committed an outbound job. Token
+    reissue and signup welcome flows previously could leave unsent drafts whose
+    bodies still contained live access tokens after `createDraft()` succeeded
+    but `enqueueDraftSend()` failed; those drafts are now scrubbed unless a
+    queued job already references the same draft blob, and the cleanup is
+    restricted to pre-send `draft`/`approved` rows so it cannot race into
+    deleting a draft that has already been claimed as `queued`.
+    Refs: `src/repositories/mail.ts:1122`, `src/routes/api.ts:3775`,
+    `src/routes/api.ts:4203`, `src/lib/provisioning/signup.ts:257`
+
+34. Hardening: idempotency persistence now fails closed if the reservation row
+    is no longer pending when committed resource IDs or final completed
+    responses are written back. Previously `updateIdempotencyKeyResource()`
+    and `completeIdempotencyKey()` treated `UPDATE 0 rows` as success, which
+    could silently lose the recovery record after row drift or premature
+    cleanup and reopen duplicate execution windows on the next retry.
+    Refs: `src/repositories/mail.ts:1441`, `src/repositories/mail.ts:1468`
+
+35. Hardening: idempotent pending replay/admin-send recovery now re-runs the
+    same current authorization and validation gates as completed replay
+    recovery before returning a stored accepted result. This aligns
+    `pending + resourceId` behavior with the already fail-closed completed
+    branches, so stale keys can no longer recover queued replay/admin-send
+    results after current access or send conditions have become invalid.
+    Refs: `src/routes/api.ts:2991`, `src/routes/mcp.ts:2443`,
+    `src/routes/site.ts:2036`
+
+36. Hardening: admin `manual-resolution` now updates the outbound job's final
+    status only after the associated message/draft state has been reconciled.
+    Previously the route could clear the job's `uncertain` marker first and
+    then fail while updating the message or draft, leaving the operator unable
+    to retry the same manual resolution even though local state was only
+    partially repaired; the route now also requires the job to still be in
+    `failed` status before accepting manual resolution.
+    Refs: `src/routes/site.ts:1809`, `src/routes/site.ts:1831`,
+    `src/routes/site.ts:1852`
+
+37. Hardening: payment auto-settlement same-request recovery now also retries
+    when a credit-ledger entry was committed but the receipt row itself had not
+    changed yet. Previously a topup or upgrade could append its durable ledger
+    settlement record and then fail before refreshing the receipt, causing the
+    in-request retry helper to miss the partial commit and return a generic
+    error instead of converging through the existing-ledger replay path.
+    Refs: `src/routes/api.ts:4581`
+
+38. Hardening: SES webhook handling now backfills `provider_message_id` and
+    `sent_at` when a terminal event locates the outbound message only through
+    signed mail tags after provider-acceptance persistence had failed locally.
+    Previously those messages could keep processing events via the tag path
+    while remaining permanently detached from their provider message id for
+    later lookups and diagnostics. Delivery-event persistence is now also
+    deduplicated by a deterministic SES payload key so webhook retries after a
+    later local-state failure do not keep appending duplicate delivery events.
+    Refs: `src/repositories/mail.ts:1919`, `src/repositories/mail.ts:1991`,
+    `src/routes/api.ts:206`, `src/routes/api.ts:3510`
+
+39. Hardening: admin outbound retry now rolls back the whole requeue transition
+    if any local state update fails before the queue send completes. Previously
+    only `OUTBOUND_SEND_QUEUE.send()` was covered by rollback, so a mid-flight
+    failure after credits were re-reserved could leave the job marked `queued`
+    without a real queue item and with message/draft state only partially
+    updated; the route now also rejects orphaned outbound jobs whose message
+    row is already missing instead of requeueing them into a guaranteed worker
+    failure, and it snapshots draft recipients before retry so rollback can
+    still release reserved credits even if the draft blob becomes unreadable
+    mid-failure.
+    Refs: `src/routes/site.ts:1713`, `src/routes/site.ts:1738`,
+    `src/routes/site.ts:1747`
+
+40. Hardening: resurrecting a previously failed task back to `queued` now also
+    clears the stale `result_r2_key`. Previously `getOrCreateTaskForSourceMessage()`
+    reused the old failure trace while changing the task status back to queued,
+    leaving task inspection with a misleading pointer to obsolete review/output
+    data from the prior failed run.
+    Refs: `src/repositories/mail.ts:1816`
+
+41. Hardening: outbound worker recovery for stuck `sending` jobs now updates
+    the message state before finalizing the job status in both recovered-sent
+    and recovered-failed branches. Previously these paths could leave
+    `messages.status` stuck at `tasked` even after provider evidence or
+    terminal delivery events had already promoted the job to `sent`/`failed`.
+    The worker now also isolates local recovery-write failures from the outer
+    send-attempt error handler, so already-evidenced sends are retried only for
+    local state convergence instead of being downgraded into generic
+    `retry`/`failed` resend paths, and duplicate/late queue deliveries for an
+    already-`sent` job now self-heal any stale message/draft terminal state
+    before settling billing.
+    Refs: `src/handlers/queues.ts:407`, `src/handlers/queues.ts:450`
+
+42. Hardening: `updateTaskStatus()` now honors explicit `null` for
+    `resultR2Key` instead of silently preserving the old trace via `COALESCE`.
+    This aligns the repository helper with its type contract
+    (`string | null | undefined`) and prevents future task-status transitions
+    from accidentally retaining stale trace pointers when a caller intends to
+    clear them.
+    Refs: `src/repositories/mail.ts:1902`
+
+43. Hardening: the `agent-execute` worker's final catch path now explicitly
+    clears `resultR2Key` when downgrading a task to `needs_review`. This keeps
+    the emergency fallback from inheriting any stale prior trace pointer if a
+    queued task reaches the catch path before a fresh review trace can be
+    recorded.
+    Refs: `src/handlers/queues.ts:369`
+
+44. Hardening: core outbound/message state-update helpers now fail closed when
+    their target row has disappeared instead of treating `UPDATE 0 rows` as a
+    successful state convergence. Previously `backfillMessageProviderAcceptance()`,
+    `updateMessageStatus()`, `updateOutboundJobStatus()`, `markDraftStatus()`,
+    and `markMessageSent()` could silently no-op after local drift or partial
+    cleanup, allowing queue/webhook/admin recovery paths to keep advancing as
+    if message, draft, or outbound-job state had been repaired when the target
+    record was actually gone.
+    Refs: `src/repositories/mail.ts:1997`, `src/repositories/mail.ts:2003`,
+    `src/repositories/mail.ts:2022`, `src/repositories/mail.ts:2075`,
+    `src/repositories/mail.ts:2114`, `src/repositories/mail.ts:2122`
+
+45. Hardening: deployment activation/rollout/rollback transitions now also
+    fail closed if any targeted `agent_deployments` row disappears mid-flight.
+    Previously the internal `setDeploymentStatus()` helpers treated `UPDATE 0
+    rows` as success, so a concurrently deleted deployment could let a
+    multi-step transition continue and persist a partially applied deployment
+    topology while the repository layer still reported success.
+    Refs: `src/repositories/agents.ts:634`, `src/repositories/agents.ts:657`,
+    `src/repositories/agents.ts:680`
+
+46. Hardening: `updateAgent()` now also fails closed when the target agent row
+    disappears after the current config has already been read or a fresh config
+    blob has been uploaded. Previously an `UPDATE 0 rows` race could fall
+    through as if the write had succeeded, leaving the newly uploaded config
+    blob orphaned and even deleting the still-current prior blob before the
+    final reload noticed the agent was gone.
+    Refs: `src/repositories/agents.ts:321`, `src/repositories/agents.ts:344`,
+    `src/repositories/agents.ts:364`
+
+47. Hardening: inbound normalization now fails closed if the target message row
+    or selected thread row disappears before the normalized state is attached.
+    `updateInboundMessageNormalized()` now requires the destination thread to
+    still exist at write time, and `updateThreadTimestamp()` no longer treats
+    `UPDATE 0 rows` as success. This prevents ingest from silently pointing a
+    message at a vanished thread or continuing after thread/message drift as if
+    normalization had committed cleanly.
+    Refs: `src/repositories/mail.ts:1596`, `src/repositories/mail.ts:1606`,
+    `src/repositories/mail.ts:1632`
+
+48. Hardening: `updateTenantBillingAccountProfile()` no longer falls back to
+    `ensureTenantBillingAccount()` after the update write. Previously, if the
+    billing-account row disappeared between the initial ensure and the later
+    update/readback, the helper could silently recreate a fresh default
+    `trial/free` account and return that instead of surfacing the lost update.
+    The repository now fails closed on `UPDATE 0 rows` and reloads the actual
+    updated row directly.
+    Refs: `src/repositories/billing.ts:170`, `src/repositories/billing.ts:184`,
+    `src/repositories/billing.ts:209`
+
+49. Hardening: tenant credit-account mutation helpers now also stop using
+    `ensureTenantBillingAccount()` as their post-update read path. Previously
+    `reconcileTenantAvailableCredits()`, `reserveTenantAvailableCredits()`,
+    `releaseTenantReservedCredits()`, `captureTenantReservedCredits()`, and
+    `decrementTenantAvailableCredits()` could recreate a brand-new default
+    billing account if the original row disappeared after a successful balance
+    update, masking lost state and returning balances that no longer reflected
+    the just-applied mutation.
+    Refs: `src/repositories/billing.ts:519`, `src/repositories/billing.ts:550`,
+    `src/repositories/billing.ts:577`, `src/repositories/billing.ts:604`,
+    `src/repositories/billing.ts:629`
+
+50. Hardening: idempotent create-and-send flows no longer get stuck on a
+    permanently `pending` draft-send reservation after `createDraft()`
+    succeeded but `enqueueDraftSend()` failed. REST and MCP now persist the new
+    `draft.id` onto the pending idempotency row immediately after draft
+    creation, and same-key recovery will resume enqueue from that stored draft
+    when no outbound job exists yet. Previously the runtime returned a
+    partial-success error that advised retrying with the same key, but that key
+    could not recover because the reservation still had no resource pointer.
+    Refs: `src/routes/api.ts:249`, `src/routes/api.ts:4125`,
+    `src/routes/mcp.ts:146`, `src/routes/mcp.ts:1294`
+
+51. Hardening: site-admin idempotent `/admin/api/send` now follows the same
+    draft-first recovery pattern. The route now records the new `draft.id`
+    before enqueue, and replay recovery can resume from either a stored draft
+    id or a stored outbound-job id. Previously, if draft creation succeeded but
+    enqueue failed, the endpoint returned a partial-success conflict that
+    advised retrying with the same key, yet that key remained stuck on a
+    `pending` reservation with no recoverable resource pointer.
+    Refs: `src/routes/site.ts:1077`, `src/routes/site.ts:2096`,
+    `src/routes/site.ts:2117`
+
+52. Hardening: successful `pending + resourceId` idempotency recovery now also
+    best-effort repairs the reservation row back to `completed` instead of
+    returning a restored result while leaving the key permanently pending. This
+    now covers REST replay/draft-send/create-and-send, MCP replay/draft-send
+    and send workflows, plus site-admin send recovery. Previously the same-key
+    retry could restore the already committed work but every later retry still
+    hit the expensive recovery path until background cleanup eventually deleted
+    the stale pending row.
+    Refs: `src/routes/api.ts:208`, `src/routes/api.ts:3030`,
+    `src/routes/api.ts:3416`, `src/routes/api.ts:4138`,
+    `src/routes/mcp.ts:109`, `src/routes/mcp.ts:1292`,
+    `src/routes/mcp.ts:1592`, `src/routes/mcp.ts:1827`,
+    `src/routes/mcp.ts:2317`, `src/routes/mcp.ts:2505`,
+    `src/routes/site.ts:280`, `src/routes/site.ts:2081`
+
+53. Hardening: draft/message thread-link helpers now fail closed if either the
+    target row or destination thread row disappears before the relationship is
+    written. `assignDraftThreadId()`, `restoreDraftSendState()`, and
+    `assignMessageThreadId()` previously treated `UPDATE 0 rows` as success,
+    which could let outbound enqueue rollback or reply-thread reconciliation
+    continue after local drift as if the draft/message had been attached back to
+    a valid thread when no such link was actually persisted.
+    Refs: `src/repositories/mail.ts:780`, `src/repositories/mail.ts:800`,
+    `src/repositories/mail.ts:842`
+
+54. Hardening: task assignment/status mutation helpers now also fail closed
+    when the target task row disappears. `updateTaskAssignment()` and
+    `updateTaskStatus()` previously treated `UPDATE 0 rows` as success, which
+    could let agent-execute recovery and review-escalation paths proceed as if
+    a task had been reassigned or downgraded to `needs_review` even after the
+    task itself had already been deleted concurrently.
+    Refs: `src/repositories/mail.ts:1925`, `src/repositories/mail.ts:1942`
+
+55. Hardening: control-plane writes that create or upsert agent-scoped child
+    records now clean up after concurrent parent deletion. `bindMailbox()` now
+    removes a freshly inserted `agent_mailboxes` row if the agent or mailbox is
+    gone by post-write verification, and `upsertAgentPolicy()` now deletes the
+    just-written policy row and fails if the parent agent disappeared during the
+    write. This prevents orphan mailbox bindings or policy rows from surviving a
+    race against agent/mailbox deletion.
+    Refs: `src/repositories/agents.ts:1105`, `src/repositories/agents.ts:1149`,
+    `src/repositories/agents.ts:1181`, `src/repositories/agents.ts:1211`
+
+56. Hardening: agent creation and agent-version creation now also clean up
+    freshly written config/manifest artifacts if the final read-back step fails
+    after inserts already succeeded. Previously a concurrent delete between the
+    insert and final `getAgent()` / `getAgentVersion()` could surface as a load
+    failure while leaving the new config blob, manifest blob, or capability/tool
+    rows orphaned.
+    Refs: `src/repositories/agents.ts:250`, `src/repositories/agents.ts:289`,
+    `src/repositories/agents.ts:425`, `src/repositories/agents.ts:518`
+
+57. Hardening: `createAgentDeployment()` now performs post-write existence
+    verification for the parent agent, agent version, and mailbox target (for
+    mailbox deployments), and it deletes the fresh deployment row if any of
+    those resources disappeared concurrently. Previously a deployment insert
+    could succeed against stale prevalidation and leave an orphaned active or
+    paused deployment row behind even though the target resources were already
+    gone by the time the repository returned.
+    Refs: `src/repositories/agents.ts:566`, `src/repositories/agents.ts:604`
+
+58. Hardening: `createDraft()` now also verifies that the referenced agent,
+    mailbox, optional thread, and optional source message still exist after the
+    draft row is inserted, and it cleans up both the draft row and draft blob if
+    that finalization check fails. Previously a concurrent delete after outer
+    route validation could leave orphan draft state behind, and a final read-back
+    failure only deleted the blob on insert errors, not after the row had
+    already been written.
+    Refs: `src/repositories/mail.ts:972`, `src/repositories/mail.ts:1037`,
+    `src/repositories/mail.ts:1074`
+
+59. Hardening: task creation paths now also verify that the mailbox, source
+    message, and optional assigned agent still exist after a new task row is
+    inserted. This applies to both `createTask()` and the new-row branch of
+    `getOrCreateTaskForSourceMessage()`. Previously a concurrent delete after
+    outer replay/ingest validation could leave orphan tasks behind even though
+    their source message or mailbox had already disappeared before the
+    repository returned.
+    Refs: `src/repositories/mail.ts:1803`, `src/repositories/mail.ts:1843`,
+    `src/repositories/mail.ts:1910`
+
+60. Hardening: attachment persistence during inbound normalization now also
+    verifies that the owning message still exists before and after swapping the
+    attachment rows. Previously `insertAttachments()` could delete the prior
+    attachment set and insert a fresh one even after the parent message had been
+    concurrently removed, leaving orphan attachment rows for a vanished message.
+    Refs: `src/repositories/mail.ts:1720`, `src/repositories/mail.ts:1730`,
+    `src/repositories/mail.ts:1788`
+
+61. Hardening: `ensureMailboxWithStatus()` now performs a final read-back when
+    it creates a new mailbox instead of returning a speculative object directly
+    from the insert inputs. Previously a concurrently deleted mailbox row could
+    still be reported back to callers as successfully created even though it no
+    longer existed by the time control returned to the route.
+    Refs: `src/repositories/agents.ts:1309`, `src/repositories/agents.ts:1358`
+
+62. Hardening: inbound message creation now performs a final mailbox-existence
+    check after inserting the new `messages` row and removes that row again if
+    the mailbox disappeared concurrently. Previously `createInboundMessage()`
+    could report success and leave an orphan inbound message row behind even
+    though the owning mailbox had already been deleted in the short window after
+    raw email persistence and route-level mailbox validation.
+    Refs: `src/repositories/mail.ts:358`, `src/repositories/mail.ts:372`,
+    `src/repositories/mail.ts:414`
+
+63. Hardening: `createTypedTenantPaymentReceipt()` now removes the newly created
+    receipt row if the follow-up typed parse fails or the persisted metadata's
+    `receiptType` does not match the requested typed helper. Previously this
+    helper could throw while still leaving behind a malformed or mismatched
+    payment-receipt row for later settlement/replay code to trip over.
+    Refs: `src/repositories/billing.ts:445`, `src/repositories/billing.ts:449`
+
+64. Hardening: typed credit-ledger append helpers now remove a freshly inserted
+    ledger row if the subsequent typed lookup/parse fails. This applies to
+    topup settlement, upgrade credit grant, and outbound usage ledger writes.
+    Previously these helpers could throw while still leaving behind a brand-new
+    ledger row whose metadata no longer parsed as the expected typed shape.
+    Refs: `src/repositories/billing.ts:698`, `src/repositories/billing.ts:739`,
+    `src/repositories/billing.ts:780`
+
+65. Hardening: the failed-task reuse branch in
+    `getOrCreateTaskForSourceMessage()` now also fails closed if the stale task
+    row disappears before it can be reset back to queued. Previously that raw
+    `UPDATE tasks ... WHERE id = ?` ignored `0 rows`, so a concurrently deleted
+    failed task could still be returned to callers as if it had been
+    successfully resurrected for replay or agent execution.
+    Refs: `src/repositories/mail.ts:1988`, `src/repositories/mail.ts:1996`
+
+66. Hardening: typed payment-receipt status updates now fail closed on `UPDATE
+    0 rows`, and `updateTypedTenantPaymentReceiptStatus()` now best-effort
+    restores the previous receipt snapshot if the post-update typed parse
+    fails. Previously the helper could overwrite a receipt with malformed
+    merged metadata, throw during typed re-parse, and leave the now-invalid row
+    behind for later billing or settlement paths to trip over.
+    Refs: `src/repositories/billing.ts:458`, `src/repositories/billing.ts:511`,
+    `src/repositories/billing.ts:535`
+
+67. Hardening: `updateMailboxStatus()` now fails closed if the mailbox row
+    disappears during the status flip instead of returning `null` after an
+    `UPDATE 0 rows` no-op. This closes a remaining repository-level silent
+    failure where alias bootstrap and admin alias-management flows could keep
+    reverting or deactivating mailboxes as if the status change had applied
+    even though the mailbox had already been deleted concurrently.
+    Refs: `src/repositories/agents.ts:1388`, `src/routes/site.ts:1437`,
+    `src/routes/site.ts:1493`, `src/lib/contact-aliases.ts:45`
+
+68. Hardening: suppression upsert during SES bounce/complaint handling no
+    longer treats a raced-away existing row as a successful update. The
+    `addSuppression()` helper now only returns success from its update branch
+    when the `UPDATE` actually changed a row, allowing the caller to fall back
+    to insert/retry if the previously selected suppression was deleted in the
+    short gap before the write. Previously that race could silently skip
+    persisting the suppression altogether and allow later outbound sends to a
+    bounced or complained-about recipient.
+    Refs: `src/repositories/mail.ts:2216`, `src/repositories/mail.ts:2234`,
+    `src/routes/api.ts:3627`
+
+69. Hardening: `getOrCreateThread()` no longer returns a speculative success
+    object immediately after inserting a new thread row. New thread creation
+    now verifies that the parent mailbox still exists, deletes the fresh thread
+    if that mailbox disappeared concurrently, and performs a final read-back
+    before returning. Previously inbound normalization and outbound draft-send
+    thread creation could continue with an orphaned or already-deleted thread
+    id after a post-insert mailbox/thread race.
+    Refs: `src/repositories/mail.ts:652`, `src/repositories/mail.ts:729`,
+    `src/handlers/queues.ts:183`, `src/repositories/mail.ts:1335`
+
+70. Hardening: `bindMailbox()` now also performs a final read-back before
+    returning a newly inserted binding instead of synthesizing a success object
+    from the insert inputs. The helper already cleaned up if the parent agent
+    or mailbox disappeared; with this change it also fails closed if the fresh
+    `agent_mailboxes` row itself vanishes before control returns, preventing
+    API, MCP, or signup flows from reporting a mailbox binding that no longer
+    exists.
+    Refs: `src/repositories/agents.ts:1143`, `src/repositories/agents.ts:1196`,
+    `src/routes/api.ts:2668`, `src/lib/provisioning/signup.ts:188`
+
+71. Hardening: task creation helpers now also perform a final read-back before
+    returning a just-inserted or freshly reset task row. This now covers
+    `createTask()` plus both the new-row and failed-task-reset branches of
+    `getOrCreateTaskForSourceMessage()`. Previously these paths could still
+    hand callers a synthesized queued task object after the row had already
+    disappeared again, even though parent-existence cleanup and `UPDATE 0
+    rows` checks had already been tightened.
+    Refs: `src/repositories/mail.ts:1901`, `src/repositories/mail.ts:1938`,
+    `src/repositories/mail.ts:1943`, `src/repositories/mail.ts:2018`
+
+72. Hardening: `enqueueDraftSend()` now verifies that the freshly inserted
+    outbound `messages` row and `outbound_jobs` row can still be read back
+    before the queue send is committed. Previously a concurrent delete in the
+    short gap after insert could still leave the helper enqueueing work and
+    returning success for a vanished outbound job or message, pushing the later
+    worker failure onto an already-accepted send request.
+    Refs: `src/repositories/mail.ts:1297`, `src/repositories/mail.ts:1434`,
+    `src/repositories/mail.ts:1438`
+
+73. Hardening: inbound message creation now also confirms that the newly
+    inserted `messages` row itself can still be read back during finalization,
+    not just that the parent mailbox still exists. Previously `createInboundMessage()`
+    could return success after a concurrent delete removed the fresh inbound
+    row, causing `handleEmail()` to keep the raw email object and queue a
+    normalize job for a message id that no longer existed.
+    Refs: `src/repositories/mail.ts:372`, `src/repositories/mail.ts:390`,
+    `src/handlers/email.ts:92`
+
+74. Hardening: thread-link mutation helpers now require the destination thread
+    to still belong to an existing mailbox that matches the draft/message being
+    updated, and thread timestamp refresh now also fails closed if the thread's
+    mailbox has disappeared. This tightens `assignDraftThreadId()`,
+    `restoreDraftSendState()`, `assignMessageThreadId()`,
+    `updateInboundMessageNormalized()`, and `updateThreadTimestamp()` so
+    inbound normalization, reply reconciliation, and draft-send rollback can no
+    longer silently attach state to an orphaned thread row whose mailbox was
+    deleted concurrently.
+    Refs: `src/repositories/mail.ts:827`, `src/repositories/mail.ts:850`,
+    `src/repositories/mail.ts:893`, `src/repositories/mail.ts:1740`,
+    `src/repositories/mail.ts:1779`
+
+75. Hardening: idempotent queued-send recovery now also requires the outbound
+    `messages` row to still exist before replaying a stored queued result. This
+    covers REST `restoreDraftSendReplay()` / `restoreEnqueuedDraftSend()`, MCP
+    `restoreDraftSendReplay()` / `restoreEnqueuedDraftSend()`, and site-admin
+    `restoreAdminSendReplay()`. Previously these helpers could return a queued
+    success response as long as the draft and outbound-job rows were still
+    present, even if the underlying outbound message had already disappeared
+    and the later worker run was guaranteed to fail.
+    Refs: `src/routes/api.ts:263`, `src/routes/api.ts:299`,
+    `src/routes/mcp.ts:160`, `src/routes/mcp.ts:196`,
+    `src/routes/site.ts:1092`
+
+76. Hardening: normalize replay now verifies that the referenced raw email
+    object still exists in R2 before returning an accepted replay response or
+    enqueuing the ingest job. This covers both REST `POST /v1/messages/:id/replay`
+    and the MCP replay tool. Previously these paths only checked `rawR2Key`
+    was populated on the message row, so a message whose raw `.eml` object had
+    already been deleted could still be replayed as accepted even though the
+    worker would deterministically fail on "Raw email object not found".
+    Refs: `src/routes/api.ts:2992`, `src/routes/api.ts:2998`,
+    `src/routes/mcp.ts:2473`, `src/routes/mcp.ts:2479`
+
+77. Hardening: thread reads and thread lookup/reuse now ignore orphan thread
+    rows whose mailbox has already been deleted. `getThread()` no longer returns
+    those rows, and the existing/concurrent branches of `getOrCreateThread()`
+    now only reuse threads whose parent mailbox still exists. Previously stale
+    orphan threads could still be surfaced to read/reply flows or reused during
+    new inbound/outbound thread resolution even though later write paths would
+    fail closed against the missing mailbox.
+    Refs: `src/repositories/mail.ts:596`, `src/repositories/mail.ts:661`,
+    `src/routes/api.ts:3156`, `src/routes/mcp.ts:2019`
+
+78. Hardening: mailbox-binding reads now ignore orphan `agent_mailboxes` rows
+    whose mailbox has already been deleted. This tightens
+    `hasActiveMailboxBinding()`, `getAgentMailboxBinding()`, and
+    `listAgentMailboxes()`, so stale bindings can no longer keep satisfying
+    mailbox-access checks or keep showing up in control-plane listings after
+    the underlying mailbox has gone away.
+    Refs: `src/repositories/agents.ts:1082`, `src/repositories/agents.ts:1137`,
+    `src/repositories/agents.ts:1220`, `src/routes/api.ts:2710`
+
+79. Hardening: deployment reads and deployment-backed mailbox access checks now
+    ignore orphan `agent_deployments` rows whose agent, agent version, or
+    mailbox target has already disappeared. This tightens
+    `getAgentDeployment()`, `listAgentDeployments()`,
+    `listActiveDeploymentsForTarget()`, `hasActiveMailboxDeployment()`, and the
+    mailbox-target deployment queries inside `resolveAgentExecutionTarget()`,
+    so stale deployment rows can no longer keep satisfying active-mailbox
+    access or appear in deployment control-plane views after their backing
+    resources are gone.
+    Refs: `src/repositories/agents.ts:729`, `src/repositories/agents.ts:866`,
+    `src/repositories/agents.ts:897`, `src/repositories/agents.ts:1201`
+
+80. Hardening: `getThread()` now only includes messages from the same mailbox
+    as the thread row itself. Previously the thread read path loaded all
+    `messages` rows sharing the `thread_id`, so any legacy or manually
+    corrupted cross-mailbox message linkage could bleed foreign mailbox content
+    into thread views and reply-context construction even after newer write
+    paths had been tightened to fail closed.
+    Refs: `src/repositories/mail.ts:596`, `src/repositories/mail.ts:620`,
+    `src/routes/api.ts:3156`, `src/routes/mcp.ts:2019`
+
+81. Hardening: outbound-job reads now ignore orphan `outbound_jobs` rows whose
+    backing outbound `messages` row has already disappeared. This tightens
+    `listOutboundJobs()`, `getOutboundJob()`, `getOutboundJobByMessageId()`,
+    and `getOutboundJobByDraftR2Key()`, so admin views, webhook lookups, and
+    idempotent send-recovery paths no longer treat a job with no surviving
+    message record as a valid queued/sent delivery state.
+    Refs: `src/repositories/mail.ts:636`, `src/repositories/mail.ts:1724`,
+    `src/repositories/mail.ts:1742`, `src/repositories/mail.ts:1762`
+
+82. Hardening: draft reads now ignore orphan `drafts` rows whose backing agent
+    or mailbox has already disappeared. This tightens `getDraft()`,
+    `listDrafts()`, and `getDraftByR2Key()`, so send/recovery routes and admin
+    draft listings no longer treat a draft with no surviving execution agent or
+    mailbox as a valid editable/sendable resource.
+    Refs: `src/repositories/mail.ts:1174`, `src/repositories/mail.ts:1223`,
+    `src/repositories/mail.ts:1286`, `src/routes/site.ts:1925`
+
+83. Hardening: task reads now ignore orphan `tasks` rows whose mailbox, source
+    message, or assigned agent has already disappeared. This tightens
+    `listTasks()`, `getTaskBySourceMessageId()`, and `getTask()`, so worker
+    execution, replay-task reuse, and task listing endpoints no longer treat a
+    stale task with missing backing resources as a runnable or visible task.
+    Refs: `src/repositories/mail.ts:297`, `src/repositories/mail.ts:2187`,
+    `src/repositories/mail.ts:2224`, `src/handlers/queues.ts:324`
+
+84. Hardening: message reads now ignore orphan `messages` rows whose mailbox
+    has already disappeared. This tightens `getMessage()`,
+    `getInboundMessageByInternetMessageId()`, `listMessages()`, and
+    `getMessageByProviderMessageId()`, so mailbox-scoped reads, webhook
+    lookups, and replay/message inspection paths no longer treat a message with
+    no surviving mailbox as a valid resource.
+    Refs: `src/repositories/mail.ts:365`, `src/repositories/mail.ts:385`,
+    `src/repositories/mail.ts:511`, `src/repositories/mail.ts:2367`
+
+85. Hardening: attachment ownership lookup by `r2Key` now also requires the
+    owning message's mailbox to still exist. `getAttachmentOwnerByR2Key()`
+    drives draft/send attachment validation; previously it could still report a
+    tenant/mailbox owner through a stale `messages` row even after the mailbox
+    itself had been deleted, allowing legacy orphan attachments to keep passing
+    ownership checks.
+    Refs: `src/repositories/mail.ts:632`, `src/routes/api.ts:380`,
+    `src/lib/draft-send-guards.ts:93`
+
+86. Hardening: reply-context thread lookup now ignores cross-mailbox or orphan
+    thread state when resolving a thread from referenced message ids or
+    outbound fallback history. `findThreadByInternetMessageIds()` and
+    `findThreadByReplyContext()` now only reuse a thread when it still belongs
+    to the same mailbox as the backing message and that mailbox still exists.
+    Previously legacy or manually corrupted message/thread links could steer
+    inbound normalization onto a foreign or orphaned thread before later write
+    paths had a chance to fail closed.
+    Refs: `src/repositories/mail.ts:844`, `src/repositories/mail.ts:1014`,
+    `src/handlers/queues.ts:177`
+
+87. Hardening: thread reads and thread creation/reuse now also require thread
+    tenant consistency with the backing mailbox. `getThread()`,
+    `getOrCreateThread()`, `findThreadByInternetMessageIds()`, and
+    `findThreadByReplyContext()` now reject threads whose `tenant_id` no longer
+    matches the mailbox tenant, and new-thread finalization now verifies the
+    target mailbox belongs to the expected tenant. This closes another legacy
+    corruption path where a cross-tenant thread row could still be surfaced or
+    reused as long as the mailbox id itself existed.
+    Refs: `src/repositories/mail.ts:596`, `src/repositories/mail.ts:661`,
+    `src/repositories/mail.ts:844`, `src/repositories/mail.ts:1014`
+
+88. Hardening: draft reads now also require tenant consistency between the
+    draft row and its backing agent/mailbox. `getDraft()`, `listDrafts()`, and
+    `getDraftByR2Key()` no longer accept a draft merely because the referenced
+    agent and mailbox ids still exist; they now require both resources to still
+    belong to `drafts.tenant_id`. This closes a legacy corruption path where a
+    cross-tenant draft row could still be surfaced through read/send/recovery
+    flows as long as its foreign agent and mailbox records were present.
+    Refs: `src/repositories/mail.ts:1174`, `src/repositories/mail.ts:1223`,
+    `src/repositories/mail.ts:1286`
+
+89. Hardening: mailbox binding / mailbox deployment access helpers now also
+    require tenant consistency, not just row existence. `hasActiveMailboxBinding()`,
+    `getAgentMailboxBinding()`, and `listAgentMailboxes()` now require the
+    binding tenant to still match both the mailbox tenant and the agent tenant;
+    `hasActiveMailboxDeployment()` now requires the deployment tenant to still
+    match both the agent tenant and the mailbox tenant. This closes the
+    remaining stale-access path where cross-tenant legacy rows could still
+    satisfy active-mailbox permission checks as long as the referenced ids were
+    present.
+    Refs: `src/repositories/agents.ts:1163`, `src/repositories/agents.ts:1201`,
+    `src/repositories/agents.ts:1238`, `src/repositories/agents.ts:1320`
+
+90. Hardening: deployment control-plane reads and mailbox-execution target
+    resolution now also require tenant consistency, not just parent existence.
+    `listActiveDeploymentsForTarget()`, `getAgentDeployment()`,
+    `listAgentDeployments()`, and the deployment/binding fallback queries inside
+    `resolveAgentExecutionTarget()` now require deployment and binding tenants
+    to still match their backing agent/mailbox tenants. This closes the
+    remaining path where cross-tenant legacy rows could still appear in
+    deployment listings or influence execution-target selection for a mailbox.
+    Refs: `src/repositories/agents.ts:732`, `src/repositories/agents.ts:866`,
+    `src/repositories/agents.ts:897`, `src/repositories/agents.ts:929`
+
+91. Hardening: thread reads and reply-context lookup now also require message
+    tenant consistency. `getThread()` now only includes messages whose
+    `tenant_id` still matches the thread tenant, and both
+    `findThreadByInternetMessageIds()` and `findThreadByReplyContext()` now
+    filter candidate messages by `input.tenantId`. This closes the remaining
+    legacy-corruption path where cross-tenant message rows sharing the same
+    mailbox/thread linkage could still influence thread reconstruction.
+    Refs: `src/repositories/mail.ts:596`, `src/repositories/mail.ts:844`,
+    `src/repositories/mail.ts:1014`
+
+92. Hardening: inbound-message lookup by `internet_message_id` now also
+    requires mailbox tenant consistency, matching the other message read
+    helpers. `getInboundMessageByInternetMessageId()` previously only checked
+    that the mailbox id still existed, so a legacy row whose `tenant_id` no
+    longer matched the mailbox tenant could still be treated as the canonical
+    inbound dedupe/resume target.
+    Refs: `src/repositories/mail.ts:385`, `src/handlers/email.ts:71`
+
+93. Hardening: thread-link mutation helpers now also require tenant
+    consistency, not just mailbox-id equality. `assignDraftThreadId()`,
+    `restoreDraftSendState()`, `assignMessageThreadId()`,
+    `updateInboundMessageNormalized()`, and `updateThreadTimestamp()` now
+    require the destination thread tenant to still match the draft/message
+    tenant and the backing mailbox tenant. This closes the remaining
+    legacy-corruption path where a cross-tenant thread row reusing the same
+    mailbox id could still be reattached during draft send, rollback, or
+    inbound normalization.
+    Refs: `src/repositories/mail.ts:934`, `src/repositories/mail.ts:958`,
+    `src/repositories/mail.ts:1004`, `src/repositories/mail.ts:1941`,
+    `src/repositories/mail.ts:1981`
+
+94. Hardening: agent policy and agent version reads now fail closed on orphaned
+    parent agents. `getAgentPolicy()`, `upsertAgentPolicy()` final read-back,
+    `getAgentVersion()`, and `listAgentVersions()` now all require the backing
+    `agents` row to still exist before treating the policy/version as valid.
+    This closes the remaining control-plane path where legacy orphan
+    `agent_policies` or `agent_versions` rows could still be surfaced through
+    API, queue, or provisioning flows after the agent itself had been deleted.
+    Refs: `src/repositories/agents.ts:236`, `src/repositories/agents.ts:546`,
+    `src/repositories/agents.ts:563`, `src/repositories/agents.ts:1418`
+
+95. Hardening: agent deployment creation now also fails closed on tenant drift
+    during post-write finalization and cleans up if the final read-back no
+    longer passes deployment validation. `createAgentDeployment()` now requires
+    the parent agent tenant and mailbox target tenant to still match the
+    deployment tenant, and it deletes the fresh deployment row if the final
+    `getAgentDeployment()` read returns null. This closes the remaining path
+    where a legacy cross-tenant mailbox row or other post-insert drift could
+    leave behind an unreadable orphan deployment after creation failed.
+    Refs: `src/repositories/agents.ts:581`, `src/repositories/agents.ts:619`,
+    `src/repositories/agents.ts:633`
+
+96. Hardening: mailbox binding creation now also fails closed on tenant drift
+    during post-write finalization and cleans up if the final read-back no
+    longer passes binding validation. `bindMailbox()` now requires the parent
+    agent tenant and mailbox tenant to still match the binding tenant, and it
+    deletes the fresh binding row if the final `getAgentMailboxBinding()` read
+    returns null. This closes the remaining path where a legacy cross-tenant
+    mailbox or agent row could leave behind an unreadable orphan binding after
+    creation failed.
+    Refs: `src/repositories/agents.ts:1345`, `src/repositories/agents.ts:1389`,
+    `src/repositories/agents.ts:1398`
+
+97. Hardening: agent updates now normalize and validate `defaultVersionId` at
+    the repository layer instead of relying on route callers. `updateAgent()`
+    now treats an empty string as clearing the default version (`NULL`) and
+    rejects any non-empty version id that does not belong to the same agent
+    before writing config or metadata changes. This closes the path where API
+    or internal callers could persist an empty-string foreign key or a foreign
+    agent version onto `agents.default_version_id`.
+    Refs: `src/repositories/agents.ts:332`, `src/routes/api.ts:2205`
+
+98. Hardening: deployment rollout/rollback now also fail closed if the final
+    deployment read-back no longer passes validation after the status topology
+    has already been rewritten. `rolloutAgentDeployment()` now best-effort
+    restores prior deployment statuses and deletes the just-created deployment
+    when the promoted deployment cannot be read back, while
+    `rollbackAgentDeployment()` now restores the snapshot and throws instead of
+    silently returning `null`. This closes the remaining path where parent/tenant
+    drift after status transitions could leave partially switched deployment
+    state behind while the repository misreported the outcome.
+    Refs: `src/repositories/agents.ts:813`, `src/repositories/agents.ts:858`,
+    `src/repositories/agents.ts:909`
+
+99. Hardening: task execution claim now uses the same parent-consistency gates
+    as task reads and cleans up if post-claim validation still fails. `claimTaskForExecution()`
+    no longer promotes a task to `running` unless its mailbox, source message,
+    and assigned agent still exist inside the same tenant, and it now deletes
+    the task if a concurrent drift makes the claimed row fail the subsequent
+    `getTask()` validation. This closes the worker path where an orphan task
+    could be stranded in hidden `running` state after `handleAgentExecute()`
+    immediately treated it as nonexistent.
+    Refs: `src/repositories/mail.ts:2333`, `src/handlers/queues.ts:318`
+
+100. Hardening: outbound job reads and send-claim now require the backing
+    message to still pass mailbox/tenant validation, not just raw message-row
+    existence. `getOutboundJob()`, `getOutboundJobByMessageId()`, and
+    `getOutboundJobByDraftR2Key()` now require the owning message's mailbox to
+    still exist and match `messages.tenant_id`, and `claimOutboundJobForSend()`
+    now uses the same gate plus post-claim read-back cleanup. This closes the
+    worker path where a hidden/corrupted message row could leave an outbound
+    job repeatedly claimed for send even though the subsequent message load
+    would immediately treat it as invalid.
+    Refs: `src/repositories/mail.ts:1883`, `src/repositories/mail.ts:2618`,
+    `src/handlers/queues.ts:389`, `src/handlers/queues.ts:595`
+
+101. Hardening: SES webhook fallback status updates by `provider_message_id`
+     now use the same mailbox/tenant visibility gate as
+     `getMessageByProviderMessageId()`. `updateMessageStatusByProviderMessageId()`
+     previously updated any raw `messages.provider_message_id` match, even if
+     that message had already become hidden by mailbox/tenant drift. This
+     closes the remaining webhook path where terminal delivery events could
+     still mutate a corrupted hidden message row through the provider-id
+     fallback branch.
+     Refs: `src/repositories/mail.ts:2511`, `src/routes/api.ts:3630`
+
+102. Hardening: `updateAgent()` now delays old-config cleanup until after the
+     updated agent row has been read back successfully. If the agent disappears
+     after the `UPDATE` commits but before final read-back, the repository now
+     deletes the newly uploaded config blob and preserves the previous config
+     blob instead of deleting the last known-good artifact before surfacing the
+     failure. This closes the remaining post-update race that could orphan the
+     fresh config and discard the prior one in the same failed update.
+     Refs: `src/repositories/agents.ts:340`
+
+103. Hardening: draft send claim now requires the draft's parent agent and
+     mailbox to still exist inside the same tenant, and `enqueueDraftSend()`
+     now re-validates the claimed draft before creating outbound message/job
+     state. This closes the remaining race where a draft could be promoted to
+     `queued` after parent drift and then continue into send-side effects even
+     though the repository's normal draft reads would already hide it as
+     invalid.
+     Refs: `src/repositories/mail.ts:1472`, `src/repositories/mail.ts:1504`
+
+104. Hardening: direct message-status mutation helpers now also require the
+     owning mailbox to still exist and match `messages.tenant_id`. This tightens
+     `backfillMessageProviderAcceptance()`, `updateMessageStatus()`, and
+     `markMessageSent()` so webhook and queue recovery paths can no longer keep
+     mutating a hidden/corrupted message row merely because its raw `id` still
+     exists in `messages`.
+     Refs: `src/repositories/mail.ts:2551`, `src/repositories/mail.ts:2576`,
+     `src/repositories/mail.ts:2706`
+
+105. Hardening: remaining draft/outbound rollback helpers now also respect the
+     same visibility rules as normal draft/job reads. `restoreDraftSendState()`
+     and `markDraftStatus()` now require the draft's parent agent/mailbox to
+     still exist in the same tenant, while `updateOutboundJobStatus()` now
+     requires the backing message to still pass mailbox/tenant validation. This
+     closes the remaining rollback/recovery path where hidden invalid drafts or
+     outbound jobs could still be mutated directly even though normal reads had
+     already filtered them out.
+     Refs: `src/repositories/mail.ts:958`, `src/repositories/mail.ts:2649`,
+     `src/repositories/mail.ts:2698`
+
+106. Hardening: task mutation helpers now also use the same parent-consistency
+     rules as task reads/claims. `updateTaskAssignment()` and
+     `updateTaskStatus()` now require the task's mailbox, source message, and
+     assigned agent linkage to still be valid before mutating the row, so queue
+     recovery can no longer keep rewriting a hidden invalid task just because
+     its raw `tasks.id` still exists.
+     Refs: `src/repositories/mail.ts:2429`, `src/repositories/mail.ts:2468`
+
+107. Hardening: deployment status mutation helpers now also require the same
+     parent/version/target validity as deployment reads. `setDeploymentStatus()`
+     and `setDeploymentsStatus()` no longer rewrite raw `agent_deployments`
+     rows whose backing agent, agent version, or mailbox target has already
+     drifted out of validity, which closes the remaining topology-update path
+     where rollout/rollback could still mutate hidden invalid deployments
+     directly before later read-back failed.
+     Refs: `src/repositories/agents.ts:718`, `src/repositories/agents.ts:762`
+
+108. Hardening: single-deployment status updates now also fail closed if the
+     final deployment read-back disappears after the status change has already
+     committed. `updateAgentDeploymentStatus()` now snapshots prior status,
+     restores it on post-update read-back failure, and throws instead of
+     returning `null`, which closes the API path where a successful deployment
+     state change could be misreported as "not found" after later validation
+     drift.
+     Refs: `src/repositories/agents.ts:661`, `src/routes/api.ts:2480`
+
+109. Hardening: unique-conflict create paths now self-heal hidden invalid
+     binding/deployment rows before giving up. `createAgentDeployment()` now
+     removes stale invalid active deployments blocking the active-target unique
+     index and retries once, while `bindMailbox()` now removes stale invalid
+     `(agent_id, mailbox_id)` rows blocking its unique constraint and retries
+     once. This closes the remaining control-plane repair path where legacy
+     orphan rows could be invisible to normal reads yet still permanently block
+     recreating the correct deployment or mailbox binding.
+     Refs: `src/repositories/agents.ts:598`, `src/repositories/agents.ts:642`,
+     `src/repositories/agents.ts:1494`, `migrations/0001_initial.sql:22`,
+     `migrations/0003_agent_deployment_history.sql:35`
+
+110. Hardening: `getOrCreateThread()` now requires tenant consistency on both
+     the pre-existing lookup and the unique-conflict retry lookup, and it now
+     verifies the inserted row with `tenant_id + mailbox_id` on final read-back.
+     Previously a legacy cross-tenant thread row reusing the same
+     `mailbox_id/thread_key` could be returned directly to new inbound/draft
+     flows after mailbox drift, even though the caller supplied a different
+     tenant context.
+     Refs: `src/repositories/mail.ts:738`
+
+111. Hardening: inbound receive dedupe now only treats visible same-tenant
+     mailbox messages as duplicates, and it now fails closed if insertion gets
+     skipped without any visible existing message to resume. `createInboundMessage()`
+     now excludes hidden invalid inbound rows from its `NOT EXISTS` check,
+     deletes stale hidden duplicates when needed, and throws instead of
+     returning `false` if no visible duplicate actually exists. This closes the
+     ingest path where a corrupt hidden inbound row could suppress a new
+     message while `handleEmail()` could not find any valid message to resume.
+     Refs: `src/repositories/mail.ts:414`, `src/repositories/mail.ts:447`,
+     `src/handlers/email.ts:55`
+
+112. Hardening: `getOrCreateThread()` now self-heals hidden invalid
+     `mailbox_id/thread_key` collisions before giving up on unique-conflict
+     inserts. When the unique index fires but no visible concurrent thread can
+     be read back for the caller's tenant/mailbox, the repository now removes
+     stale invalid blocking rows and retries once. This closes the remaining
+     repair gap where orphan or tenant-drifted thread rows could stay invisible
+     to normal reads yet still permanently block thread recreation.
+     Refs: `src/repositories/mail.ts:806`, `src/repositories/mail.ts:834`,
+     `migrations/0001_initial.sql:58`
+
+113. Hardening: task dedupe/reset now also aligns with visible task validity
+     instead of trusting raw `tasks` rows. `getOrCreateTaskForSourceMessage()`
+     now excludes hidden invalid task rows from its `NOT EXISTS` guard, removes
+     stale invalid duplicates when they block recreation, and applies the same
+     mailbox/message/assigned-agent validity checks when resetting a failed
+     task back to queued work. This closes the path where an orphan or
+     tenant-drifted task could stay invisible to normal task reads yet still
+     block new task creation or be mutated directly during failed-task reuse.
+     Refs: `src/repositories/mail.ts:2274`, `src/repositories/mail.ts:2363`,
+     `src/repositories/mail.ts:2443`
+
+114. Hardening: draft cleanup now no longer lets hidden invalid outbound-job
+     rows block deletion of unsent drafts. `deleteDraftIfUnqueued()` now
+     removes stale outbound jobs whose backing message/mailbox no longer passes
+     visibility checks, and its `NOT EXISTS` guard now only treats visible
+     outbound jobs as a real send blocker. This closes the cleanup path where a
+     corrupt hidden job could strand sensitive token/signup draft payloads and
+     prevent best-effort rollback from deleting a draft that no live send flow
+     could actually resume.
+     Refs: `src/repositories/mail.ts:1547`, `src/repositories/mail.ts:1576`,
+     `src/routes/api.ts:3925`, `src/lib/provisioning/signup.ts:301`
+
+115. Hardening: thread cleanup now only treats visible message/draft
+     references as real blockers. `deleteThreadIfUnreferenced()` now ignores
+     hidden invalid messages and drafts whose mailbox/agent parents no longer
+     pass normal read visibility, so rollback after inbound normalization or
+     reply-thread assignment failure can still remove a freshly created thread
+     instead of leaving it stranded behind invisible corrupt references.
+     Refs: `src/repositories/mail.ts:1095`, `src/repositories/mail.ts:1277`,
+     `src/repositories/mail.ts:1852`
+
+116. Hardening: mailbox cleanup now aligns its "unused" test with visible
+     child validity instead of raw child-row existence. `deleteMailboxIfUnreferenced()`
+     now only lets valid mailbox bindings, deployments, threads, messages,
+     drafts, and tasks block deletion, so contact-alias rollback and similar
+     cleanup flows are no longer permanently stuck behind hidden invalid child
+     rows that normal repository reads already ignore.
+     Refs: `src/repositories/agents.ts:1757`, `src/routes/site.ts:1450`,
+     `src/routes/site.ts:1522`
+
+117. Hardening: `createDraft()` now also removes the freshly inserted `drafts`
+     row when the final repository read-back fails after the draft blob has
+     already been written. Previously this branch only deleted `draftR2Key`,
+     which could leave behind a hidden invalid draft row that normal reads no
+     longer returned but later cleanup and rollback logic still had to work
+     around.
+     Refs: `src/repositories/mail.ts:1283`, `src/repositories/mail.ts:1399`
+
+118. Hardening: task creation paths now also delete the freshly inserted task
+     row if the final filtered read-back fails after insert/finalization.
+     `createTask()` and the insert-success branch of
+     `getOrCreateTaskForSourceMessage()` previously could throw on a hidden
+     read-back miss while leaving behind a just-created task row that normal
+     task reads no longer returned. They now clean that row up before failing.
+     Refs: `src/repositories/mail.ts:2402`, `src/repositories/mail.ts:2441`,
+     `src/repositories/mail.ts:2447`
+
+119. Hardening: inbound message creation now also removes the freshly inserted
+     `messages` row when final read-back fails after mailbox existence has
+     already been rechecked. Previously `createInboundMessage()` only cleaned
+     the row up when the mailbox had disappeared, but a later filtered
+     `getMessage()` miss could still leave behind a hidden invalid inbound row
+     while the caller separately cleaned only the raw R2 blob.
+     Refs: `src/repositories/mail.ts:447`, `src/repositories/mail.ts:482`
+
+120. Hardening: `getOrCreateThread()` now also removes the freshly inserted
+     `threads` row when its final `id + tenant_id + mailbox_id` read-back
+     fails after mailbox revalidation. Previously that branch threw directly,
+     which could leave behind a hidden invalid thread row even though the
+     repository had already concluded the stored thread no longer matched the
+     caller's tenant/mailbox context.
+     Refs: `src/repositories/mail.ts:809`, `src/repositories/mail.ts:943`
+
+121. Hardening: delivery-event dedupe now also ignores hidden invalid prior
+     rows instead of treating them as permanent duplicates. `insertDeliveryEvent()`
+     now only lets visible events block the same `payload_r2_key`, removes
+     stale invalid delivery-event rows whose backing message/mailbox no longer
+     passes normal visibility, and fails closed if insertion is skipped without
+     any visible existing event. This closes the webhook path where a corrupt
+     old event row could suppress future event persistence while still leaving
+     operators with stale ghost event history.
+     Refs: `src/repositories/mail.ts:2825`, `src/repositories/mail.ts:2882`,
+     `src/routes/api.ts:3552`
+
+122. Hardening: draft send claim now also cleans up a newly hidden invalid
+     draft if post-claim read-back fails and state restoration cannot be
+     applied. `enqueueDraftSend()` already restored the prior status when
+     possible, but previously a claim that turned the draft `queued` just
+     before agent/mailbox drift could still leave behind a hidden invalid draft
+     row and blob after the restore path failed. It now deletes that draft row
+     and payload blob in the unrecoverable branch.
+     Refs: `src/repositories/mail.ts:1697`, `src/repositories/mail.ts:1722`
+
+123. Hardening: direct send of an existing draft now re-validates stored
+     `threadId` / `sourceMessageId` before enqueue in both REST and MCP, not
+     just in the idempotent replay branch. Previously a non-idempotent
+     `send_draft` call could still enqueue a draft whose stored reply/thread
+     linkage had drifted or disappeared after creation, even though the same
+     draft would be rejected when sent through the idempotent path.
+     Refs: `src/routes/api.ts:3492`, `src/routes/mcp.ts:2389`
+
+124. Hardening: draft reads now fail closed when optional `thread_id` or
+     `source_message_id` drift out of validity. `getDraft()`,
+     `getDraftByR2Key()`, and `listDrafts()` now require any stored draft
+     thread/message linkage to still exist inside the same tenant/mailbox and
+     still pass mailbox visibility, so queue workers, REST, and MCP no longer
+     treat stale reply/thread context as a valid draft record after the backing
+     thread or source message has disappeared.
+     Refs: `src/repositories/mail.ts:1413`, `src/repositories/mail.ts:1522`,
+     `src/repositories/mail.ts:1615`
+
+125. Hardening: hidden invalid drafts created by the stricter draft visibility
+     rules no longer break best-effort draft cleanup. `deleteDraftIfUnqueued()`
+     now falls back to a raw draft row lookup when `getDraft()` intentionally
+     hides a drifted draft, so rollback paths can still delete an unsent draft
+     and its blob after stale `thread_id` / `source_message_id` linkage has
+     made the draft invisible to normal reads.
+     Refs: `src/repositories/mail.ts:1730`, `src/repositories/mail.ts:1769`
+
+126. Hardening: agent reads now mask stale `default_version_id` values instead
+     of returning a broken default-version pointer. `getAgent()` and
+     `listAgents()` now only surface `defaultVersionId` when the referenced
+     version still exists and still belongs to the same agent, so fallback
+     execution-target resolution and control-plane reads no longer propagate an
+     invalid default version id after version drift or deletion.
+     Refs: `src/repositories/agents.ts:303`, `src/repositories/agents.ts:326`
+
+127. Hardening: existing outbound-job lifecycle paths no longer confuse a
+     drifted draft reference with a truly missing draft after draft reads were
+     tightened. A dedicated `getDraftByR2KeyForOutboundLifecycle()` helper now
+     preserves agent/mailbox-valid drafts for queue/webhook/admin recovery and
+     inspection flows even when their optional reply/thread linkage has drifted,
+     so these paths keep performing fail-closed draft validation and state
+     repair instead of silently treating the draft as absent.
+     Refs: `src/repositories/mail.ts:1730`, `src/handlers/queues.ts:400`,
+     `src/routes/api.ts:3586`, `src/routes/site.ts:1098`,
+     `src/routes/admin-mcp.ts:680`
+
+128. Hardening: list/read helpers for thread-adjacent outbound state now align
+     with the same mailbox visibility rules as their single-record lookups.
+     `getThread()` now only includes messages that still pass normal message
+     visibility, `listOutboundJobs()` no longer lists jobs whose backing
+     message is hidden behind a stale/orphan mailbox reference, and
+     `listDeliveryEventsByMessageId()` now suppresses events for hidden invalid
+     messages instead of leaking them through list endpoints after the parent
+     message has drifted out of visibility.
+     Refs: `src/repositories/mail.ts:737`, `src/repositories/mail.ts:779`,
+     `src/repositories/mail.ts:3185`
+
+129. Hardening: `provider_message_id` lookup/update paths now fail closed on
+     ambiguity instead of treating a non-unique provider id as a safe single
+     row key. `getMessageByProviderMessageId()` now only resolves when exactly
+     one visible message matches, webhook status updates only touch a uniquely
+     visible target, and both provider-acceptance write paths now refuse to
+     assign a provider message id that is already attached to another visible
+     message, preventing duplicate/corrupted rows from causing arbitrary reads
+     or multi-row terminal-event state changes.
+     Refs: `src/repositories/mail.ts:391`, `src/repositories/mail.ts:3223`,
+     `src/repositories/mail.ts:3240`, `src/repositories/mail.ts:3458`
+
+130. Hardening: outbound-job lookup and creation by `draft_r2_key` / `message_id`
+     now also fail closed on ambiguity instead of treating non-unique rows as
+     a valid single-job state. `getOutboundJobByMessageId()` and
+     `getOutboundJobByDraftR2Key()` now only resolve a uniquely visible job,
+     and `enqueueDraftSend()` now performs visible-job dedupe plus hidden-row
+     self-heal before inserting, so corrupted duplicate jobs can no longer be
+     silently picked as the "latest" row or expanded by creating yet another
+     outbound job for the same draft.
+     Refs: `src/repositories/mail.ts:785`, `src/repositories/mail.ts:2104`,
+     `src/repositories/mail.ts:2398`, `src/repositories/mail.ts:2414`
+
+131. Hardening: draft lookup by `draft_r2_key` now also fails closed on
+     ambiguity instead of returning whichever visible row happened to sort
+     first. Both `getDraftByR2Key()` and
+     `getDraftByR2KeyForOutboundLifecycle()` now require exactly one visible
+     draft match, so REST/MCP/admin/queue paths no longer treat duplicated
+     draft blobs as a trustworthy single draft record after corruption or
+     manual data drift.
+     Refs: `src/repositories/mail.ts:1741`, `src/repositories/mail.ts:1850`
+
+132. Hardening: inbound-message and task lookups by natural dedupe keys now
+     also fail closed on ambiguity instead of silently choosing one visible
+     row. `getInboundMessageByInternetMessageId()` and
+     `getTaskBySourceMessageId()` now require exactly one visible match, so
+     inbound replay/dedupe and task recovery paths will surface duplicated
+     visible rows as corruption instead of treating an arbitrary oldest/newest
+     row as authoritative.
+     Refs: `src/repositories/mail.ts:437`, `src/repositories/mail.ts:2916`
+
+133. Hardening: exact thread resolution by reply/reference message ids now
+     also fails closed on ambiguity instead of picking whichever matching
+     thread happened to contain the newest visible message. 
+     `findThreadByInternetMessageIds()` now only resolves when a referenced
+     internet-message-id maps to exactly one visible thread, so reply-context
+     recovery cannot silently attach follow-up mail to the wrong split or
+     duplicated thread after data drift.
+     Refs: `src/repositories/mail.ts:1079`
+
+134. Hardening: reply-context fallback no longer lets duplicated visible
+     outbound jobs skew recipient matching or candidate selection. The fallback
+     message scan now only considers messages with at most one visible
+     outbound-job match, and it only loads a `draft_r2_key` when that visible
+     outbound-job association is unique, so corrupted duplicate jobs cannot
+     cause reply-thread recovery to read an arbitrary draft payload and route a
+     reply onto the wrong thread.
+     Refs: `src/repositories/mail.ts:1295`
+
+135. Hardening: tenant outbound-usage window counts now dedupe by message id
+     before summing, so duplicated outbound-job / draft join rows can no
+     longer inflate per-hour or per-day send counts for the same outbound
+     message during quota and policy checks.
+     Refs: `src/repositories/mail.ts:2274`
+
+136. Hardening: attachment owner lookup by `r2_key` now also fails closed on
+     ambiguity instead of returning whichever visible attachment row matched
+     first. `getAttachmentOwnerByR2Key()` now resolves only a uniquely visible
+     owner tuple after de-duplicating same-message rows, so attachment
+     validation and send checks cannot silently treat a cross-message shared
+     blob key as belonging to an arbitrary tenant/mailbox.
+     Refs: `src/repositories/mail.ts:760`
+
+137. Hardening: tenant outbound-usage window counts now also ignore hidden
+     outbound messages whose mailbox no longer passes visibility checks. Quota
+     and policy accounting no longer lets orphaned mailbox/message rows keep
+     consuming send capacity after the backing mailbox has drifted out of the
+     visible runtime state.
+     Refs: `src/repositories/mail.ts:2274`
+
+138. Hardening: quota accounting now only excludes `system:%` sends when the
+     outbound message still has exactly one visible draft association proving
+     that origin. Ambiguous or duplicated draft/job associations no longer let
+     sent mail escape hourly/daily quota checks just because one joined draft
+     row happened to look system-generated.
+     Refs: `src/repositories/mail.ts:2274`
+
+139. Hardening: reply-context fallback now only reads recipient hints from a
+     draft blob when the associated `draft_r2_key` still resolves to exactly
+     one visible lifecycle-valid draft in the same tenant/mailbox. Hidden,
+     stale, or cross-tenant draft rows can no longer keep influencing thread
+     recovery just because an old outbound job still points at the blob key.
+     Refs: `src/repositories/mail.ts:1146`
+
+140. Fixed: admin MCP tenant send-policy updates now resync default
+     self-serve agent recipient allowlists when `internalDomainAllowlist`
+     changes, matching the REST admin path. Updating tenant internal domains
+     through `upsert_tenant_send_policy` no longer leaves default internal-only
+     agent policies pinned to the old allowlist.
+     Refs: `src/routes/admin-mcp.ts:18`, `src/routes/admin-mcp.ts:1048`
+
+141. Hardening: implicit mailbox-to-agent resolution now fails closed on
+     ambiguity instead of picking the oldest active binding. `resolveAssignedAgent()`
+     now requires exactly one visible agent binding for the mailbox, so
+     multi-bound or drifted mailbox-agent rows can no longer silently route
+     future task assignment to an arbitrary agent.
+     Refs: `src/repositories/mail.ts:2716`
+
+142. Hardening: billing receipt and ledger lookups by pseudo-unique keys now
+     also fail closed on ambiguity instead of silently picking the newest row.
+     Payment-proof replay detection plus settlement/replay lookup paths now
+     reject legacy duplicate `payment_proof_fingerprint`, `payment_receipt_id`,
+     or `reference_id` records with an explicit `409`, so billing flows no
+     longer reuse or settle against an arbitrary row when pre-index data drift
+     violates the intended uniqueness contract.
+     Refs: `src/repositories/billing.ts:71`, `src/repositories/billing.ts:290`,
+     `src/repositories/billing.ts:316`, `src/repositories/billing.ts:346`,
+     `src/routes/api.ts:99`, `src/routes/api.ts:3690`
+
+143. Hardening: receipt settlement now also fails closed when an existing
+     ledger row linked by `payment_receipt_id` has the wrong semantic type for
+     the receipt being settled. Topup receipts now require a topup settlement
+     ledger, and upgrade receipts now require an upgrade credit-grant ledger;
+     legacy or corrupted rows of another typed ledger kind are rejected with a
+     `409` instead of being silently reused as if they were valid settlement
+     records.
+     Refs: `src/lib/payments/ledger-metadata.ts:55`,
+     `src/lib/payments/ledger-metadata.ts:69`,
+     `src/repositories/billing.ts:759`, `src/repositories/billing.ts:788`,
+     `src/repositories/billing.ts:811`, `src/repositories/billing.ts:840`,
+     `src/routes/api.ts:131`, `src/routes/api.ts:4753`,
+     `src/routes/api.ts:4851`
+
+144. Hardening: payment-receipt create/update paths now classify receipt-key
+     uniqueness collisions as explicit billing conflicts instead of bubbling
+     generic repository errors. If `payment_proof_fingerprint`,
+     `paymentReference`, or `settlementReference` is already owned by another
+     receipt, the repository now raises a fail-closed billing uniqueness error
+     that the API maps to `409`, avoiding misleading `500`s during x402 proof
+     capture or facilitator confirmation.
+     Refs: `src/repositories/billing.ts:93`,
+     `src/repositories/billing.ts:382`, `src/repositories/billing.ts:423`,
+     `src/repositories/billing.ts:510`, `src/repositories/billing.ts:545`,
+     `src/routes/api.ts:3690`
+
+145. Hardening: `POST /v1/auth/token/rotate` now completes all
+     `self_mailbox` / `both` delivery preflight validation before minting the
+     rotated token. Mailbox-scope, mailbox selection, current mailbox access,
+     and self-agent binding checks no longer happen after token issuance, so a
+     request that ultimately returns `400` or `403` cannot silently create a
+     fresh access token the caller never receives.
+     Refs: `src/routes/api.ts:864`, `src/routes/api.ts:879`,
+     `src/routes/api.ts:896`
+
+146. Hardening: agent control-plane unique-key conflicts are now surfaced as
+     explicit registry conflicts instead of bubbling generic server errors.
+     Duplicate tenant-local agent slugs and duplicate `(agent_id, version)`
+     inserts now raise a dedicated conflict error that the API maps to `409`,
+     so create/update versioning flows no longer misclassify routine uniqueness
+     violations as `500`s.
+     Refs: `src/repositories/agents.ts:149`,
+     `src/repositories/agents.ts:299`, `src/repositories/agents.ts:434`,
+     `src/repositories/agents.ts:588`, `src/routes/api.ts:32`,
+     `src/routes/api.ts:3712`
+
+147. Hardening: DID binding upserts now classify cross-tenant DID uniqueness
+     collisions as explicit conflicts instead of bubbling generic database
+     errors. Because `tenant_did_bindings.did` is globally unique, attempting
+     to bind a DID already owned by another tenant now raises a dedicated
+     conflict error that the API maps to `409`, avoiding misleading `500`s on
+     hosted DID bootstrap or tenant-managed DID updates.
+     Refs: `src/repositories/did-bindings.ts:18`,
+     `src/repositories/did-bindings.ts:117`, `src/routes/api.ts:113`,
+     `src/routes/api.ts:3720`
+
+148. Hardening: public self-serve signup now fail-closes deterministic
+     provisioning collisions as `409` instead of misclassifying them as `502`.
+     Because `/public/signup` wraps provisioning errors locally and only trusts
+     `SignupError` for status selection, agent-registry, mailbox-binding, or
+     deployment conflicts raised during self-serve control-plane bootstrap no
+     longer bypass the API's global conflict mapping and surface as misleading
+     upstream failures.
+     Refs: `src/lib/provisioning/signup.ts:13`,
+     `src/lib/provisioning/signup.ts:18`, `src/lib/provisioning/signup.ts:91`,
+     `src/lib/provisioning/signup.ts:333`, `src/routes/api.ts:773`
+
+149. Hardening: managed contact-alias bootstrap now preserves cross-tenant
+     mailbox ownership collisions as explicit mailbox conflicts instead of
+     rethrowing them as generic errors. If a managed alias address like
+     `hello@...` is already owned by another tenant, the admin create/bootstrap
+     routes now keep returning `409` through their existing mailbox-conflict
+     mapping rather than surfacing a misleading `502`.
+     Refs: `src/lib/contact-aliases.ts:35`,
+     `src/lib/contact-aliases.ts:56`, `src/routes/site.ts:1458`,
+     `src/routes/site.ts:1533`
+
+150. Hardening: managed contact-alias delete now fails closed on mailbox
+     ownership drift instead of claiming success or deleting routing state for
+     a foreign tenant. If the alias mailbox exists but is no longer owned by
+     the managed contact-alias tenant, `/admin/api/contact-aliases/:alias`
+     now returns `409` before mutating mailbox status or Cloudflare routing,
+     preserving the drift for manual reconciliation.
+     Refs: `src/routes/site.ts:1557`, `src/routes/site.ts:1564`,
+     `src/routes/site.ts:1571`
+
+151. Hardening: admin alias health views now fail closed on disabled routing
+     rules and mailbox-ownership drift instead of treating any matching
+     Cloudflare rule as "configured". The admin bootstrap overview and
+     `/admin/api/contact-aliases` now only mark a managed alias healthy when
+     its routing rule is enabled and its mailbox is still the active mailbox
+     owned by `CONTACT_ALIAS_TENANT_ID`, so dashboard health no longer masks
+     broken or hijacked alias state.
+     Refs: `src/routes/site.ts:267`, `src/routes/site.ts:1053`,
+     `src/routes/site.ts:1066`, `src/routes/site.ts:1378`,
+     `src/routes/site.ts:1391`
+
+152. Hardening: site-admin outbound retry and manual-resolution routes now
+     preserve explicit `SiteRequestError` classifications instead of collapsing
+     them into generic `502`s. Draft-payload loss, replay drift, or other
+     admin-specific `404`/`409` reconciliation failures raised inside these
+     workflows now surface with their intended status codes, keeping manual
+     recovery tooling aligned with the actual failure mode.
+     Refs: `src/routes/site.ts:1188`, `src/routes/site.ts:1833`,
+     `src/routes/site.ts:1834`, `src/routes/site.ts:1918`,
+     `src/routes/site.ts:1919`
+
+153. Hardening: site-admin contact-alias bootstrap no longer skips broken
+     existing rules just because a same-address rule row already exists. With
+     `overwrite=false`, bootstrap now only treats an alias as already satisfied
+     when the matching rule is enabled and still points at the expected worker;
+     disabled or misrouted rules are repaired instead of being silently left in
+     place.
+     Refs: `src/routes/site.ts:273`, `src/routes/site.ts:1505`,
+     `src/routes/site.ts:1526`
+
+154. Hardening: malformed stored draft recipients no longer fail open as empty
+     recipient sets during send, retry, or manual billing reconciliation.
+     Shared draft-send validation, REST/MCP draft-send preflight, site-admin
+     recovery helpers, and the repository enqueue path now require a non-empty
+     `to` array plus well-formed optional `cc`/`bcc` arrays, so corrupted
+     legacy draft payloads cannot bypass outbound policy or undercharge credit
+     checks by degrading recipient fields to `[]`.
+     Refs: `src/lib/draft-send-guards.ts:22`,
+     `src/lib/draft-send-guards.ts:42`, `src/routes/api.ts:420`,
+     `src/routes/mcp.ts:304`, `src/routes/site.ts:1205`,
+     `src/repositories/mail.ts:2079`
+
+155. Hardening: malformed stored draft attachments no longer fail open as
+     "no attachments" during send and retry flows. Shared draft-send
+     validation, REST/MCP draft-send preflight, and the repository enqueue path
+     now reject non-array `attachments` payloads instead of silently dropping
+     them, so corrupted legacy drafts cannot lose attachment validation or
+     attachment delivery semantics just because the stored payload shape is
+     wrong.
+     Refs: `src/lib/draft-send-guards.ts:74`,
+     `src/routes/api.ts:489`, `src/routes/mcp.ts:369`,
+     `src/repositories/mail.ts:2112`
+
 ## Findings
 
 1. Free-tier quota bypass only applies when `externalDomains.length > 0`, so

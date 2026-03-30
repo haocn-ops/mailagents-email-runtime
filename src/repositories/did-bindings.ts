@@ -15,6 +15,17 @@ interface DidBindingRow {
   updated_at: string;
 }
 
+export class DidBindingConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DidBindingConflictError";
+  }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
+}
+
 function parseServiceJson(value: string | null): Array<Record<string, unknown>> {
   if (!value) {
     return [];
@@ -73,33 +84,42 @@ export async function upsertTenantDidBinding(env: Env, input: {
 }): Promise<DidBindingRecord> {
   const existing = await getTenantDidBinding(env, input.tenantId);
   const timestamp = nowIso();
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO tenant_did_bindings (
-       tenant_id, did, method, document_url, status, verification_method_id,
-       service_json, verified_at, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(tenant_id) DO UPDATE SET
-       did = excluded.did,
-       method = excluded.method,
-       document_url = excluded.document_url,
-       status = excluded.status,
-       verification_method_id = excluded.verification_method_id,
-       service_json = excluded.service_json,
-       verified_at = excluded.verified_at,
-       created_at = tenant_did_bindings.created_at,
-       updated_at = excluded.updated_at`
-  ).bind(
-    input.tenantId,
-    input.did,
-    input.method,
-    input.documentUrl ?? null,
-    input.status,
-    input.verificationMethodId ?? null,
-    input.service?.length ? JSON.stringify(input.service) : null,
-    input.verifiedAt ?? null,
-    existing?.createdAt ?? timestamp,
-    timestamp,
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO tenant_did_bindings (
+         tenant_id, did, method, document_url, status, verification_method_id,
+         service_json, verified_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id) DO UPDATE SET
+         did = excluded.did,
+         method = excluded.method,
+         document_url = excluded.document_url,
+         status = excluded.status,
+         verification_method_id = excluded.verification_method_id,
+         service_json = excluded.service_json,
+         verified_at = excluded.verified_at,
+         created_at = tenant_did_bindings.created_at,
+         updated_at = excluded.updated_at`
+    ).bind(
+      input.tenantId,
+      input.did,
+      input.method,
+      input.documentUrl ?? null,
+      input.status,
+      input.verificationMethodId ?? null,
+      input.service?.length ? JSON.stringify(input.service) : null,
+      input.verifiedAt ?? null,
+      existing?.createdAt ?? timestamp,
+      timestamp,
+    ));
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      throw new DidBindingConflictError(
+        `DID ${input.did} is already bound to another tenant; manual reconciliation is required`,
+      );
+    }
+    throw error;
+  }
 
   const row = await firstRow<DidBindingRow>(
     env.D1_DB.prepare(

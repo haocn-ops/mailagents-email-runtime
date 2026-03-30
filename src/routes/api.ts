@@ -29,6 +29,7 @@ import { relaxTenantDefaultAgentRecipientPoliciesForExternalSend } from "../lib/
 import { ensureSystemSendAllowed } from "../lib/system-sends";
 import { syncTenantDefaultAgentRecipientPoliciesForInternalDomainChange } from "../lib/self-serve-agent-policy";
 import {
+  AgentRegistryConflictError,
   bindMailbox,
   createAgent,
   createAgentDeployment,
@@ -54,13 +55,15 @@ import {
   upsertAgentPolicy,
 } from "../repositories/agents";
 import {
+  backfillMessageProviderAcceptance,
   createDraft,
   createTask,
+  deleteDraftIfUnqueued,
   deleteTask,
   enqueueDraftSend,
   completeIdempotencyKey,
   getDraft,
-  getDraftByR2Key,
+  getDraftByR2KeyForOutboundLifecycle,
   getAttachmentOwnerByR2Key,
   getMessage,
   getMessageByProviderMessageId,
@@ -77,6 +80,7 @@ import {
   markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateIdempotencyKeyResource,
   addSuppression,
   updateOutboundJobStatus,
   updateMessageStatus,
@@ -93,6 +97,7 @@ import {
 import {
   appendUpgradeCreditGrantLedgerEntry,
   appendTopupSettlementLedgerEntry,
+  BillingUniquenessError,
   createTypedTenantPaymentReceipt,
   ensureTenantBillingAccount,
   getTypedCreditLedgerEntryByPaymentReceiptId,
@@ -105,6 +110,7 @@ import {
   updateTypedTenantPaymentReceiptStatus,
 } from "../repositories/billing";
 import {
+  DidBindingConflictError,
   getTenantDidBinding,
   upsertTenantDidBinding,
 } from "../repositories/did-bindings";
@@ -124,6 +130,8 @@ import {
 import {
   buildUpgradeCreditGrantLedgerMetadata,
   buildTopupSettlementLedgerMetadata,
+  isTopupSettlementLedgerEntry,
+  isUpgradeCreditGrantLedgerEntry,
 } from "../lib/payments/ledger-metadata";
 import {
   buildTopupReceiptMetadata,
@@ -202,6 +210,30 @@ function hasCommittedSideEffect(error: unknown): boolean {
   return error instanceof Error && (error as Error & { sideEffectCommitted?: boolean }).sideEffectCommitted === true;
 }
 
+async function bestEffortCompleteRecoveredIdempotency(env: Env, input: {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  resourceId?: string;
+  response: unknown;
+}): Promise<void> {
+  try {
+    await completeIdempotencyKey(env, input);
+  } catch {
+    // Recovery should still succeed even if the pending idempotency row cannot be repaired inline.
+  }
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildSesPayloadR2Key(body: unknown): Promise<string> {
+  const digest = await sha256Hex(JSON.stringify(body));
+  return `events/ses/${digest}.json`;
+}
+
 async function enqueueReplayTask(env: Env, input: {
   tenantId: string;
   mailboxId: string;
@@ -238,14 +270,31 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
     throw new RouteRequestError("Stored idempotent draft send result is incomplete", 500);
   }
 
-  const draft = await getDraft(env, draftId);
+  let draft = await getDraft(env, draftId);
   if (!draft) {
     throw new RouteRequestError("Stored idempotent draft no longer exists", 409);
   }
 
-  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  let outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
   if (!outboundJob) {
-    throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+    if (draft.status !== "draft" && draft.status !== "approved") {
+      throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+    }
+
+    const resumed = await enqueueDraftSend(env, draft.id);
+    const resumedDraft = await getDraft(env, draft.id);
+    if (!resumedDraft) {
+      throw new RouteRequestError("Stored idempotent draft disappeared during replay recovery", 409);
+    }
+    const resumedOutboundJob = await getOutboundJob(env, resumed.outboundJobId);
+    if (!resumedOutboundJob) {
+      throw new RouteRequestError("Stored idempotent outbound job disappeared during replay recovery", 409);
+    }
+    draft = resumedDraft;
+    outboundJob = resumedOutboundJob;
+  }
+  if (!(await getMessage(env, outboundJob.messageId))) {
+    throw new RouteRequestError("Stored idempotent outbound message no longer exists", 409);
   }
 
   return {
@@ -271,6 +320,9 @@ async function restoreEnqueuedDraftSend(env: Env, input: {
   const outboundJob = await getOutboundJob(env, input.outboundJobId);
   if (!outboundJob) {
     throw new RouteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+  if (!(await getMessage(env, outboundJob.messageId))) {
+    throw new RouteRequestError("Stored idempotent outbound message no longer exists", 409);
   }
   if (outboundJob.draftR2Key !== draft.draftR2Key) {
     throw new RouteRequestError("Stored idempotent outbound job does not belong to draft", 409);
@@ -377,10 +429,44 @@ async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
   }
 
   const payload = await draftObject.json<Record<string, unknown>>();
+  const parseRecipientList = (value: unknown, field: "to" | "cc" | "bcc"): string[] => {
+    if (value === undefined || value === null) {
+      if (field === "to") {
+        throw new RouteRequestError(
+          "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+          400,
+        );
+      }
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new RouteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        400,
+      );
+    }
+
+    const items = value.map((item) => typeof item === "string" ? item.trim() : "");
+    if (items.some((item) => !item)) {
+      throw new RouteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        400,
+      );
+    }
+    if (field === "to" && items.length === 0) {
+      throw new RouteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        400,
+      );
+    }
+
+    return items;
+  };
   return {
-    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
-    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
-    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+    to: parseRecipientList(payload.to, "to"),
+    cc: parseRecipientList(payload.cc, "cc"),
+    bcc: parseRecipientList(payload.bcc, "bcc"),
   };
 }
 
@@ -414,8 +500,11 @@ async function validateStoredDraftAttachments(env: Env, draft: {
 
   const payload = await draftObject.json<Record<string, unknown>>();
   const attachments = payload.attachments;
-  if (!Array.isArray(attachments)) {
+  if (attachments === undefined || attachments === null) {
     return;
+  }
+  if (!Array.isArray(attachments)) {
+    throw new RouteRequestError("Draft attachments must be an array when provided", 400);
   }
 
   const normalizedAttachments = attachments.map((item) => {
@@ -798,7 +887,8 @@ router.on("POST", "/public/token/reissue", async (request, env) => {
         });
       } catch (error) {
         if (!isMissingTableError(error)) {
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[token-reissue] cooldown log write failed after successful queue for ${mailboxAddress}: ${message}`);
         }
       }
     }
@@ -825,20 +915,15 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
     return badRequest("delivery must be one of: inline, self_mailbox, both");
   }
 
-  const rotated = await rotateAccessToken(env, auth);
-  if (!rotated.accessToken) {
-    return json({ error: "Unable to issue rotated token" }, { status: 500 });
-  }
-
-  let deliveryStatus: "skipped" | "queued" | "unavailable" = "skipped";
-  let deliveryMailboxId: string | undefined;
+  const targetMailboxId = delivery === "self_mailbox" || delivery === "both"
+    ? resolveRotateMailboxId(auth, body?.mailboxId) ?? undefined
+    : undefined;
 
   if (delivery === "self_mailbox" || delivery === "both") {
     if (!auth.mailboxIds?.length) {
       return badRequest("self_mailbox delivery requires a mailbox-scoped token");
     }
 
-    const targetMailboxId = resolveRotateMailboxId(auth, body?.mailboxId);
     if (!targetMailboxId) {
       return badRequest("mailboxId is required for self_mailbox delivery when the token covers multiple or no mailboxes");
     }
@@ -851,8 +936,25 @@ router.on("POST", "/v1/auth/token/rotate", async (request, env) => {
     if (currentAccessError) {
       return currentAccessError;
     }
+  }
 
-    const delivered = await deliverRotatedTokenToSelfMailbox(env, auth, targetMailboxId, rotated.accessToken, rotated.accessTokenExpiresAt, rotated.accessTokenScopes);
+  const rotated = await rotateAccessToken(env, auth);
+  if (!rotated.accessToken) {
+    return json({ error: "Unable to issue rotated token" }, { status: 500 });
+  }
+
+  let deliveryStatus: "skipped" | "queued" | "unavailable" = "skipped";
+  let deliveryMailboxId: string | undefined;
+
+  if (delivery === "self_mailbox" || delivery === "both") {
+    const delivered = await deliverRotatedTokenToSelfMailbox(
+      env,
+      auth,
+      targetMailboxId!,
+      rotated.accessToken,
+      rotated.accessTokenExpiresAt,
+      rotated.accessTokenScopes,
+    );
     deliveryStatus = delivered ? "queued" : "unavailable";
     deliveryMailboxId = targetMailboxId;
   }
@@ -964,7 +1066,9 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   }
   if (replayReceipt) {
     if (getX402FacilitatorConfig(env) && (replayReceipt.status === "pending" || replayReceipt.status === "verified")) {
-      const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, replayReceipt);
+      const autoSettlementResponse = await withRefreshedPaymentReceipt(env, replayReceipt, async (currentReceipt) =>
+        await attemptAutomaticPaymentSettlement(env, currentReceipt)
+      );
       if (autoSettlementResponse) {
         return autoSettlementResponse;
       }
@@ -998,7 +1102,9 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
     }
     if (retryReplayReceipt) {
       if (getX402FacilitatorConfig(env) && (retryReplayReceipt.status === "pending" || retryReplayReceipt.status === "verified")) {
-        const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, retryReplayReceipt);
+        const autoSettlementResponse = await withRefreshedPaymentReceipt(env, retryReplayReceipt, async (currentReceipt) =>
+          await attemptAutomaticPaymentSettlement(env, currentReceipt)
+        );
         if (autoSettlementResponse) {
           return autoSettlementResponse;
         }
@@ -1009,7 +1115,9 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   }
 
   if (getX402FacilitatorConfig(env)) {
-    const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, receipt);
+    const autoSettlementResponse = await withRefreshedPaymentReceipt(env, receipt, async (currentReceipt) =>
+      await attemptAutomaticPaymentSettlement(env, currentReceipt)
+    );
     if (autoSettlementResponse) {
       return autoSettlementResponse;
     }
@@ -1076,7 +1184,9 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   }
   if (replayReceipt) {
     if (getX402FacilitatorConfig(env) && (replayReceipt.status === "pending" || replayReceipt.status === "verified")) {
-      const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, replayReceipt);
+      const autoSettlementResponse = await withRefreshedPaymentReceipt(env, replayReceipt, async (currentReceipt) =>
+        await attemptAutomaticPaymentSettlement(env, currentReceipt)
+      );
       if (autoSettlementResponse) {
         return autoSettlementResponse;
       }
@@ -1111,7 +1221,9 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
     }
     if (retryReplayReceipt) {
       if (getX402FacilitatorConfig(env) && (retryReplayReceipt.status === "pending" || retryReplayReceipt.status === "verified")) {
-        const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, retryReplayReceipt);
+        const autoSettlementResponse = await withRefreshedPaymentReceipt(env, retryReplayReceipt, async (currentReceipt) =>
+          await attemptAutomaticPaymentSettlement(env, currentReceipt)
+        );
         if (autoSettlementResponse) {
           return autoSettlementResponse;
         }
@@ -1122,7 +1234,9 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   }
 
   if (getX402FacilitatorConfig(env)) {
-    const autoSettlementResponse = await attemptAutomaticPaymentSettlement(env, receipt);
+    const autoSettlementResponse = await withRefreshedPaymentReceipt(env, receipt, async (currentReceipt) =>
+      await attemptAutomaticPaymentSettlement(env, currentReceipt)
+    );
     if (autoSettlementResponse) {
       return autoSettlementResponse;
     }
@@ -1350,15 +1464,17 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
     return json({ error: "Failed payment receipts cannot be confirmed" }, { status: 409 });
   }
 
-  const facilitatorOutcome = receipt.status === "settled"
-    ? null
-    : await confirmPaymentReceiptWithFacilitator(env, receipt);
+  return await withRefreshedPaymentReceipt(env, receipt, async (currentReceipt) => {
+    const facilitatorOutcome = currentReceipt.status === "settled"
+      ? null
+      : await confirmPaymentReceiptWithFacilitator(env, currentReceipt);
 
-  if (facilitatorOutcome?.failureResponse) {
-    return facilitatorOutcome.failureResponse;
-  }
+    if (facilitatorOutcome?.failureResponse) {
+      return facilitatorOutcome.failureResponse;
+    }
 
-  return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome));
+    return json(await finalizePaymentReceiptSettlement(env, currentReceipt, facilitatorOutcome));
+  });
 });
 
 router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) => {
@@ -2932,6 +3048,9 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       if (!existingMessage.rawR2Key) {
         return badRequest("normalize replay requires the message to have raw email content");
       }
+      if (!(await env.R2_EMAIL.get(existingMessage.rawR2Key))) {
+        return json({ error: "Raw email content not found" }, { status: 404 });
+      }
 
       return {
         replayRawR2Key: existingMessage.rawR2Key,
@@ -2966,13 +3085,26 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
         mode: body.mode,
         agentId: body.agentId ?? null,
       }),
-      resourceId: route.params.messageId,
     });
 
     if (reservation.status === "conflict") {
       return json({ error: "Idempotency key is already used for a different replay request" }, { status: 409 });
     }
     if (reservation.status === "pending") {
+      if (reservation.record.resourceId) {
+        const replayExecution = await resolveReplayExecution();
+        if (replayExecution instanceof Response) {
+          return replayExecution;
+        }
+        await bestEffortCompleteRecoveredIdempotency(env, {
+          operation: "message_replay",
+          tenantId: existingMessage.tenantId,
+          idempotencyKey,
+          resourceId: route.params.messageId,
+          response: replayResponse,
+        });
+        return accepted(replayResponse);
+      }
       return json({ error: "A replay request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
@@ -3015,6 +3147,12 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
         replayQueued = true;
       }
 
+      await updateIdempotencyKeyResource(env, {
+        operation: "message_replay",
+        tenantId: existingMessage.tenantId,
+        idempotencyKey,
+        resourceId: route.params.messageId,
+      });
       await completeIdempotencyKey(env, {
         operation: "message_replay",
         tenantId: existingMessage.tenantId,
@@ -3027,7 +3165,7 @@ router.on("POST", "/v1/messages/:messageId/replay", async (request, env, _ctx, r
       if (!replayQueued) {
         await releaseIdempotencyKey(env, "message_replay", existingMessage.tenantId, idempotencyKey);
       }
-      throw error;
+      throw replayQueued ? markSideEffectCommitted(error) : error;
     }
   }
 
@@ -3333,13 +3471,27 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       tenantId: draft.tenantId,
       idempotencyKey,
       requestFingerprint: JSON.stringify({ draftId: route.params.draftId }),
-      resourceId: route.params.draftId,
     });
 
     if (reservation.status === "conflict") {
       return json({ error: "Idempotency key is already used for a different draft send request" }, { status: 409 });
     }
     if (reservation.status === "pending") {
+      if (reservation.record.resourceId) {
+        await validateReplayableDraftSend();
+        const response = await restoreEnqueuedDraftSend(env, {
+          draftId: route.params.draftId,
+          outboundJobId: reservation.record.resourceId,
+        });
+        await bestEffortCompleteRecoveredIdempotency(env, {
+          operation: "draft_send",
+          tenantId: draft.tenantId,
+          idempotencyKey,
+          resourceId: response.outboundJobId,
+          response,
+        });
+        return accepted(response);
+      }
       return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
@@ -3366,6 +3518,12 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       };
       sendEnqueued = true;
 
+      await updateIdempotencyKeyResource(env, {
+        operation: "draft_send",
+        tenantId: draft.tenantId,
+        idempotencyKey,
+        resourceId: result.outboundJobId,
+      });
       await completeIdempotencyKey(env, {
         operation: "draft_send",
         tenantId: draft.tenantId,
@@ -3378,13 +3536,19 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
       if (!sendEnqueued) {
         await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
       }
-      throw error;
+      throw sendEnqueued ? markSideEffectCommitted(error) : error;
     }
   }
 
   if (draft.status !== "draft" && draft.status !== "approved") {
     return json({ error: `Draft status ${draft.status} cannot be sent again` }, { status: 409 });
   }
+  await validateDraftReferences(env, {
+    tenantId: draft.tenantId,
+    mailboxId: draft.mailboxId,
+    threadId: draft.threadId ?? undefined,
+    sourceMessageId: draft.sourceMessageId ?? undefined,
+  });
   await validateActiveDraftMailbox(env, {
     tenantId: draft.tenantId,
     mailboxId: draft.mailboxId,
@@ -3439,7 +3603,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     return json({ error: "Webhook provider message mismatch" }, { status: 409 });
   }
 
-  const payloadR2Key = `events/ses/${createId("evt")}.json`;
+  const payloadR2Key = await buildSesPayloadR2Key(body);
   await env.R2_EMAIL.put(payloadR2Key, JSON.stringify(body, null, 2), {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
@@ -3456,6 +3620,13 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     throw error;
   }
 
+  if (message && normalized.providerMessageId && (!message.providerMessageId || !message.sentAt)) {
+    await backfillMessageProviderAcceptance(env, {
+      messageId: message.id,
+      providerMessageId: normalized.providerMessageId,
+    });
+  }
+
   const isTerminalSesEvent =
     normalized.eventType === "delivery"
     || normalized.eventType === "bounce"
@@ -3466,7 +3637,7 @@ router.on("POST", "/v1/webhooks/ses", async (request, env) => {
     const outboundJob = await getOutboundJobByMessageId(env, message.id);
     if (outboundJob) {
       const deliveryError = normalized.reason ?? normalized.eventType;
-      const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+      const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
       const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
       const hasDeliveryEvidence = deliveryEvents.some((event) => event.eventType === "delivery");
       const treatAsDelivered = normalized.eventType === "delivery" || hasDeliveryEvidence;
@@ -3569,6 +3740,27 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       }
       return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
     }
+    if (error instanceof BillingUniquenessError) {
+      const response = json({ error: error.message }, { status: 409 });
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
+    }
+    if (error instanceof AgentRegistryConflictError) {
+      const response = json({ error: error.message }, { status: 409 });
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
+    }
+    if (error instanceof DidBindingConflictError) {
+      const response = json({ error: error.message }, { status: 409 });
+      if (isPublicSelfServeRequest(request)) {
+        return withPublicSelfServeCors(response);
+      }
+      return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
+    }
     if (hasCommittedSideEffect(error)) {
       const response = json({
         error: "Request may have partially succeeded after creating server-side state. Retry only with the same idempotency key or inspect draft/outbound state before retrying.",
@@ -3632,7 +3824,7 @@ async function isMailboxScopedOperatorTokenDeliveryMessage(env: Env, messageId: 
     return false;
   }
 
-  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+  const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
   return draft?.createdVia === "system:token_reissue_operator_email";
 }
 
@@ -3736,75 +3928,85 @@ async function sanitizeDraftReferencesForClaims(
 }
 
 async function reissueMailboxAccessToken(env: Env, mailboxAddress: string): Promise<boolean> {
-  const mailbox = await getMailboxByAddress(env, mailboxAddress);
-  if (!mailbox || mailbox.status !== "active") {
-    return false;
-  }
+  let draftId: string | undefined;
 
-  const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
-  if (!executionTarget?.agentId) {
-    return false;
-  }
+  try {
+    const mailbox = await getMailboxByAddress(env, mailboxAddress);
+    if (!mailbox || mailbox.status !== "active") {
+      return false;
+    }
 
-  const agent = await getAgent(env, executionTarget.agentId);
-  if (!agent?.configR2Key) {
-    return false;
-  }
+    const executionTarget = await resolveAgentExecutionTarget(env, mailbox.id, undefined, [...SEND_CAPABLE_MAILBOX_ROLES]);
+    if (!executionTarget?.agentId) {
+      return false;
+    }
 
-  const config = await readAgentConfig(env, agent.configR2Key);
-  const operatorEmail = typeof config?.operatorEmail === "string" ? config.operatorEmail.trim().toLowerCase() : "";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorEmail)) {
-    return false;
-  }
+    const agent = await getAgent(env, executionTarget.agentId);
+    if (!agent?.configR2Key) {
+      return false;
+    }
 
-  const productName = typeof config?.productName === "string" && config.productName.trim()
-    ? config.productName.trim()
-    : "Mailagents";
-  const access = await issueSelfServeAccessToken({
-    env,
-    tenantId: mailbox.tenant_id,
-    agentId: executionTarget.agentId,
-    mailboxId: mailbox.id,
-  });
+    const config = await readAgentConfig(env, agent.configR2Key);
+    const operatorEmail = typeof config?.operatorEmail === "string" ? config.operatorEmail.trim().toLowerCase() : "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(operatorEmail)) {
+      return false;
+    }
 
-  await ensureSystemSendAllowed(env, {
-    tenantId: mailbox.tenant_id,
-    agentId: executionTarget.agentId,
-    to: [operatorEmail],
-    createdVia: "system:token_reissue_operator_email",
-  });
+    const productName = typeof config?.productName === "string" && config.productName.trim()
+      ? config.productName.trim()
+      : "Mailagents";
+    const access = await issueSelfServeAccessToken({
+      env,
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
+      mailboxId: mailbox.id,
+    });
 
-  const draft = await createDraft(env, {
-    tenantId: mailbox.tenant_id,
-    agentId: executionTarget.agentId,
-    mailboxId: mailbox.id,
-    createdVia: "system:token_reissue_operator_email",
-    payload: {
-      from: mailbox.address,
+    await ensureSystemSendAllowed(env, {
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
       to: [operatorEmail],
-      subject: `Your refreshed Mailagents access token for ${mailbox.address}`,
-      text: buildTokenReissueText({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName: agent.name,
-        accessToken: access.accessToken,
-        accessTokenExpiresAt: access.accessTokenExpiresAt,
-        accessTokenScopes: access.accessTokenScopes,
-      }),
-      html: buildTokenReissueHtml({
-        mailboxAddress: mailbox.address,
-        productName,
-        agentName: agent.name,
-        accessToken: access.accessToken,
-        accessTokenExpiresAt: access.accessTokenExpiresAt,
-        accessTokenScopes: access.accessTokenScopes,
-      }),
-      attachments: [],
-    },
-  });
+      createdVia: "system:token_reissue_operator_email",
+    });
 
-  await enqueueDraftSend(env, draft.id);
-  return true;
+    const draft = await createDraft(env, {
+      tenantId: mailbox.tenant_id,
+      agentId: executionTarget.agentId,
+      mailboxId: mailbox.id,
+      createdVia: "system:token_reissue_operator_email",
+      payload: {
+        from: mailbox.address,
+        to: [operatorEmail],
+        subject: `Your refreshed Mailagents access token for ${mailbox.address}`,
+        text: buildTokenReissueText({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName: agent.name,
+          accessToken: access.accessToken,
+          accessTokenExpiresAt: access.accessTokenExpiresAt,
+          accessTokenScopes: access.accessTokenScopes,
+        }),
+        html: buildTokenReissueHtml({
+          mailboxAddress: mailbox.address,
+          productName,
+          agentName: agent.name,
+          accessToken: access.accessToken,
+          accessTokenExpiresAt: access.accessTokenExpiresAt,
+          accessTokenScopes: access.accessTokenScopes,
+        }),
+        attachments: [],
+      },
+    });
+    draftId = draft.id;
+
+    await enqueueDraftSend(env, draft.id);
+    return true;
+  } catch {
+    if (draftId) {
+      await deleteDraftIfUnqueued(env, draftId).catch(() => undefined);
+    }
+    return false;
+  }
 }
 
 function resolveRotateMailboxId(claims: AccessTokenClaims, requestedMailboxId: string | undefined): string | null {
@@ -4018,13 +4220,24 @@ async function createAndSendDraft(env: Env, input: {
     tenantId: input.tenantId,
     idempotencyKey,
     requestFingerprint: input.requestFingerprint,
-    resourceId: input.mailboxId,
   });
 
   if (reservation.status === "conflict") {
     throw new RouteRequestError("Idempotency key is already used for a different send request", 409);
   }
   if (reservation.status === "pending") {
+    if (reservation.record.resourceId) {
+      await validateCreateAndSendInput();
+      const response = await restoreDraftSendReplay(env, reservation.record.resourceId);
+      await bestEffortCompleteRecoveredIdempotency(env, {
+        operation: "draft_send",
+        tenantId: input.tenantId,
+        idempotencyKey,
+        resourceId: response.draft.id,
+        response,
+      });
+      return response;
+    }
     throw new RouteRequestError("A send request with this idempotency key is already in progress", 409);
   }
   if (reservation.status === "completed") {
@@ -4049,6 +4262,12 @@ async function createAndSendDraft(env: Env, input: {
       payload: input.payload,
     });
     sideEffectCommitted = true;
+    await updateIdempotencyKeyResource(env, {
+      operation: "draft_send",
+      tenantId: input.tenantId,
+      idempotencyKey,
+      resourceId: draft.id,
+    });
     const sendResult = await enqueueDraftSend(env, draft.id);
     const response = {
       draft,
@@ -4173,6 +4392,7 @@ async function deliverRotatedTokenToSelfMailbox(
     ? config.productName.trim()
     : "Mailagents";
   const agentName = agent?.name ?? "Mailagents Agent";
+  let draftId: string | undefined;
 
   try {
     await ensureSystemSendAllowed(env, {
@@ -4210,10 +4430,14 @@ async function deliverRotatedTokenToSelfMailbox(
         attachments: [],
       },
     });
+    draftId = draft.id;
 
     await enqueueDraftSend(env, draft.id);
     return true;
   } catch {
+    if (draftId) {
+      await deleteDraftIfUnqueued(env, draftId).catch(() => undefined);
+    }
     return false;
   }
 }
@@ -4511,6 +4735,43 @@ async function attemptAutomaticPaymentSettlement(
   return json(await finalizePaymentReceiptSettlement(env, receipt, facilitatorOutcome));
 }
 
+async function withRefreshedPaymentReceipt<T>(
+  env: Env,
+  receipt: TypedPaymentReceiptRecord,
+  action: (receipt: TypedPaymentReceiptRecord) => Promise<T>,
+): Promise<T> {
+  const initialLedgerEntry = await getTypedCreditLedgerEntryByPaymentReceiptId(
+    env,
+    receipt.tenantId,
+    receipt.id,
+  ).catch(() => null);
+
+  try {
+    return await action(receipt);
+  } catch (error) {
+    const [refreshed, refreshedLedgerEntry] = await Promise.all([
+      getTypedTenantPaymentReceiptById(env, receipt.tenantId, receipt.id).catch(() => null),
+      getTypedCreditLedgerEntryByPaymentReceiptId(env, receipt.tenantId, receipt.id).catch(() => null),
+    ]);
+    const receiptChanged = Boolean(
+      refreshed
+      && (
+        refreshed.updatedAt !== receipt.updatedAt
+        || refreshed.status !== receipt.status
+        || refreshed.paymentReference !== receipt.paymentReference
+        || refreshed.settlementReference !== receipt.settlementReference
+      )
+    );
+    const ledgerChanged = !initialLedgerEntry && Boolean(refreshedLedgerEntry);
+
+    if ((!receiptChanged && !ledgerChanged) || !refreshed) {
+      throw error;
+    }
+
+    return await action(refreshed);
+  }
+}
+
 async function finalizePaymentReceiptSettlement(
   env: Env,
   receipt: TypedPaymentReceiptRecord,
@@ -4553,6 +4814,13 @@ async function finalizePaymentReceiptSettlement(
     };
     const targetPricingTier = parsedMetadata.targetPricingTier;
     const approvedPricingTier = targetPricingTier === "paid_review" ? "paid_active" : targetPricingTier;
+
+    if (existingLedgerEntry && !isUpgradeCreditGrantLedgerEntry(existingLedgerEntry)) {
+      throw new RouteRequestError(
+        "Payment receipt is linked to a non-upgrade ledger entry; manual reconciliation is required",
+        409,
+      );
+    }
 
     if (finalizedReceipt.status === "settled" && existingLedgerEntry) {
       const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
@@ -4645,6 +4913,12 @@ async function finalizePaymentReceiptSettlement(
   }
 
   if (existingLedgerEntry) {
+    if (!isTopupSettlementLedgerEntry(existingLedgerEntry)) {
+      throw new RouteRequestError(
+        "Payment receipt is linked to a non-topup ledger entry; manual reconciliation is required",
+        409,
+      );
+    }
     const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
     const settledReceipt = finalizedReceipt.status === "settled"
       ? finalizedReceipt

@@ -43,7 +43,7 @@ import {
   enqueueDraftSend,
   getAttachmentOwnerByR2Key,
   getDraft,
-  getDraftByR2Key,
+  getDraftByR2KeyForOutboundLifecycle,
   getMessage,
   getMessageContent,
   getOutboundJob,
@@ -55,6 +55,7 @@ import {
   markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateIdempotencyKeyResource,
 } from "../repositories/mail";
 import type { AccessTokenClaims, Env, TaskStatus } from "../types";
 
@@ -105,6 +106,20 @@ function hasCommittedSideEffect(error: unknown): boolean {
   return error instanceof Error && (error as Error & { sideEffectCommitted?: boolean }).sideEffectCommitted === true;
 }
 
+async function bestEffortCompleteRecoveredIdempotency(env: Env, input: {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  resourceId?: string;
+  response: unknown;
+}): Promise<void> {
+  try {
+    await completeIdempotencyKey(env, input);
+  } catch {
+    // Recovery should still succeed even if the pending idempotency row cannot be repaired inline.
+  }
+}
+
 interface CreatedAndSentDraftResult {
   draft: Awaited<ReturnType<typeof createDraft>>;
   outboundJobId: string;
@@ -147,14 +162,31 @@ async function restoreDraftSendReplay(env: Env, draftId: string | undefined) {
     throw new McpToolError("internal_error", "Stored idempotent draft send result is incomplete");
   }
 
-  const draft = await getDraft(env, draftId);
+  let draft = await getDraft(env, draftId);
   if (!draft) {
     throw new McpToolError("conflict", "Stored idempotent draft no longer exists");
   }
 
-  const outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
+  let outboundJob = await getOutboundJobByDraftR2Key(env, draft.draftR2Key);
   if (!outboundJob) {
-    throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+    if (draft.status !== "draft" && draft.status !== "approved") {
+      throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+    }
+
+    const resumed = await enqueueDraftSend(env, draft.id);
+    const resumedDraft = await getDraft(env, draft.id);
+    if (!resumedDraft) {
+      throw new McpToolError("conflict", "Stored idempotent draft disappeared during replay recovery");
+    }
+    const resumedOutboundJob = await getOutboundJob(env, resumed.outboundJobId);
+    if (!resumedOutboundJob) {
+      throw new McpToolError("conflict", "Stored idempotent outbound job disappeared during replay recovery");
+    }
+    draft = resumedDraft;
+    outboundJob = resumedOutboundJob;
+  }
+  if (!(await getMessage(env, outboundJob.messageId))) {
+    throw new McpToolError("conflict", "Stored idempotent outbound message no longer exists");
   }
 
   return {
@@ -180,6 +212,9 @@ async function restoreEnqueuedDraftSend(env: Env, input: {
   const outboundJob = await getOutboundJob(env, input.outboundJobId);
   if (!outboundJob) {
     throw new McpToolError("conflict", "Stored idempotent outbound job no longer exists");
+  }
+  if (!(await getMessage(env, outboundJob.messageId))) {
+    throw new McpToolError("conflict", "Stored idempotent outbound message no longer exists");
   }
   if (outboundJob.draftR2Key !== draft.draftR2Key) {
     throw new McpToolError("conflict", "Stored idempotent outbound job does not belong to draft");
@@ -276,10 +311,44 @@ async function readDraftRecipients(env: Env, draftR2Key: string): Promise<{
   }
 
   const payload = await draftObject.json<Record<string, unknown>>();
+  const parseRecipientList = (value: unknown, field: "to" | "cc" | "bcc"): string[] => {
+    if (value === undefined || value === null) {
+      if (field === "to") {
+        throw new McpToolError(
+          "invalid_arguments",
+          "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        );
+      }
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new McpToolError(
+        "invalid_arguments",
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+      );
+    }
+
+    const items = value.map((item) => typeof item === "string" ? item.trim() : "");
+    if (items.some((item) => !item)) {
+      throw new McpToolError(
+        "invalid_arguments",
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+      );
+    }
+    if (field === "to" && items.length === 0) {
+      throw new McpToolError(
+        "invalid_arguments",
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+      );
+    }
+
+    return items;
+  };
   return {
-    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
-    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
-    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+    to: parseRecipientList(payload.to, "to"),
+    cc: parseRecipientList(payload.cc, "cc"),
+    bcc: parseRecipientList(payload.bcc, "bcc"),
   };
 }
 
@@ -313,8 +382,11 @@ async function validateStoredDraftAttachments(env: Env, draft: {
 
   const payload = await draftObject.json<Record<string, unknown>>();
   const attachments = payload.attachments;
-  if (!Array.isArray(attachments)) {
+  if (attachments === undefined || attachments === null) {
     return;
+  }
+  if (!Array.isArray(attachments)) {
+    throw new McpToolError("invalid_arguments", "Draft attachments must be an array when provided");
   }
 
   const normalizedAttachments = attachments.map((item) => {
@@ -993,7 +1065,7 @@ async function isMailboxScopedOperatorTokenDeliveryMessage(env: Env, messageId: 
     return false;
   }
 
-  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+  const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
   return draft?.createdVia === "system:token_reissue_operator_email";
 }
 
@@ -1255,13 +1327,24 @@ async function createAndSendDraftForMcp(env: Env, input: {
     tenantId: input.tenantId,
     idempotencyKey,
     requestFingerprint: input.requestFingerprint,
-    resourceId: input.mailboxId,
   });
 
   if (reservation.status === "conflict") {
     throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different send request");
   }
   if (reservation.status === "pending") {
+    if (reservation.record.resourceId) {
+      await validateCreateAndSendInput();
+      const response = await restoreDraftSendReplay(env, reservation.record.resourceId);
+      await bestEffortCompleteRecoveredIdempotency(env, {
+        operation: "draft_send",
+        tenantId: input.tenantId,
+        idempotencyKey,
+        resourceId: response.draft.id,
+        response,
+      });
+      return response;
+    }
     throw new McpToolError("idempotency_in_progress", "A send request with this idempotency key is already in progress");
   }
   if (reservation.status === "completed") {
@@ -1286,6 +1369,12 @@ async function createAndSendDraftForMcp(env: Env, input: {
       payload: input.payload,
     });
     sideEffectCommitted = true;
+    await updateIdempotencyKeyResource(env, {
+      operation: "draft_send",
+      tenantId: input.tenantId,
+      idempotencyKey,
+      resourceId: draft.id,
+    });
     const sendResult = await enqueueDraftSend(env, draft.id);
     const response = {
       draft,
@@ -1538,13 +1627,36 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         replyHtml: replyHtml ?? null,
         send: true,
       }),
-      resourceId: message.id,
     });
 
     if (reservation.status === "conflict") {
       throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different reply workflow request");
     }
     if (reservation.status === "pending") {
+      if (reservation.record.resourceId) {
+        const { thread } = await buildReplyDraftInput();
+        const replay = await restoreDraftSendReplay(env, reservation.record.resourceId);
+        const response = {
+          draft: replay.draft,
+          sendResult: {
+            draftId: replay.draft.id,
+            outboundJobId: replay.outboundJobId,
+            status: replay.status,
+          },
+          sourceMessage: message,
+          usedThreadContext: Boolean(thread),
+        };
+        await bestEffortCompleteRecoveredIdempotency(env, {
+          operation: "draft_send",
+          tenantId: message.tenantId,
+          idempotencyKey: idempotencyKey!,
+          resourceId: replay.draft.id,
+          response,
+        });
+        return {
+          ...response,
+        };
+      }
       throw new McpToolError("idempotency_in_progress", "A reply workflow request with this idempotency key is already in progress");
     }
 
@@ -1598,6 +1710,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         sourceMessage: message,
         usedThreadContext: Boolean(thread),
       };
+      await updateIdempotencyKeyResource(env, {
+        operation: "draft_send",
+        tenantId: message.tenantId,
+        idempotencyKey: idempotencyKey!,
+        resourceId: sendResult.draft.id,
+      });
       await completeIdempotencyKey(env, {
         operation: "draft_send",
         tenantId: message.tenantId,
@@ -1610,7 +1728,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!sideEffectCommitted && !hasCommittedSideEffect(error)) {
         await releaseIdempotencyKey(env, "draft_send", message.tenantId, idempotencyKey!);
       }
-      throw error;
+      throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
     }
   }
 
@@ -1744,13 +1862,24 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         sourceMessageId: sourceMessageId ?? null,
         send: true,
       }),
-      resourceId: mailboxId,
     });
 
     if (reservation.status === "conflict") {
       throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different operator send request");
     }
     if (reservation.status === "pending") {
+      if (reservation.record.resourceId) {
+        await validateOperatorManualSendInput();
+        const response = await restoreOperatorManualSendReplay(env, reservation.record.resourceId);
+        await bestEffortCompleteRecoveredIdempotency(env, {
+          operation: "draft_send",
+          tenantId,
+          idempotencyKey: idempotencyKey!,
+          resourceId: response.draft.id,
+          response,
+        });
+        return response;
+      }
       throw new McpToolError("idempotency_in_progress", "An operator send request with this idempotency key is already in progress");
     }
     if (reservation.status === "completed") {
@@ -1802,6 +1931,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           status: result.status,
         },
       };
+      await updateIdempotencyKeyResource(env, {
+        operation: "draft_send",
+        tenantId,
+        idempotencyKey: idempotencyKey!,
+        resourceId: result.draft.id,
+      });
       await completeIdempotencyKey(env, {
         operation: "draft_send",
         tenantId,
@@ -1814,7 +1949,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
       if (!sideEffectCommitted && !hasCommittedSideEffect(error)) {
         await releaseIdempotencyKey(env, "draft_send", tenantId, idempotencyKey!);
       }
-      throw error;
+      throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
     }
   }
 
@@ -2217,13 +2352,27 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         tenantId: draft.tenantId,
         idempotencyKey,
         requestFingerprint: JSON.stringify({ draftId }),
-        resourceId: draftId,
       });
 
       if (reservation.status === "conflict") {
         throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different draft send request");
       }
       if (reservation.status === "pending") {
+        if (reservation.record.resourceId) {
+          await validateReplayableDraftSend();
+          const response = await restoreEnqueuedDraftSend(env, {
+            draftId,
+            outboundJobId: reservation.record.resourceId,
+          });
+          await bestEffortCompleteRecoveredIdempotency(env, {
+            operation: "draft_send",
+            tenantId: draft.tenantId,
+            idempotencyKey,
+            resourceId: response.outboundJobId,
+            response,
+          });
+          return response;
+        }
         throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
@@ -2249,6 +2398,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           status: result.status,
         };
         sendEnqueued = true;
+        await updateIdempotencyKeyResource(env, {
+          operation: "draft_send",
+          tenantId: draft.tenantId,
+          idempotencyKey,
+          resourceId: result.outboundJobId,
+        });
         await completeIdempotencyKey(env, {
           operation: "draft_send",
           tenantId: draft.tenantId,
@@ -2261,13 +2416,19 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         if (!sendEnqueued) {
           await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
         }
-        throw error;
+        throw sendEnqueued ? markSideEffectCommitted(error) : error;
       }
     }
 
     if (draft.status !== "draft" && draft.status !== "approved") {
       throw new McpToolError("invalid_arguments", `Draft status ${draft.status} cannot be sent again`);
     }
+    await validateDraftReferences(env, {
+      tenantId: draft.tenantId,
+      mailboxId: draft.mailboxId,
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
+    });
     await validateActiveDraftMailbox(env, {
       tenantId: draft.tenantId,
       mailboxId: draft.mailboxId,
@@ -2357,6 +2518,9 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         if (!message.rawR2Key) {
           throw new McpToolError("invalid_arguments", "normalize replay requires the message to have raw email content");
         }
+        if (!(await env.R2_EMAIL.get(message.rawR2Key))) {
+          throw new McpToolError("resource_not_found", "Raw email content not found");
+        }
 
         return {
           replayRawR2Key: message.rawR2Key,
@@ -2385,13 +2549,23 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           mode,
           agentId: agentId ?? null,
         }),
-        resourceId: messageId,
       });
 
       if (reservation.status === "conflict") {
         throw new McpToolError("idempotency_conflict", "Idempotency key is already used for a different replay request");
       }
       if (reservation.status === "pending") {
+        if (reservation.record.resourceId) {
+          await resolveReplayExecution();
+          await bestEffortCompleteRecoveredIdempotency(env, {
+            operation: "message_replay",
+            tenantId: message.tenantId,
+            idempotencyKey,
+            resourceId: messageId,
+            response,
+          });
+          return response;
+        }
         throw new McpToolError("idempotency_in_progress", "A replay request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
@@ -2427,6 +2601,12 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           });
           replayQueued = true;
         }
+        await updateIdempotencyKeyResource(env, {
+          operation: "message_replay",
+          tenantId: message.tenantId,
+          idempotencyKey,
+          resourceId: messageId,
+        });
         await completeIdempotencyKey(env, {
           operation: "message_replay",
           tenantId: message.tenantId,
@@ -2439,7 +2619,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
         if (!replayQueued) {
           await releaseIdempotencyKey(env, "message_replay", message.tenantId, idempotencyKey);
         }
-        throw error;
+        throw replayQueued ? markSideEffectCommitted(error) : error;
       }
     }
 
@@ -2607,6 +2787,15 @@ router.on("POST", "/mcp", async (request, env) => {
           return jsonRpcResult(rpc.id ?? null, {
             isError: true,
             ...toToolContent(toolErrorPayload(error.errorCode, error.message, error.data)),
+          });
+        }
+        if (hasCommittedSideEffect(error)) {
+          return jsonRpcResult(rpc.id ?? null, {
+            isError: true,
+            ...toToolContent(toolErrorPayload(
+              "conflict",
+              "Request may have partially succeeded after creating server-side state. Retry only with the same idempotency key or inspect draft/outbound state before retrying."
+            )),
           });
         }
 

@@ -146,6 +146,13 @@ export class MailboxConflictError extends Error {
   }
 }
 
+export class AgentRegistryConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentRegistryConflictError";
+  }
+}
+
 function mapAgentRow(row: AgentRow): AgentRecord {
   return {
     id: row.id,
@@ -240,7 +247,12 @@ export async function getAgentPolicy(env: Env, agentId: string): Promise<AgentPo
               max_auto_replies_per_thread, allowed_recipient_domains_json,
               blocked_sender_domains_json, allowed_tools_json, updated_at
        FROM agent_policies
-       WHERE agent_id = ?`
+       WHERE agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_policies.agent_id
+         )`
     ).bind(agentId)
   );
 
@@ -283,16 +295,38 @@ export async function createAgent(env: Env, input: {
     ));
   } catch (error) {
     await env.R2_EMAIL.delete(configR2Key).catch(() => undefined);
+    if (isUniqueConstraintError(error) && input.slug?.trim()) {
+      throw new AgentRegistryConflictError(
+        `Agent slug ${input.slug.trim()} is already in use for tenant ${input.tenantId}`,
+      );
+    }
     throw error;
   }
 
-  return requireRow(await getAgent(env, id), "Failed to load created agent");
+  const created = await getAgent(env, id);
+  if (!created) {
+    await env.R2_EMAIL.delete(configR2Key).catch(() => undefined);
+    throw new Error("Failed to load created agent");
+  }
+
+  return created;
 }
 
 export async function getAgent(env: Env, agentId: string): Promise<AgentRecord | null> {
   const row = await firstRow<AgentRow>(
     env.D1_DB.prepare(
-      `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+      `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key,
+              CASE
+                WHEN default_version_id IS NULL THEN NULL
+                WHEN EXISTS (
+                  SELECT 1
+                  FROM agent_versions
+                  WHERE agent_versions.id = agents.default_version_id
+                    AND agent_versions.agent_id = agents.id
+                ) THEN default_version_id
+                ELSE NULL
+              END AS default_version_id,
+              created_at, updated_at
        FROM agents
        WHERE id = ?`
     ).bind(agentId)
@@ -304,13 +338,35 @@ export async function getAgent(env: Env, agentId: string): Promise<AgentRecord |
 export async function listAgents(env: Env, tenantId?: string): Promise<AgentRecord[]> {
   const rows = tenantId
     ? await allRows<AgentRow>(env.D1_DB.prepare(
-        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key,
+                CASE
+                  WHEN default_version_id IS NULL THEN NULL
+                  WHEN EXISTS (
+                    SELECT 1
+                    FROM agent_versions
+                    WHERE agent_versions.id = agents.default_version_id
+                      AND agent_versions.agent_id = agents.id
+                  ) THEN default_version_id
+                  ELSE NULL
+                END AS default_version_id,
+                created_at, updated_at
          FROM agents
          WHERE tenant_id = ?
          ORDER BY created_at DESC`
       ).bind(tenantId))
     : await allRows<AgentRow>(env.D1_DB.prepare(
-        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key, default_version_id, created_at, updated_at
+        `SELECT id, tenant_id, slug, name, description, status, mode, config_r2_key,
+                CASE
+                  WHEN default_version_id IS NULL THEN NULL
+                  WHEN EXISTS (
+                    SELECT 1
+                    FROM agent_versions
+                    WHERE agent_versions.id = agents.default_version_id
+                      AND agent_versions.agent_id = agents.id
+                  ) THEN default_version_id
+                  ELSE NULL
+                END AS default_version_id,
+                created_at, updated_at
          FROM agents
          ORDER BY created_at DESC`
       ));
@@ -328,6 +384,15 @@ export async function updateAgent(env: Env, agentId: string, patch: {
   defaultVersionId?: string;
 }): Promise<AgentRecord> {
   const current = requireRow(await getAgent(env, agentId), "Agent not found");
+  const nextDefaultVersionId = patch.defaultVersionId !== undefined
+    ? (patch.defaultVersionId.trim() || null)
+    : current.defaultVersionId ?? null;
+  if (nextDefaultVersionId) {
+    const defaultVersion = await getAgentVersion(env, agentId, nextDefaultVersionId);
+    if (!defaultVersion) {
+      throw new Error(`Agent version ${nextDefaultVersionId} does not belong to agent ${agentId}`);
+    }
+  }
   const updatedAt = nowIso();
   let configR2Key = current.configR2Key;
   const nextConfigR2Key = patch.config !== undefined
@@ -342,7 +407,7 @@ export async function updateAgent(env: Env, agentId: string, patch: {
   }
 
   try {
-    await execute(env.D1_DB.prepare(
+    const result = await execute(env.D1_DB.prepare(
       `UPDATE agents
        SET slug = ?, name = ?, description = ?, status = ?, mode = ?, config_r2_key = ?, default_version_id = ?, updated_at = ?
        WHERE id = ?`
@@ -353,22 +418,39 @@ export async function updateAgent(env: Env, agentId: string, patch: {
       patch.status ?? current.status,
       patch.mode ?? current.mode,
       configR2Key ?? null,
-      patch.defaultVersionId ?? current.defaultVersionId ?? null,
+      nextDefaultVersionId,
       updatedAt,
       agentId
     ));
+
+    if ((result.meta?.changes ?? 0) === 0) {
+      throw new Error(`Agent ${agentId} no longer exists`);
+    }
   } catch (error) {
     if (nextConfigR2Key && configR2Key === nextConfigR2Key) {
       await env.R2_EMAIL.delete(nextConfigR2Key).catch(() => undefined);
     }
+    if (isUniqueConstraintError(error) && patch.slug?.trim()) {
+      throw new AgentRegistryConflictError(
+        `Agent slug ${patch.slug.trim()} is already in use for tenant ${current.tenantId}`,
+      );
+    }
     throw error;
+  }
+
+  const updated = await getAgent(env, agentId);
+  if (!updated) {
+    if (nextConfigR2Key && configR2Key === nextConfigR2Key) {
+      await env.R2_EMAIL.delete(nextConfigR2Key).catch(() => undefined);
+    }
+    throw new Error("Failed to load updated agent");
   }
 
   if (nextConfigR2Key && current.configR2Key && current.configR2Key !== nextConfigR2Key) {
     await env.R2_EMAIL.delete(current.configR2Key).catch(() => undefined);
   }
 
-  return requireRow(await getAgent(env, agentId), "Failed to load updated agent");
+  return updated;
 }
 
 async function listVersionCapabilities(env: Env, agentVersionId: string): Promise<AgentCapabilityRecord[]> {
@@ -502,10 +584,35 @@ export async function createAgentVersion(env: Env, input: {
     if (manifestR2Key) {
       await env.R2_EMAIL.delete(manifestR2Key).catch(() => undefined);
     }
+    if (isUniqueConstraintError(error)) {
+      throw new AgentRegistryConflictError(
+        `Agent version ${input.version} conflicts with an existing version or tool binding for agent ${input.agentId}`,
+      );
+    }
     throw error;
   }
 
-  return requireRow(await getAgentVersion(env, input.agentId, id), "Failed to load created agent version");
+  const created = await getAgentVersion(env, input.agentId, id);
+  if (!created) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_tool_bindings WHERE agent_version_id = ?`
+    ).bind(id)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_capabilities WHERE agent_version_id = ?`
+    ).bind(id)).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_versions WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    if (configR2Key) {
+      await env.R2_EMAIL.delete(configR2Key).catch(() => undefined);
+    }
+    if (manifestR2Key) {
+      await env.R2_EMAIL.delete(manifestR2Key).catch(() => undefined);
+    }
+    throw new Error("Failed to load created agent version");
+  }
+
+  return created;
 }
 
 export async function getAgentVersion(env: Env, agentId: string, versionId: string): Promise<AgentVersionRecord | null> {
@@ -513,7 +620,12 @@ export async function getAgentVersion(env: Env, agentId: string, versionId: stri
     env.D1_DB.prepare(
       `SELECT id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
        FROM agent_versions
-       WHERE id = ? AND agent_id = ?`
+       WHERE id = ? AND agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_versions.agent_id
+         )`
     ).bind(versionId, agentId)
   );
 
@@ -526,11 +638,60 @@ export async function listAgentVersions(env: Env, agentId: string): Promise<Agen
       `SELECT id, agent_id, version, model, config_r2_key, manifest_r2_key, status, created_at
        FROM agent_versions
        WHERE agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_versions.agent_id
+         )
        ORDER BY created_at DESC`
     ).bind(agentId)
   );
 
   return await Promise.all(rows.map((row) => mapAgentVersion(env, row)));
+}
+
+async function deleteInvalidActiveDeploymentsForTarget(env: Env, input: {
+  targetType: AgentDeploymentRecord["targetType"];
+  targetId: string;
+}): Promise<number> {
+  const rows = await allRows<{ id: string }>(
+    env.D1_DB.prepare(
+      `SELECT id
+       FROM agent_deployments
+       WHERE target_type = ? AND target_id = ? AND status = 'active'
+         AND NOT (
+           EXISTS (
+             SELECT 1
+             FROM agents
+             WHERE agents.id = agent_deployments.agent_id
+               AND agents.tenant_id = agent_deployments.tenant_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM agent_versions
+             WHERE agent_versions.id = agent_deployments.agent_version_id
+               AND agent_versions.agent_id = agent_deployments.agent_id
+           )
+           AND (
+             agent_deployments.target_type <> 'mailbox'
+             OR EXISTS (
+               SELECT 1
+               FROM mailboxes
+               WHERE mailboxes.id = agent_deployments.target_id
+                 AND mailboxes.tenant_id = agent_deployments.tenant_id
+             )
+           )
+         )`
+    ).bind(input.targetType, input.targetId)
+  );
+
+  for (const row of rows) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_deployments WHERE id = ?`
+    ).bind(row.id)).catch(() => undefined);
+  }
+
+  return rows.length;
 }
 
 export async function createAgentDeployment(env: Env, input: {
@@ -545,33 +706,79 @@ export async function createAgentDeployment(env: Env, input: {
   const timestamp = nowIso();
 
   const status = input.status ?? "active";
+  const insertDeployment = async () => await execute(env.D1_DB.prepare(
+    `INSERT INTO agent_deployments (
+       id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    input.agentId,
+    input.agentVersionId,
+    input.targetType,
+    input.targetId,
+    status,
+    timestamp,
+    timestamp
+  ));
   try {
-    await execute(env.D1_DB.prepare(
-      `INSERT INTO agent_deployments (
-         id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id,
-      input.tenantId,
-      input.agentId,
-      input.agentVersionId,
-      input.targetType,
-      input.targetId,
-      status,
-      timestamp,
-      timestamp
-    ));
+    await insertDeployment();
   } catch (error) {
     if (!isUniqueConstraintError(error)) {
       throw error;
     }
 
-    throw new DeploymentConflictError(
-      `A ${status} deployment already exists for ${input.targetType} ${input.targetId}`
-    );
+    if (status === "active") {
+      const existing = await listActiveDeploymentsForTarget(env, {
+        tenantId: input.tenantId,
+        targetType: input.targetType,
+        targetId: input.targetId,
+      });
+      if (existing.length === 0) {
+        const deleted = await deleteInvalidActiveDeploymentsForTarget(env, {
+          targetType: input.targetType,
+          targetId: input.targetId,
+        });
+        if (deleted > 0) {
+          await insertDeployment();
+        } else {
+          throw new DeploymentConflictError(
+            `A ${status} deployment already exists for ${input.targetType} ${input.targetId}`
+          );
+        }
+      } else {
+        throw new DeploymentConflictError(
+          `A ${status} deployment already exists for ${input.targetType} ${input.targetId}`
+        );
+      }
+    } else {
+      throw error;
+    }
   }
 
-  return requireRow(await getAgentDeployment(env, input.agentId, id), "Failed to load created agent deployment");
+  const agent = await getAgent(env, input.agentId);
+  const version = await getAgentVersion(env, input.agentId, input.agentVersionId);
+  const mailbox = input.targetType === "mailbox"
+    ? await getMailboxById(env, input.targetId)
+    : true;
+  const hasConsistentMailbox = input.targetType !== "mailbox"
+    || (mailbox !== true && mailbox?.tenant_id === input.tenantId);
+  if (!agent || agent.tenantId !== input.tenantId || !version || !mailbox || !hasConsistentMailbox) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_deployments WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    throw new Error(`Agent deployment ${id} could not be finalized because the agent, version, or target no longer exists or no longer matches the tenant`);
+  }
+
+  const created = await getAgentDeployment(env, input.agentId, id);
+  if (!created) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_deployments WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    throw new Error(`Agent deployment ${id} could not be finalized because the stored deployment no longer passed read-back validation`);
+  }
+
+  return created;
 }
 
 export async function updateAgentDeploymentStatus(env: Env, input: {
@@ -584,6 +791,9 @@ export async function updateAgentDeploymentStatus(env: Env, input: {
   if (!current) {
     return null;
   }
+  const snapshots: DeploymentStatusSnapshot[] = [
+    { id: current.id, agentId: current.agentId, status: current.status },
+  ];
 
   if (input.status === "active" && current.status !== "active") {
     const previouslyActive = await listActiveDeploymentsForTarget(env, {
@@ -592,14 +802,11 @@ export async function updateAgentDeploymentStatus(env: Env, input: {
       targetId: current.targetId,
       excludeDeploymentId: current.id,
     });
-    const snapshots: DeploymentStatusSnapshot[] = [
-      { id: current.id, agentId: current.agentId, status: current.status },
-      ...previouslyActive.map((deployment) => ({
-        id: deployment.id,
-        agentId: deployment.agentId,
-        status: deployment.status,
-      })),
-    ];
+    snapshots.push(...previouslyActive.map((deployment) => ({
+      id: deployment.id,
+      agentId: deployment.agentId,
+      status: deployment.status,
+    })));
 
     try {
       await setDeploymentStatus(env, current.agentId, current.id, "paused", timestamp);
@@ -628,7 +835,13 @@ export async function updateAgentDeploymentStatus(env: Env, input: {
     }
   }
 
-  return await getAgentDeployment(env, input.agentId, input.deploymentId);
+  const updated = await getAgentDeployment(env, input.agentId, input.deploymentId);
+  if (!updated) {
+    await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
+    throw new Error(`Agent deployment ${input.deploymentId} no longer passed read-back validation after status update`);
+  }
+
+  return updated;
 }
 
 async function setDeploymentStatus(
@@ -638,16 +851,41 @@ async function setDeploymentStatus(
   status: AgentDeploymentRecord["status"],
   updatedAt: string,
 ): Promise<void> {
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `UPDATE agent_deployments
      SET status = ?, updated_at = ?
-     WHERE id = ? AND agent_id = ?`
+     WHERE id = ? AND agent_id = ?
+       AND EXISTS (
+         SELECT 1
+         FROM agents
+         WHERE agents.id = agent_deployments.agent_id
+           AND agents.tenant_id = agent_deployments.tenant_id
+       )
+       AND EXISTS (
+         SELECT 1
+         FROM agent_versions
+         WHERE agent_versions.id = agent_deployments.agent_version_id
+           AND agent_versions.agent_id = agent_deployments.agent_id
+       )
+       AND (
+         agent_deployments.target_type <> 'mailbox'
+         OR EXISTS (
+           SELECT 1
+           FROM mailboxes
+           WHERE mailboxes.id = agent_deployments.target_id
+             AND mailboxes.tenant_id = agent_deployments.tenant_id
+         )
+       )`
   ).bind(
     status,
     updatedAt,
     deploymentId,
     agentId
   ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Agent deployment ${deploymentId} no longer exists`);
+  }
 }
 
 async function setDeploymentsStatus(
@@ -657,15 +895,40 @@ async function setDeploymentsStatus(
   updatedAt: string,
 ): Promise<void> {
   for (const deploymentId of deploymentIds) {
-    await execute(env.D1_DB.prepare(
+    const result = await execute(env.D1_DB.prepare(
       `UPDATE agent_deployments
        SET status = ?, updated_at = ?
-       WHERE id = ?`
+       WHERE id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_deployments.agent_id
+             AND agents.tenant_id = agent_deployments.tenant_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM agent_versions
+           WHERE agent_versions.id = agent_deployments.agent_version_id
+             AND agent_versions.agent_id = agent_deployments.agent_id
+         )
+         AND (
+           agent_deployments.target_type <> 'mailbox'
+           OR EXISTS (
+             SELECT 1
+             FROM mailboxes
+             WHERE mailboxes.id = agent_deployments.target_id
+               AND mailboxes.tenant_id = agent_deployments.tenant_id
+           )
+         )`
     ).bind(
       status,
       updatedAt,
       deploymentId,
     ));
+
+    if ((result.meta?.changes ?? 0) === 0) {
+      throw new Error(`Agent deployment ${deploymentId} no longer exists`);
+    }
   }
 }
 
@@ -692,7 +955,28 @@ async function listActiveDeploymentsForTarget(env: Env, input: {
        WHERE tenant_id = ?
          AND target_type = ?
          AND target_id = ?
-         AND status = 'active'`
+         AND status = 'active'
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_deployments.agent_id
+             AND agents.tenant_id = agent_deployments.tenant_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM agent_versions
+           WHERE agent_versions.id = agent_deployments.agent_version_id
+             AND agent_versions.agent_id = agent_deployments.agent_id
+         )
+         AND (
+           agent_deployments.target_type <> 'mailbox'
+           OR EXISTS (
+             SELECT 1
+             FROM mailboxes
+             WHERE mailboxes.id = agent_deployments.target_id
+               AND mailboxes.tenant_id = agent_deployments.tenant_id
+           )
+         )`
     ).bind(
       input.tenantId,
       input.targetType,
@@ -749,7 +1033,17 @@ export async function rolloutAgentDeployment(env: Env, input: {
     }
     throw error;
   }
-  return requireRow(await getAgentDeployment(env, input.agentId, created.id), "Failed to load rolled out deployment");
+
+  const rolledOut = await getAgentDeployment(env, input.agentId, created.id);
+  if (!rolledOut) {
+    await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_deployments WHERE id = ?`
+    ).bind(created.id)).catch(() => undefined);
+    throw new Error(`Agent deployment ${created.id} no longer passed read-back validation after rollout`);
+  }
+
+  return rolledOut;
 }
 
 export async function rollbackAgentDeployment(env: Env, input: {
@@ -791,7 +1085,13 @@ export async function rollbackAgentDeployment(env: Env, input: {
     throw error;
   }
 
-  return await getAgentDeployment(env, input.agentId, input.deploymentId);
+  const rolledBack = await getAgentDeployment(env, input.agentId, input.deploymentId);
+  if (!rolledBack) {
+    await restoreDeploymentStatuses(env, snapshots, timestamp).catch(() => undefined);
+    throw new Error(`Agent deployment ${input.deploymentId} no longer passed read-back validation after rollback`);
+  }
+
+  return rolledBack;
 }
 
 export async function getAgentDeployment(env: Env, agentId: string, deploymentId: string): Promise<AgentDeploymentRecord | null> {
@@ -799,7 +1099,28 @@ export async function getAgentDeployment(env: Env, agentId: string, deploymentId
     env.D1_DB.prepare(
       `SELECT id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
        FROM agent_deployments
-       WHERE id = ? AND agent_id = ?`
+       WHERE id = ? AND agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_deployments.agent_id
+             AND agents.tenant_id = agent_deployments.tenant_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM agent_versions
+           WHERE agent_versions.id = agent_deployments.agent_version_id
+             AND agent_versions.agent_id = agent_deployments.agent_id
+         )
+         AND (
+           agent_deployments.target_type <> 'mailbox'
+           OR EXISTS (
+             SELECT 1
+             FROM mailboxes
+             WHERE mailboxes.id = agent_deployments.target_id
+               AND mailboxes.tenant_id = agent_deployments.tenant_id
+           )
+         )`
     ).bind(deploymentId, agentId)
   );
 
@@ -812,6 +1133,27 @@ export async function listAgentDeployments(env: Env, agentId: string): Promise<A
       `SELECT id, tenant_id, agent_id, agent_version_id, target_type, target_id, status, created_at, updated_at
        FROM agent_deployments
        WHERE agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_deployments.agent_id
+             AND agents.tenant_id = agent_deployments.tenant_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM agent_versions
+           WHERE agent_versions.id = agent_deployments.agent_version_id
+             AND agent_versions.agent_id = agent_deployments.agent_id
+         )
+         AND (
+           agent_deployments.target_type <> 'mailbox'
+           OR EXISTS (
+             SELECT 1
+             FROM mailboxes
+             WHERE mailboxes.id = agent_deployments.target_id
+               AND mailboxes.tenant_id = agent_deployments.tenant_id
+           )
+         )
        ORDER BY created_at DESC`
     ).bind(agentId)
   );
@@ -879,6 +1221,18 @@ export async function resolveAgentExecutionTarget(
               `SELECT id, agent_id, agent_version_id
                FROM agent_deployments
                WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND tenant_id = ? AND agent_id = ?
+                 AND EXISTS (
+                   SELECT 1
+                   FROM agent_versions
+                   WHERE agent_versions.id = agent_deployments.agent_version_id
+                     AND agent_versions.agent_id = agent_deployments.agent_id
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM agents
+                   WHERE agents.id = agent_deployments.agent_id
+                     AND agents.tenant_id = agent_deployments.tenant_id
+                 )
                ORDER BY created_at DESC`
             ).bind(mailboxId, mailboxTenantId, requestedAgentId)
           )
@@ -891,6 +1245,18 @@ export async function resolveAgentExecutionTarget(
               `SELECT id, agent_id, agent_version_id
                FROM agent_deployments
                WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND tenant_id = ?
+                 AND EXISTS (
+                   SELECT 1
+                   FROM agent_versions
+                   WHERE agent_versions.id = agent_deployments.agent_version_id
+                     AND agent_versions.agent_id = agent_deployments.agent_id
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM agents
+                   WHERE agents.id = agent_deployments.agent_id
+                     AND agents.tenant_id = agent_deployments.tenant_id
+                 )
                ORDER BY created_at DESC`
             ).bind(mailboxId, mailboxTenantId)
           );
@@ -932,6 +1298,14 @@ export async function resolveAgentExecutionTarget(
             `SELECT agent_id
              FROM agent_mailboxes
              WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+               AND EXISTS (
+                 SELECT 1
+                 FROM mailboxes
+                 JOIN agents ON agents.id = agent_mailboxes.agent_id
+                 WHERE mailboxes.id = agent_mailboxes.mailbox_id
+                   AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+                   AND agents.tenant_id = agent_mailboxes.tenant_id
+               )
              ORDER BY created_at ASC
              `
           ).bind(mailboxId, ...bindingRoles)
@@ -956,6 +1330,18 @@ export async function resolveAgentExecutionTarget(
             `SELECT id, agent_id, agent_version_id
              FROM agent_deployments
              WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND tenant_id = ? AND agent_id = ?
+               AND EXISTS (
+                 SELECT 1
+                 FROM agent_versions
+                 WHERE agent_versions.id = agent_deployments.agent_version_id
+                   AND agent_versions.agent_id = agent_deployments.agent_id
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM agents
+                 WHERE agents.id = agent_deployments.agent_id
+                   AND agents.tenant_id = agent_deployments.tenant_id
+               )
              ORDER BY created_at DESC
              LIMIT 1`
           ).bind(mailboxId, mailboxTenantId, requestedAgentId)
@@ -963,6 +1349,18 @@ export async function resolveAgentExecutionTarget(
             `SELECT id, agent_id, agent_version_id
              FROM agent_deployments
              WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND tenant_id = ?
+               AND EXISTS (
+                 SELECT 1
+                 FROM agent_versions
+                 WHERE agent_versions.id = agent_deployments.agent_version_id
+                   AND agent_versions.agent_id = agent_deployments.agent_id
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM agents
+                 WHERE agents.id = agent_deployments.agent_id
+                   AND agents.tenant_id = agent_deployments.tenant_id
+               )
              ORDER BY created_at DESC
              LIMIT 1`
           ).bind(mailboxId, mailboxTenantId);
@@ -1008,6 +1406,14 @@ export async function resolveAgentExecutionTarget(
           `SELECT agent_id
            FROM agent_mailboxes
            WHERE mailbox_id = ? AND status = 'active' AND role IN (${bindingRoles.map(() => "?").join(", ")})
+             AND EXISTS (
+               SELECT 1
+               FROM mailboxes
+               JOIN agents ON agents.id = agent_mailboxes.agent_id
+               WHERE mailboxes.id = agent_mailboxes.mailbox_id
+                 AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+                 AND agents.tenant_id = agent_mailboxes.tenant_id
+             )
            ORDER BY created_at ASC`
         ).bind(mailboxId, ...bindingRoles)
       )
@@ -1016,6 +1422,14 @@ export async function resolveAgentExecutionTarget(
           `SELECT agent_id
            FROM agent_mailboxes
            WHERE mailbox_id = ? AND status = 'active'
+             AND EXISTS (
+               SELECT 1
+               FROM mailboxes
+               JOIN agents ON agents.id = agent_mailboxes.agent_id
+               WHERE mailboxes.id = agent_mailboxes.mailbox_id
+                 AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+                 AND agents.tenant_id = agent_mailboxes.tenant_id
+             )
            ORDER BY created_at ASC`
         ).bind(mailboxId)
       );
@@ -1040,6 +1454,14 @@ export async function hasActiveMailboxBinding(env: Env, input: {
           `SELECT agent_id
            FROM agent_mailboxes
            WHERE mailbox_id = ? AND agent_id = ? AND status = 'active' AND role IN (${input.roles.map(() => "?").join(", ")})
+             AND EXISTS (
+               SELECT 1
+               FROM mailboxes
+               JOIN agents ON agents.id = agent_mailboxes.agent_id
+               WHERE mailboxes.id = agent_mailboxes.mailbox_id
+                 AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+                 AND agents.tenant_id = agent_mailboxes.tenant_id
+             )
            ORDER BY created_at ASC
            LIMIT 1`
         ).bind(input.mailboxId, input.agentId, ...input.roles)
@@ -1049,6 +1471,14 @@ export async function hasActiveMailboxBinding(env: Env, input: {
           `SELECT agent_id
            FROM agent_mailboxes
            WHERE mailbox_id = ? AND agent_id = ? AND status = 'active'
+             AND EXISTS (
+               SELECT 1
+               FROM mailboxes
+               JOIN agents ON agents.id = agent_mailboxes.agent_id
+               WHERE mailboxes.id = agent_mailboxes.mailbox_id
+                 AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+                 AND agents.tenant_id = agent_mailboxes.tenant_id
+             )
            ORDER BY created_at ASC
            LIMIT 1`
         ).bind(input.mailboxId, input.agentId)
@@ -1066,6 +1496,24 @@ export async function hasActiveMailboxDeployment(env: Env, input: {
       `SELECT id
        FROM agent_deployments
        WHERE target_type = 'mailbox' AND target_id = ? AND status = 'active' AND agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM agents
+           WHERE agents.id = agent_deployments.agent_id
+             AND agents.tenant_id = agent_deployments.tenant_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM agent_versions
+           WHERE agent_versions.id = agent_deployments.agent_version_id
+             AND agent_versions.agent_id = agent_deployments.agent_id
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM mailboxes
+           WHERE mailboxes.id = agent_deployments.target_id
+             AND mailboxes.tenant_id = agent_deployments.tenant_id
+         )
        ORDER BY created_at DESC
        LIMIT 1`
     ).bind(input.mailboxId, input.agentId)
@@ -1083,11 +1531,48 @@ async function getAgentMailboxBinding(env: Env, input: {
       `SELECT id, agent_id, mailbox_id, role, status, created_at
        FROM agent_mailboxes
        WHERE agent_id = ? AND mailbox_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM mailboxes
+           JOIN agents ON agents.id = agent_mailboxes.agent_id
+           WHERE mailboxes.id = agent_mailboxes.mailbox_id
+             AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+             AND agents.tenant_id = agent_mailboxes.tenant_id
+         )
        LIMIT 1`
     ).bind(input.agentId, input.mailboxId)
   );
 
   return row ? mapMailboxRow(row) : null;
+}
+
+async function deleteInvalidAgentMailboxBindings(env: Env, input: {
+  agentId: string;
+  mailboxId: string;
+}): Promise<number> {
+  const rows = await allRows<{ id: string }>(
+    env.D1_DB.prepare(
+      `SELECT id
+       FROM agent_mailboxes
+       WHERE agent_id = ? AND mailbox_id = ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM mailboxes
+           JOIN agents ON agents.id = agent_mailboxes.agent_id
+           WHERE mailboxes.id = agent_mailboxes.mailbox_id
+             AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+             AND agents.tenant_id = agent_mailboxes.tenant_id
+         )`
+    ).bind(input.agentId, input.mailboxId)
+  );
+
+  for (const row of rows) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_mailboxes WHERE id = ?`
+    ).bind(row.id)).catch(() => undefined);
+  }
+
+  return rows.length;
 }
 
 export async function bindMailbox(env: Env, input: {
@@ -1098,20 +1583,21 @@ export async function bindMailbox(env: Env, input: {
 }): Promise<AgentMailboxBindingRecord> {
   const id = createId("amb");
   const createdAt = nowIso();
+  const insertBinding = async () => await execute(env.D1_DB.prepare(
+    `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.tenantId,
+    input.agentId,
+    input.mailboxId,
+    input.role,
+    "active",
+    createdAt
+  ));
 
   try {
-    await execute(env.D1_DB.prepare(
-      `INSERT INTO agent_mailboxes (id, tenant_id, agent_id, mailbox_id, role, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      id,
-      input.tenantId,
-      input.agentId,
-      input.mailboxId,
-      input.role,
-      "active",
-      createdAt
-    ));
+    await insertBinding();
   } catch (error) {
     if (!isUniqueConstraintError(error)) {
       throw error;
@@ -1131,17 +1617,38 @@ export async function bindMailbox(env: Env, input: {
       return existing;
     }
 
-    throw error;
+    const deleted = await deleteInvalidAgentMailboxBindings(env, {
+      agentId: input.agentId,
+      mailboxId: input.mailboxId,
+    });
+    if (deleted > 0) {
+      await insertBinding();
+    } else {
+      throw error;
+    }
   }
 
-  return {
-    id,
+  const agent = await getAgent(env, input.agentId);
+  const mailbox = await getMailboxById(env, input.mailboxId);
+  if (!agent || agent.tenantId !== input.tenantId || !mailbox || mailbox.tenant_id !== input.tenantId) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_mailboxes WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    throw new Error(`Agent mailbox binding ${id} could not be finalized because the agent or mailbox no longer exists or no longer matches the tenant`);
+  }
+
+  const created = await getAgentMailboxBinding(env, {
     agentId: input.agentId,
     mailboxId: input.mailboxId,
-    role: input.role,
-    status: "active",
-    createdAt,
-  };
+  });
+  if (!created) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_mailboxes WHERE id = ?`
+    ).bind(id)).catch(() => undefined);
+    throw new Error(`Agent mailbox binding ${id} could not be finalized because the stored binding no longer passed read-back validation`);
+  }
+
+  return created;
 }
 
 export async function listAgentMailboxes(env: Env, agentId: string): Promise<AgentMailboxBindingRecord[]> {
@@ -1150,6 +1657,14 @@ export async function listAgentMailboxes(env: Env, agentId: string): Promise<Age
       `SELECT id, agent_id, mailbox_id, role, status, created_at
        FROM agent_mailboxes
        WHERE agent_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM mailboxes
+           JOIN agents ON agents.id = agent_mailboxes.agent_id
+           WHERE mailboxes.id = agent_mailboxes.mailbox_id
+             AND mailboxes.tenant_id = agent_mailboxes.tenant_id
+             AND agents.tenant_id = agent_mailboxes.tenant_id
+         )
        ORDER BY created_at DESC`
     ).bind(agentId)
   );
@@ -1187,17 +1702,15 @@ export async function upsertAgentPolicy(env: Env, input: Omit<AgentPolicyRecord,
     updatedAt
   ));
 
-  const row = await firstRow<AgentPolicyRow>(
-    env.D1_DB.prepare(
-      `SELECT agent_id, auto_reply_enabled, human_review_required, confidence_threshold,
-              max_auto_replies_per_thread, allowed_recipient_domains_json,
-              blocked_sender_domains_json, allowed_tools_json, updated_at
-       FROM agent_policies
-       WHERE agent_id = ?`
-    ).bind(input.agentId)
-  );
+  if (!(await getAgent(env, input.agentId))) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM agent_policies WHERE agent_id = ?`
+    ).bind(input.agentId)).catch(() => undefined);
+    throw new Error(`Agent ${input.agentId} no longer exists`);
+  }
 
-  return mapPolicyRow(requireRow(row, "Failed to load agent policy"));
+  const row = await getAgentPolicy(env, input.agentId);
+  return requireRow(row, "Failed to load agent policy");
 }
 
 export async function getMailboxByAddress(env: Env, address: string): Promise<MailboxRow | null> {
@@ -1237,13 +1750,24 @@ export async function ensureMailbox(env: Env, input: {
   address: string;
   status?: string;
 }): Promise<MailboxRecord> {
+  return (await ensureMailboxWithStatus(env, input)).mailbox;
+}
+
+export async function ensureMailboxWithStatus(env: Env, input: {
+  tenantId: string;
+  address: string;
+  status?: string;
+}): Promise<{ mailbox: MailboxRecord; created: boolean }> {
   const normalizedAddress = input.address.trim().toLowerCase();
   const existing = await getMailboxByAddress(env, normalizedAddress);
   if (existing) {
     if (existing.tenant_id !== input.tenantId) {
       throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
     }
-    return mapMailboxRecord(existing);
+    return {
+      mailbox: mapMailboxRecord(existing),
+      created: false,
+    };
   }
 
   const id = createId("mbx");
@@ -1269,17 +1793,159 @@ export async function ensureMailbox(env: Env, input: {
       if (concurrent.tenant_id !== input.tenantId) {
         throw new MailboxConflictError(`Mailbox ${normalizedAddress} already belongs to a different tenant`);
       }
-      return mapMailboxRecord(concurrent);
+      return {
+        mailbox: mapMailboxRecord(concurrent),
+        created: false,
+      };
     }
 
     throw error;
   }
 
+  const created = await getMailboxById(env, id);
   return {
-    id,
-    tenantId: input.tenantId,
-    address: normalizedAddress,
-    status: input.status ?? "active",
-    createdAt,
+    mailbox: mapMailboxRecord(requireRow(created, `Failed to load mailbox ${id}`)),
+    created: true,
   };
+}
+
+export async function deleteMailboxIfUnreferenced(env: Env, mailboxId: string): Promise<boolean> {
+  const result = await execute(env.D1_DB.prepare(
+    `DELETE FROM mailboxes
+     WHERE id = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM agent_mailboxes
+         WHERE mailbox_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             JOIN agents ON agents.id = agent_mailboxes.agent_id
+             WHERE owners.id = agent_mailboxes.mailbox_id
+               AND owners.tenant_id = agent_mailboxes.tenant_id
+               AND agents.tenant_id = agent_mailboxes.tenant_id
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM agent_deployments
+         WHERE target_type = 'mailbox' AND target_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM agents
+             WHERE agents.id = agent_deployments.agent_id
+               AND agents.tenant_id = agent_deployments.tenant_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM agent_versions
+             WHERE agent_versions.id = agent_deployments.agent_version_id
+               AND agent_versions.agent_id = agent_deployments.agent_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             WHERE owners.id = agent_deployments.target_id
+               AND owners.tenant_id = agent_deployments.tenant_id
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM threads
+         WHERE mailbox_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             WHERE owners.id = threads.mailbox_id
+               AND owners.tenant_id = threads.tenant_id
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM messages
+         WHERE mailbox_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             WHERE owners.id = messages.mailbox_id
+               AND owners.tenant_id = messages.tenant_id
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM drafts
+         WHERE mailbox_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM agents
+             WHERE agents.id = drafts.agent_id
+               AND agents.tenant_id = drafts.tenant_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             WHERE owners.id = drafts.mailbox_id
+               AND owners.tenant_id = drafts.tenant_id
+           )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM tasks
+         WHERE mailbox_id = ?
+           AND EXISTS (
+             SELECT 1
+             FROM mailboxes AS owners
+             WHERE owners.id = tasks.mailbox_id
+               AND owners.tenant_id = tasks.tenant_id
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM messages
+             WHERE messages.id = tasks.source_message_id
+               AND messages.tenant_id = tasks.tenant_id
+               AND messages.mailbox_id = tasks.mailbox_id
+           )
+           AND (
+             tasks.assigned_agent IS NULL
+             OR EXISTS (
+               SELECT 1
+               FROM agents
+               WHERE agents.id = tasks.assigned_agent
+                 AND agents.tenant_id = tasks.tenant_id
+             )
+           )
+       )`
+  ).bind(
+    mailboxId,
+    mailboxId,
+    mailboxId,
+    mailboxId,
+    mailboxId,
+    mailboxId,
+    mailboxId,
+  ));
+
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function updateMailboxStatus(env: Env, mailboxId: string, status: string): Promise<MailboxRecord> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE mailboxes
+     SET status = ?
+     WHERE id = ?`
+  ).bind(status, mailboxId));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Mailbox ${mailboxId} no longer exists`);
+  }
+
+  const row = await firstRow<MailboxRow>(
+    env.D1_DB.prepare(
+      `SELECT id, tenant_id, address, status, created_at
+       FROM mailboxes
+       WHERE id = ?`
+    ).bind(mailboxId)
+  );
+
+  return mapMailboxRecord(requireRow(row, `Failed to load mailbox ${mailboxId}`));
 }

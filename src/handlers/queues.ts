@@ -11,7 +11,7 @@ import {
   findThreadByReplyContext,
   claimTaskForExecution,
   deleteThreadIfUnreferenced,
-  getDraftByR2Key,
+  getDraftByR2KeyForOutboundLifecycle,
   getMessage,
   getOrCreateTaskForSourceMessage,
   getOrCreateThread,
@@ -370,6 +370,7 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
       await updateTaskStatus(env, {
         taskId: message.body.taskId,
         status: "needs_review",
+        resultR2Key: null,
       }).catch(() => undefined);
       await enqueueDeadLetter(env, deadLetterFromError("agent-execute", message.body.taskId, error));
       message.ack();
@@ -380,7 +381,7 @@ async function handleAgentExecute(batch: MessageBatch<AgentExecuteJob>, env: Env
 async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env): Promise<void> {
   for (const message of batch.messages) {
     let outboundJob = null as Awaited<ReturnType<typeof getOutboundJob>> | null;
-    let draft = null as Awaited<ReturnType<typeof getDraftByR2Key>> | null;
+    let draft = null as Awaited<ReturnType<typeof getDraftByR2KeyForOutboundLifecycle>> | null;
     let to: string[] = [];
     let cc: string[] = [];
     let bcc: string[] = [];
@@ -396,7 +397,7 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
       }
 
       const draftPayload = await draftObject.json<Record<string, unknown>>();
-      draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
+      draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
       const outboundMessage = await getMessage(env, outboundJob.messageId);
       if (!outboundMessage) {
         throw new Error("Outbound message not found");
@@ -408,6 +409,25 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
         cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
         bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+        try {
+          if (outboundMessage.status !== "replied") {
+            await updateMessageStatus(env, outboundJob.messageId, "replied");
+          }
+          if (draft && draft.status !== "sent") {
+            await markDraftStatus(env, draft.id, "sent");
+          }
+        } catch (recoveryError) {
+          await enqueueDeadLetter(
+            env,
+            deadLetterFromError(
+              "outbound-send",
+              outboundJob.id,
+              new Error(`sent_recovery_incomplete:${recoveryError instanceof Error ? recoveryError.message : "unknown_error"}`)
+            )
+          );
+          message.retry();
+          continue;
+        }
         try {
           await settleOutboundUsageDebit(env, {
             tenantId: outboundMessage.tenantId,
@@ -441,15 +461,30 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
         bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
 
-        await updateOutboundJobStatus(env, {
-          outboundJobId: outboundJob.id,
-          status: "sent",
-          lastError: null,
-          nextRetryAt: null,
-        });
+        try {
+          await updateMessageStatus(env, outboundJob.messageId, "replied");
 
-        if (draft) {
-          await markDraftStatus(env, draft.id, "sent");
+          if (draft) {
+            await markDraftStatus(env, draft.id, "sent");
+          }
+
+          await updateOutboundJobStatus(env, {
+            outboundJobId: outboundJob.id,
+            status: "sent",
+            lastError: null,
+            nextRetryAt: null,
+          });
+        } catch (recoveryError) {
+          await enqueueDeadLetter(
+            env,
+            deadLetterFromError(
+              "outbound-send",
+              outboundJob.id,
+              new Error(`sending_recovery_sent_incomplete:${recoveryError instanceof Error ? recoveryError.message : "unknown_error"}`)
+            )
+          );
+          message.retry();
+          continue;
         }
 
         try {
@@ -476,26 +511,40 @@ async function handleOutboundSend(batch: MessageBatch<OutboundSendJob>, env: Env
         outboundJob.status === "sending"
         && (outboundMessage.status === "failed" || deliveryOutcome === "failed")
       ) {
-        await updateOutboundJobStatus(env, {
-          outboundJobId: outboundJob.id,
-          status: "failed",
-          lastError: deliveryOutcome === "failed" ? "provider_delivery_failed" : "send_failed",
-          nextRetryAt: null,
-        });
-        if (draft) {
-          await markDraftStatus(env, draft.id, "failed").catch(() => undefined);
-          to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
-          cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
-          bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
-          await releaseOutboundUsageReservation(env, {
-            tenantId: draft.tenantId,
+        try {
+          await updateMessageStatus(env, outboundJob.messageId, "failed");
+          if (draft) {
+            await markDraftStatus(env, draft.id, "failed");
+            to = Array.isArray(draftPayload.to) ? draftPayload.to.filter((item): item is string => typeof item === "string") : [];
+            cc = Array.isArray(draftPayload.cc) ? draftPayload.cc.filter((item): item is string => typeof item === "string") : [];
+            bcc = Array.isArray(draftPayload.bcc) ? draftPayload.bcc.filter((item): item is string => typeof item === "string") : [];
+            await releaseOutboundUsageReservation(env, {
+              tenantId: draft.tenantId,
+              outboundJobId: outboundJob.id,
+              sourceMessageId: draft.sourceMessageId,
+              draftCreatedVia: draft.createdVia,
+              to,
+              cc,
+              bcc,
+            });
+          }
+          await updateOutboundJobStatus(env, {
             outboundJobId: outboundJob.id,
-            sourceMessageId: draft.sourceMessageId,
-            draftCreatedVia: draft.createdVia,
-            to,
-            cc,
-            bcc,
-          }).catch(() => undefined);
+            status: "failed",
+            lastError: deliveryOutcome === "failed" ? "provider_delivery_failed" : "send_failed",
+            nextRetryAt: null,
+          });
+        } catch (recoveryError) {
+          await enqueueDeadLetter(
+            env,
+            deadLetterFromError(
+              "outbound-send",
+              outboundJob.id,
+              new Error(`sending_recovery_failed_incomplete:${recoveryError instanceof Error ? recoveryError.message : "unknown_error"}`)
+            )
+          );
+          message.retry();
+          continue;
         }
         message.ack();
         continue;
