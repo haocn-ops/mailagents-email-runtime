@@ -90,6 +90,8 @@ export const RESERVED_SELF_SERVE_ALIASES = new Set([
 const MAILBOX_ALIAS_UNAVAILABLE_MESSAGE = "The requested mailbox alias is unavailable. Please choose a different alias.";
 const SIGNUP_PROVISIONING_CONFLICT_MESSAGE =
   "Self-serve signup could not be completed because mailbox provisioning state already exists. Please choose a different alias and try again.";
+const SIGNUP_INITIAL_ACCESS_UNAVAILABLE_MESSAGE =
+  "Self-serve signup could not deliver an initial access token in this environment. Use an operator email on the hosted mailbox domain or enable legacy inline signup token return before retrying.";
 
 export async function parseSelfServeSignup(request: Request): Promise<
   | { ok: true; values: SignupFormValues }
@@ -310,6 +312,10 @@ export async function performSelfServeSignup(env: Env, values: SignupFormValues)
         : error instanceof Error
         ? error.message
         : "Unable to queue onboarding email";
+    }
+
+    if (!inlineSignupTokenEnabled && welcomeStatus !== "queued") {
+      throw new SignupError(SIGNUP_INITIAL_ACCESS_UNAVAILABLE_MESSAGE, 503);
     }
 
     return {

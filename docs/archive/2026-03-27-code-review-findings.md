@@ -2313,6 +2313,17 @@ follow-ups below:
   spoofed draft metadata or strand idempotent send workflows in a
   side-effected failure after draft creation.
 
+## Additional Follow-up (2026-03-31)
+
+1. Fixed: self-serve signup now fails closed when the runtime is configured
+   not to return an inline signup token and the onboarding email cannot queue
+   a deliverable initial credential. Previously `POST /public/signup` could
+   still return success after provisioning the tenant, mailbox, and agent even
+   though the caller had no usable token; the flow now raises a `503` so the
+   outer rollback path cleans up the partial tenant instead of leaving an
+   unreachable signup behind.
+   Refs: `src/lib/provisioning/signup.ts`
+
 ## Verification Update (2026-03-31)
 
 1. Verified: the post-review production verification flow now includes a
