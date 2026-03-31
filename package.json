@@ -52,6 +52,7 @@
     "smoke:api:local": "bash ./scripts/api_surface_smoke.sh",
     "smoke:api:dev": "BASE_URL=https://mailagents-dev.izhenghaocn.workers.dev bash ./scripts/api_surface_smoke.sh",
     "smoke:production:readonly": "bash ./scripts/production_readonly_smoke.sh",
+    "smoke:production:public": "bash ./scripts/production_public_blackbox_smoke.sh",
     "check:reply-threading": "bash ./scripts/reply_threading_regression_check.sh",
     "diagnose:production:live": "bash ./scripts/production_live_drift_check.sh",
     "verify:production:readonly": "bash ./scripts/production_postdeploy_verify.sh",

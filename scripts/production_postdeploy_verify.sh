@@ -12,4 +12,8 @@ echo "Running production read-only smoke..."
 BASE_URL="$BASE_URL" bash ./scripts/production_readonly_smoke.sh
 
 echo
+echo "Running production public black-box smoke..."
+BASE_URL="$BASE_URL" bash ./scripts/production_public_blackbox_smoke.sh
+
+echo
 echo "Production post-deploy verification passed for ${BASE_URL}"
