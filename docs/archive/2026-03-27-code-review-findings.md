@@ -2312,3 +2312,16 @@ follow-ups below:
   draft or reserving a send outcome, so MCP callers can no longer persist
   spoofed draft metadata or strand idempotent send workflows in a
   side-effected failure after draft creation.
+
+## Verification Update (2026-03-31)
+
+1. Verified: the post-review production verification flow now includes a
+   reusable public black-box smoke that exercises only production-safe
+   surfaces: `/`, `/v2/meta/runtime`, `/v2/meta/compatibility`,
+   `/v2/meta/compatibility/schema`, `POST /public/signup`,
+   `POST /public/token/reissue`, and disabled `/admin/mcp` posture. This
+   converts the ad hoc regression checks from the review follow-up into a
+   committed script and makes future production checks repeatable.
+   Refs: `scripts/production_public_blackbox_smoke.sh`,
+   `scripts/production_postdeploy_verify.sh`, `docs/testing.md`,
+   `package.json`, commit `16449b6`
