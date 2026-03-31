@@ -16,7 +16,8 @@ TEMP_FILES=()
 LAST_HEADERS=""
 LAST_BODY=""
 LAST_STATUS=""
-TOKEN=""
+TENANT_TOKEN=""
+MAILBOX_TOKEN=""
 
 cleanup() {
   if [[ "${#TEMP_FILES[@]}" -gt 0 ]]; then
@@ -193,7 +194,7 @@ wait_for_billing_account_state() {
   local attempt
 
   for attempt in $(seq 1 40); do
-    capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+    capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
     if [[ "$LAST_STATUS" == "200" ]] && jq -e \
       --argjson expected_available "$expected_available" \
       --argjson expected_reserved "$expected_reserved" '
@@ -216,7 +217,7 @@ wait_for_credit_ledger_debit() {
   local attempt
 
   for attempt in $(seq 1 40); do
-    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
+    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TENANT_TOKEN"
     if [[ "$LAST_STATUS" == "200" ]] && jq -e \
       --arg outbound "$outbound_job_id" \
       --argjson expected_delta "$expected_delta" '
@@ -238,7 +239,7 @@ wait_for_credit_ledger_absence() {
   local attempt
 
   for attempt in $(seq 1 40); do
-    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
+    capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TENANT_TOKEN"
     if [[ "$LAST_STATUS" == "200" ]] && jq -e \
       --arg outbound "$outbound_job_id" '
         (.items | map(select(.referenceId == $outbound)) | length) == 0
@@ -267,9 +268,19 @@ if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
   exit 1
 fi
 
-echo "Minting seeded demo tenant bearer token..."
+echo "Minting seeded demo tenant-scoped bearer token..."
 capture_request "POST" "/v1/auth/tokens" "{
   \"sub\": \"outbound-credit-smoke\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"scopes\": [\"agent:read\"],
+  \"expiresInSeconds\": 3600
+}" "x-admin-secret: $ADMIN_SECRET"
+assert_status "201"
+TENANT_TOKEN="$(jq -r '.token' "$LAST_BODY")"
+
+echo "Minting seeded demo mailbox bearer token..."
+capture_request "POST" "/v1/auth/tokens" "{
+  \"sub\": \"outbound-credit-smoke-mailbox\",
   \"tenantId\": \"$TENANT_ID\",
   \"agentId\": \"$AGENT_ID\",
   \"mailboxIds\": [\"$MAILBOX_ID\"],
@@ -277,10 +288,10 @@ capture_request "POST" "/v1/auth/tokens" "{
   \"expiresInSeconds\": 3600
 }" "x-admin-secret: $ADMIN_SECRET"
 assert_status "201"
-TOKEN="$(jq -r '.token' "$LAST_BODY")"
+MAILBOX_TOKEN="$(jq -r '.token' "$LAST_BODY")"
 
 echo "Checking seeded self mailbox..."
-capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $MAILBOX_TOKEN"
 assert_status "200"
 jq -e --arg mailbox "$MAILBOX_ID" '.id == $mailbox and .status == "active"' "$LAST_BODY" >/dev/null
 
@@ -288,7 +299,7 @@ echo "Resetting demo tenant outbound and billing state..."
 reset_demo_outbound_state
 
 echo "Capturing starting billing balance..."
-capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 STARTING_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
 STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
@@ -296,7 +307,7 @@ STARTING_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
 echo "Seeding demo tenant credits directly for reservation smoke..."
 seed_available_credits 5
 
-capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 TOPUP_AVAILABLE_CREDITS="$(jq -r '.availableCredits' "$LAST_BODY")"
 TOPUP_RESERVED_CREDITS="$(jq -r '.reservedCredits' "$LAST_BODY")"
@@ -321,12 +332,12 @@ capture_request "POST" "/v1/mailboxes/self/send" "{
   \"to\": [\"$SUCCESS_TO_EMAIL\"],
   \"subject\": \"Credit smoke success\",
   \"text\": \"Testing outbound credit reservation and capture.\"
-}" "authorization: Bearer $TOKEN"
+}" "authorization: Bearer $MAILBOX_TOKEN"
 assert_status "202"
 SUCCESS_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
 SUCCESS_DRAFT_ID="$(jq -r '.draft.id' "$LAST_BODY")"
 
-capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
   .availableCredits == ($topup_available - 1) and
@@ -352,7 +363,7 @@ jq -e '
 echo "Waiting for billing settlement after the successful send..."
 wait_for_billing_account_state "$((TOPUP_AVAILABLE_CREDITS - 1))" "$TOPUP_RESERVED_CREDITS"
 
-capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
   .availableCredits == ($topup_available - 1) and
@@ -361,7 +372,7 @@ jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reser
 
 wait_for_credit_ledger_debit "$SUCCESS_OUTBOUND_JOB_ID" -1
 
-capture_request "GET" "/v1/billing/ledger?limit=10" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/ledger?limit=10" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 jq -e --arg outbound "$SUCCESS_OUTBOUND_JOB_ID" '
   (.items | map(select(.entryType == "debit_send" and .referenceId == $outbound)) | length) == 1 and
@@ -445,7 +456,7 @@ capture_request "POST" "/v1/mailboxes/self/send" "{
   \"to\": [\"$BLOCKED_TO_EMAIL\"],
   \"subject\": \"Credit smoke blocked\",
   \"text\": \"This should fail and release the reserved credit.\"
-}" "authorization: Bearer $TOKEN"
+}" "authorization: Bearer $MAILBOX_TOKEN"
 assert_status "202"
 BLOCKED_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
 
@@ -454,7 +465,7 @@ wait_for_job_status "$BLOCKED_OUTBOUND_JOB_ID" "failed"
 echo "Waiting for reserved credit release after the blocked send..."
 wait_for_billing_account_state "$((TOPUP_AVAILABLE_CREDITS - 1))" "$TOPUP_RESERVED_CREDITS"
 
-capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/account" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reserved "$TOPUP_RESERVED_CREDITS" '
   .availableCredits == ($topup_available - 1) and
@@ -463,7 +474,7 @@ jq -e --argjson topup_available "$TOPUP_AVAILABLE_CREDITS" --argjson topup_reser
 
 wait_for_credit_ledger_absence "$BLOCKED_OUTBOUND_JOB_ID"
 
-capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TOKEN"
+capture_request "GET" "/v1/billing/ledger?limit=20" "" "authorization: Bearer $TENANT_TOKEN"
 assert_status "200"
 jq -e --arg blocked "$BLOCKED_OUTBOUND_JOB_ID" '
   (.items | map(select(.referenceId == $blocked)) | length) == 0

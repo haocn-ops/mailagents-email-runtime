@@ -534,6 +534,7 @@ export async function verifyX402Payment(
   input: {
     paymentPayload: X402PaymentPayload | Record<string, unknown> | string;
     paymentRequirements: X402PaymentRequirement;
+    idempotencyKey?: string;
   },
 ): Promise<X402FacilitatorVerificationResult> {
   if (isLocalMockUrl(env.X402_FACILITATOR_URL)) {
@@ -549,6 +550,7 @@ export async function verifyX402Payment(
     x402Version: X402_VERSION,
     paymentPayload: input.paymentPayload,
     paymentRequirements: input.paymentRequirements,
+    idempotencyKey: input.idempotencyKey,
   });
   return normalizeVerificationResponse({
     ...raw,
@@ -561,6 +563,7 @@ export async function settleX402Payment(
   input: {
     paymentPayload: X402PaymentPayload | Record<string, unknown> | string;
     paymentRequirements: X402PaymentRequirement;
+    idempotencyKey?: string;
   },
 ): Promise<X402FacilitatorSettlementResult> {
   if (isLocalMockUrl(env.X402_FACILITATOR_URL)) {
@@ -576,6 +579,7 @@ export async function settleX402Payment(
     x402Version: X402_VERSION,
     paymentPayload: input.paymentPayload,
     paymentRequirements: input.paymentRequirements,
+    idempotencyKey: input.idempotencyKey,
   });
   return normalizeSettlementResponse({
     ...raw,

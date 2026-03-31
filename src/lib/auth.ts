@@ -136,11 +136,19 @@ export function enforceTenantAccess(claims: AccessTokenClaims, tenantId: string)
 }
 
 export function enforceAgentAccess(claims: AccessTokenClaims, agentId: string): Response | null {
-  if (claims.agentId && claims.agentId !== agentId) {
+  if (!claims.agentId || claims.agentId !== agentId) {
     return json({ error: "Agent access denied" }, { status: 403 });
   }
 
   return null;
+}
+
+export function enforceScopedAgentAccess(claims: AccessTokenClaims, agentId: string): Response | null {
+  if (!claims.agentId) {
+    return null;
+  }
+
+  return enforceAgentAccess(claims, agentId);
 }
 
 export function enforceMailboxAccess(claims: AccessTokenClaims, mailboxId: string): Response | null {

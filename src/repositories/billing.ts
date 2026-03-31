@@ -1,6 +1,8 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import {
+  isTopupSettlementLedgerEntry,
+  isUpgradeCreditGrantLedgerEntry,
   parseTypedCreditLedgerEntry,
   type OutboundUsageLedgerMetadata,
   type TopupSettlementLedgerMetadata,
@@ -68,6 +70,13 @@ interface PaymentReceiptRow {
   updated_at: string;
 }
 
+export class BillingUniquenessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BillingUniquenessError";
+  }
+}
+
 function parseJsonObject(value: string | null): Record<string, unknown> | undefined {
   if (!value) {
     return undefined;
@@ -79,6 +88,10 @@ function parseJsonObject(value: string | null): Record<string, unknown> | undefi
   } catch {
     return undefined;
   }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return error instanceof Error && /unique constraint/i.test(error.message);
 }
 
 function mapBillingAccountRow(row: BillingAccountRow): BillingAccountRecord {
@@ -181,7 +194,7 @@ export async function updateTenantBillingAccountProfile(env: Env, input: {
   const hasDefaultNetwork = input.defaultNetwork !== undefined;
   const hasDefaultAsset = input.defaultAsset !== undefined;
 
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `UPDATE tenant_billing_accounts
      SET status = CASE WHEN ? THEN ? ELSE status END,
          pricing_tier = CASE WHEN ? THEN ? ELSE pricing_tier END,
@@ -202,7 +215,14 @@ export async function updateTenantBillingAccountProfile(env: Env, input: {
     input.tenantId,
   ));
 
-  return await ensureTenantBillingAccount(env, input.tenantId);
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Tenant billing account ${input.tenantId} no longer exists`);
+  }
+
+  return requireRow(
+    await getTenantBillingAccount(env, input.tenantId),
+    `Failed to load tenant billing account ${input.tenantId}`
+  );
 }
 
 export async function listTenantCreditLedger(env: Env, tenantId: string, limit = 50): Promise<CreditLedgerEntryRecord[]> {
@@ -277,7 +297,7 @@ export async function getTypedPaymentReceiptByProofFingerprint(
   env: Env,
   paymentProofFingerprint: string,
 ): Promise<TypedPaymentReceiptRecord | null> {
-  const row = await firstRow<PaymentReceiptRow>(
+  const rows = await allRows<PaymentReceiptRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
               amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
@@ -285,27 +305,39 @@ export async function getTypedPaymentReceiptByProofFingerprint(
        FROM tenant_payment_receipts
        WHERE payment_proof_fingerprint = ?
        ORDER BY created_at DESC
-       LIMIT 1`
+       LIMIT 2`
     ).bind(paymentProofFingerprint)
   );
 
-  const receipt = row ? mapPaymentReceiptRow(row) : null;
+  if (rows.length > 1) {
+    throw new BillingUniquenessError(
+      `Payment proof fingerprint ${paymentProofFingerprint} matches multiple receipts; manual reconciliation is required`,
+    );
+  }
+
+  const receipt = rows[0] ? mapPaymentReceiptRow(rows[0]) : null;
   return receipt ? parseTypedPaymentReceipt(receipt) ?? null : null;
 }
 
 export async function getCreditLedgerEntryByPaymentReceiptId(env: Env, tenantId: string, paymentReceiptId: string): Promise<CreditLedgerEntryRecord | null> {
-  const row = await firstRow<CreditLedgerRow>(
+  const rows = await allRows<CreditLedgerRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
               reference_id, metadata_json, created_at
        FROM tenant_credit_ledger
        WHERE tenant_id = ? AND payment_receipt_id = ?
        ORDER BY created_at DESC
-       LIMIT 1`
+       LIMIT 2`
     ).bind(tenantId, paymentReceiptId)
   );
 
-  return row ? mapCreditLedgerRow(row) : null;
+  if (rows.length > 1) {
+    throw new BillingUniquenessError(
+      `Ledger entries for payment receipt ${paymentReceiptId} are ambiguous; manual reconciliation is required`,
+    );
+  }
+
+  return rows[0] ? mapCreditLedgerRow(rows[0]) : null;
 }
 
 export async function getTypedCreditLedgerEntryByPaymentReceiptId(
@@ -318,18 +350,24 @@ export async function getTypedCreditLedgerEntryByPaymentReceiptId(
 }
 
 export async function getCreditLedgerEntryByReferenceId(env: Env, tenantId: string, referenceId: string): Promise<CreditLedgerEntryRecord | null> {
-  const row = await firstRow<CreditLedgerRow>(
+  const rows = await allRows<CreditLedgerRow>(
     env.D1_DB.prepare(
       `SELECT id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
               reference_id, metadata_json, created_at
        FROM tenant_credit_ledger
        WHERE tenant_id = ? AND reference_id = ?
        ORDER BY created_at DESC
-       LIMIT 1`
+       LIMIT 2`
     ).bind(tenantId, referenceId)
   );
 
-  return row ? mapCreditLedgerRow(row) : null;
+  if (rows.length > 1) {
+    throw new BillingUniquenessError(
+      `Ledger entries for reference ${referenceId} are ambiguous; manual reconciliation is required`,
+    );
+  }
+
+  return rows[0] ? mapCreditLedgerRow(rows[0]) : null;
 }
 
 export async function getTypedCreditLedgerEntryByReferenceId(
@@ -357,29 +395,50 @@ export async function createTenantPaymentReceipt(env: Env, input: {
 }): Promise<PaymentReceiptRecord> {
   const id = createId("prc");
   const timestamp = nowIso();
-  await execute(env.D1_DB.prepare(
-    `INSERT INTO tenant_payment_receipts (
-       id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
-       amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
-       metadata_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.tenantId,
-    input.receiptType,
-    input.paymentScheme,
-    input.network ?? null,
-    input.asset ?? null,
-    input.amountAtomic,
-    input.amountDisplay ?? null,
-    input.paymentReference ?? null,
-    input.settlementReference ?? null,
-    input.paymentProofFingerprint ?? null,
-    input.status,
-    input.metadata ? JSON.stringify(input.metadata) : null,
-    timestamp,
-    timestamp,
-  ));
+  try {
+    await execute(env.D1_DB.prepare(
+      `INSERT INTO tenant_payment_receipts (
+         id, tenant_id, receipt_type, payment_scheme, network, asset, amount_atomic,
+         amount_display, payment_reference, settlement_reference, payment_proof_fingerprint, status,
+         metadata_json, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      input.tenantId,
+      input.receiptType,
+      input.paymentScheme,
+      input.network ?? null,
+      input.asset ?? null,
+      input.amountAtomic,
+      input.amountDisplay ?? null,
+      input.paymentReference ?? null,
+      input.settlementReference ?? null,
+      input.paymentProofFingerprint ?? null,
+      input.status,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      timestamp,
+      timestamp,
+    ));
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      if (input.paymentProofFingerprint) {
+        throw new BillingUniquenessError(
+          `Payment proof fingerprint ${input.paymentProofFingerprint} is already associated with another receipt; manual reconciliation is required`,
+        );
+      }
+      if (input.settlementReference) {
+        throw new BillingUniquenessError(
+          `Settlement reference ${input.settlementReference} is already associated with another receipt; manual reconciliation is required`,
+        );
+      }
+      if (input.paymentReference) {
+        throw new BillingUniquenessError(
+          `Payment reference ${input.paymentReference} is already associated with another receipt; manual reconciliation is required`,
+        );
+      }
+    }
+    throw error;
+  }
 
   const row = await firstRow<PaymentReceiptRow>(
     env.D1_DB.prepare(
@@ -439,6 +498,10 @@ export async function createTypedTenantPaymentReceipt(env: Env, input: {
   const receipt = await createTenantPaymentReceipt(env, input);
   const typed = parseTypedPaymentReceipt(receipt);
   if (!typed || typed.receiptType !== input.receiptType) {
+    await execute(env.D1_DB.prepare(
+      `DELETE FROM tenant_payment_receipts
+       WHERE tenant_id = ? AND id = ?`
+    ).bind(input.tenantId, receipt.id)).catch(() => undefined);
     throw new Error("Failed to create typed payment receipt");
   }
   return typed;
@@ -462,7 +525,7 @@ export async function updateTenantPaymentReceiptStatus(env: Env, input: {
     ? { ...(existing.metadata ?? {}), ...input.metadata }
     : existing.metadata;
 
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `UPDATE tenant_payment_receipts
      SET status = ?,
          payment_reference = ?,
@@ -478,7 +541,31 @@ export async function updateTenantPaymentReceiptStatus(env: Env, input: {
     updatedAt,
     input.tenantId,
     input.receiptId,
-  ));
+  )).catch((error) => {
+    if (isUniqueConstraintError(error)) {
+      if (
+        input.settlementReference !== undefined
+        && input.settlementReference !== (existing.settlementReference ?? undefined)
+      ) {
+        throw new BillingUniquenessError(
+          `Settlement reference ${input.settlementReference} is already associated with another receipt; manual reconciliation is required`,
+        );
+      }
+      if (
+        input.paymentReference !== undefined
+        && input.paymentReference !== (existing.paymentReference ?? undefined)
+      ) {
+        throw new BillingUniquenessError(
+          `Payment reference ${input.paymentReference} is already associated with another receipt; manual reconciliation is required`,
+        );
+      }
+    }
+    throw error;
+  });
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Payment receipt ${input.receiptId} no longer exists`);
+  }
 
   const row = await firstRow<PaymentReceiptRow>(
     env.D1_DB.prepare(
@@ -493,6 +580,30 @@ export async function updateTenantPaymentReceiptStatus(env: Env, input: {
   return mapPaymentReceiptRow(requireRow(row, "Failed to load payment receipt"));
 }
 
+async function restoreTenantPaymentReceiptSnapshot(env: Env, receipt: PaymentReceiptRecord): Promise<void> {
+  const result = await execute(env.D1_DB.prepare(
+    `UPDATE tenant_payment_receipts
+     SET status = ?,
+         payment_reference = ?,
+         settlement_reference = ?,
+         metadata_json = ?,
+         updated_at = ?
+     WHERE tenant_id = ? AND id = ?`
+  ).bind(
+    receipt.status,
+    receipt.paymentReference ?? null,
+    receipt.settlementReference ?? null,
+    receipt.metadata ? JSON.stringify(receipt.metadata) : null,
+    receipt.updatedAt,
+    receipt.tenantId,
+    receipt.id,
+  ));
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Payment receipt ${receipt.id} no longer exists`);
+  }
+}
+
 export async function updateTypedTenantPaymentReceiptStatus(env: Env, input: {
   tenantId: string;
   receiptId: string;
@@ -501,9 +612,15 @@ export async function updateTypedTenantPaymentReceiptStatus(env: Env, input: {
   settlementReference?: string;
   metadata?: PaymentReceiptMetadata;
 }): Promise<TypedPaymentReceiptRecord> {
+  const existing = await getTenantPaymentReceiptById(env, input.tenantId, input.receiptId);
+  if (!existing) {
+    throw new Error("Payment receipt not found");
+  }
+
   const receipt = await updateTenantPaymentReceiptStatus(env, input);
   const typed = parseTypedPaymentReceipt(receipt);
   if (!typed) {
+    await restoreTenantPaymentReceiptSnapshot(env, existing).catch(() => undefined);
     throw new Error("Failed to update typed payment receipt");
   }
   return typed;
@@ -519,7 +636,7 @@ export async function reconcileTenantAvailableCredits(env: Env, tenantId: string
     ).bind(tenantId)
   );
   const totalCredits = Number(row?.total_credits ?? 0);
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `UPDATE tenant_billing_accounts
      SET available_credits = ? - reserved_credits,
          updated_at = ?
@@ -529,7 +646,15 @@ export async function reconcileTenantAvailableCredits(env: Env, tenantId: string
     nowIso(),
     tenantId,
   ));
-  return await ensureTenantBillingAccount(env, tenantId);
+
+  if ((result.meta?.changes ?? 0) === 0) {
+    throw new Error(`Tenant billing account ${tenantId} no longer exists`);
+  }
+
+  return requireRow(
+    await getTenantBillingAccount(env, tenantId),
+    `Failed to load tenant billing account ${tenantId}`
+  );
 }
 
 export async function reserveTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
@@ -553,7 +678,10 @@ export async function reserveTenantAvailableCredits(env: Env, tenantId: string, 
     return null;
   }
 
-  return await ensureTenantBillingAccount(env, tenantId);
+  return requireRow(
+    await getTenantBillingAccount(env, tenantId),
+    `Failed to load tenant billing account ${tenantId}`
+  );
 }
 
 export async function releaseTenantReservedCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
@@ -577,7 +705,10 @@ export async function releaseTenantReservedCredits(env: Env, tenantId: string, c
     return null;
   }
 
-  return await ensureTenantBillingAccount(env, tenantId);
+  return requireRow(
+    await getTenantBillingAccount(env, tenantId),
+    `Failed to load tenant billing account ${tenantId}`
+  );
 }
 
 export async function captureTenantReservedCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
@@ -599,7 +730,10 @@ export async function captureTenantReservedCredits(env: Env, tenantId: string, c
     return null;
   }
 
-  return await ensureTenantBillingAccount(env, tenantId);
+  return requireRow(
+    await getTenantBillingAccount(env, tenantId),
+    `Failed to load tenant billing account ${tenantId}`
+  );
 }
 
 export async function decrementTenantAvailableCredits(env: Env, tenantId: string, creditsDelta: number): Promise<BillingAccountRecord | null> {
@@ -621,7 +755,10 @@ export async function decrementTenantAvailableCredits(env: Env, tenantId: string
     return null;
   }
 
-  return await ensureTenantBillingAccount(env, tenantId);
+  return requireRow(
+    await getTenantBillingAccount(env, tenantId),
+    `Failed to load tenant billing account ${tenantId}`
+  );
 }
 
 export async function appendTenantCreditLedgerEntry<TMetadata extends object | undefined = Record<string, unknown> | undefined>(env: Env, input: {
@@ -674,7 +811,7 @@ export async function appendTopupSettlementLedgerEntry(env: Env, input: {
 }): Promise<TypedCreditLedgerEntryRecord> {
   const id = createId("led");
   const createdAt = nowIso();
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `INSERT OR IGNORE INTO tenant_credit_ledger (
        id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
        reference_id, metadata_json, created_at
@@ -693,7 +830,24 @@ export async function appendTopupSettlementLedgerEntry(env: Env, input: {
   const entry = input.paymentReceiptId
     ? await getTypedCreditLedgerEntryByPaymentReceiptId(env, input.tenantId, input.paymentReceiptId)
     : await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId ?? "");
+  if (entry && !isTopupSettlementLedgerEntry(entry)) {
+    if ((result.meta?.changes ?? 0) > 0) {
+      await execute(env.D1_DB.prepare(
+        `DELETE FROM tenant_credit_ledger
+         WHERE tenant_id = ? AND id = ?`
+      ).bind(input.tenantId, id)).catch(() => undefined);
+    }
+    throw new BillingUniquenessError(
+      `Settlement ledger for payment receipt ${input.paymentReceiptId ?? input.referenceId ?? "unknown"} has an unexpected type; manual reconciliation is required`,
+    );
+  }
   if (!entry) {
+    if ((result.meta?.changes ?? 0) > 0) {
+      await execute(env.D1_DB.prepare(
+        `DELETE FROM tenant_credit_ledger
+         WHERE tenant_id = ? AND id = ?`
+      ).bind(input.tenantId, id)).catch(() => undefined);
+    }
     throw new Error("Failed to append typed topup settlement ledger entry");
   }
   return entry;
@@ -709,7 +863,7 @@ export async function appendUpgradeCreditGrantLedgerEntry(env: Env, input: {
 }): Promise<TypedCreditLedgerEntryRecord> {
   const id = createId("led");
   const createdAt = nowIso();
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `INSERT OR IGNORE INTO tenant_credit_ledger (
        id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
        reference_id, metadata_json, created_at
@@ -728,7 +882,24 @@ export async function appendUpgradeCreditGrantLedgerEntry(env: Env, input: {
   const entry = input.paymentReceiptId
     ? await getTypedCreditLedgerEntryByPaymentReceiptId(env, input.tenantId, input.paymentReceiptId)
     : await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId ?? "");
+  if (entry && !isUpgradeCreditGrantLedgerEntry(entry)) {
+    if ((result.meta?.changes ?? 0) > 0) {
+      await execute(env.D1_DB.prepare(
+        `DELETE FROM tenant_credit_ledger
+         WHERE tenant_id = ? AND id = ?`
+      ).bind(input.tenantId, id)).catch(() => undefined);
+    }
+    throw new BillingUniquenessError(
+      `Credit grant ledger for payment receipt ${input.paymentReceiptId ?? input.referenceId ?? "unknown"} has an unexpected type; manual reconciliation is required`,
+    );
+  }
   if (!entry) {
+    if ((result.meta?.changes ?? 0) > 0) {
+      await execute(env.D1_DB.prepare(
+        `DELETE FROM tenant_credit_ledger
+         WHERE tenant_id = ? AND id = ?`
+      ).bind(input.tenantId, id)).catch(() => undefined);
+    }
     throw new Error("Failed to append typed upgrade credit grant ledger entry");
   }
   return entry;
@@ -744,7 +915,7 @@ export async function appendOutboundUsageLedgerEntry(env: Env, input: {
 }): Promise<TypedCreditLedgerEntryRecord> {
   const id = createId("led");
   const createdAt = nowIso();
-  await execute(env.D1_DB.prepare(
+  const result = await execute(env.D1_DB.prepare(
     `INSERT OR IGNORE INTO tenant_credit_ledger (
        id, tenant_id, entry_type, credits_delta, reason, payment_receipt_id,
        reference_id, metadata_json, created_at
@@ -762,6 +933,12 @@ export async function appendOutboundUsageLedgerEntry(env: Env, input: {
   ));
   const entry = await getTypedCreditLedgerEntryByReferenceId(env, input.tenantId, input.referenceId);
   if (!entry) {
+    if ((result.meta?.changes ?? 0) > 0) {
+      await execute(env.D1_DB.prepare(
+        `DELETE FROM tenant_credit_ledger
+         WHERE tenant_id = ? AND id = ?`
+      ).bind(input.tenantId, id)).catch(() => undefined);
+    }
     throw new Error("Failed to append typed outbound usage ledger entry");
   }
   return entry;

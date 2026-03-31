@@ -251,7 +251,7 @@ if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
   exit 1
 fi
 
-echo "Minting bearer token for MCP smoke..."
+echo "Minting tenant control-plane token for MCP smoke..."
 TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
   -H 'content-type: application/json' \
   -H "x-admin-secret: $ADMIN_SECRET" \
@@ -269,7 +269,6 @@ TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
       \"draft:read\",
       \"draft:send\"
     ],
-    \"mailboxIds\": [\"$MAILBOX_ID\"],
     \"expiresInSeconds\": 3600
   }" | jq -r '.token')"
 
@@ -547,7 +546,7 @@ curl -sS "$BASE_URL/admin/mcp" \
         \"mode\": \"send\"
       }
     }
-  }" | jq -e --arg mailbox "$MAILBOX_ID" '.result.structuredContent.mailbox.id == $mailbox and .result.structuredContent.scopeProfile == "send" and (.result.structuredContent.visibleTools | any(.name == "send_email"))' >/dev/null
+  }" | jq -e '.result.isError == true and .result.structuredContent.error.code == "invalid_arguments" and .result.structuredContent.error.message == "agentId is required for draft_only and send mailbox bootstrap tokens"' >/dev/null
 
 echo "Fetching tenant review context through admin MCP..."
 curl -sS "$BASE_URL/admin/mcp" \
@@ -602,17 +601,13 @@ TOOLS_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
     "method": "tools/list",
     "params": {}
   }')"
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "create_agent")' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send")' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "list_messages" and .annotations.riskLevel == "read" and .annotations.sideEffecting == false)' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_email" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_message" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_draft" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "cancel_draft" and .annotations.riskLevel == "write" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == true)' >/dev/null
 echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "get_message" and .annotations.riskLevel == "read" and .annotations.humanReviewRequired == false and .annotations.sideEffecting == false)' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
-echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "operator_manual_send" and .annotations.supportsPartialAuthorization == true and (.annotations.sendAdditionalScopes | index("draft:send")))' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "replay_message" and .annotations.riskLevel == "high_risk" and .annotations.humanReviewRequired == true and .annotations.sideEffecting == true)' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "bind_mailbox") | not' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "send_email") | not' >/dev/null
+echo "$TOOLS_RESPONSE" | jq -e '.result.tools | any(.name == "reply_to_inbound_email") | not' >/dev/null
 
 echo "Creating agent through MCP..."
 CREATE_AGENT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
@@ -641,10 +636,35 @@ if [[ -z "$AGENT_ID" || "$AGENT_ID" == "null" ]]; then
   exit 1
 fi
 
+echo "Minting agent-bound control-plane token for MCP smoke..."
+AGENT_CONTROL_TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
+  -H 'content-type: application/json' \
+  -H "x-admin-secret: $ADMIN_SECRET" \
+  -d "{
+    \"sub\": \"mcp-smoke-agent-control\",
+    \"tenantId\": \"$TENANT_ID\",
+    \"agentId\": \"$AGENT_ID\",
+    \"scopes\": [
+      \"agent:bind\",
+      \"mail:read\",
+      \"mail:replay\",
+      \"task:read\",
+      \"draft:create\",
+      \"draft:read\",
+      \"draft:send\"
+    ],
+    \"expiresInSeconds\": 3600
+  }" | jq -r '.token')"
+
+if [[ -z "$AGENT_CONTROL_TOKEN" || "$AGENT_CONTROL_TOKEN" == "null" ]]; then
+  echo "Failed to mint agent-bound control-plane token" >&2
+  exit 1
+fi
+
 echo "Checking mailbox validation through MCP..."
 INVALID_BIND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 31,
@@ -672,7 +692,7 @@ echo "$INVALID_BIND_RESPONSE" | jq -e '
 echo "Binding mailbox through MCP..."
 curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 4,
@@ -733,7 +753,7 @@ echo "$LIST_MESSAGES_RESPONSE" | jq -e --arg mailbox "$MAILBOX_ID" '.result.stru
 echo "Creating a draft through MCP..."
 CREATE_DRAFT_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 5,
@@ -858,7 +878,7 @@ echo "Sending the draft idempotently through MCP..."
 SEND_IDEMPOTENCY_KEY="mcp-smoke-send-$DRAFT_ID"
 SEND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 6,
@@ -876,7 +896,7 @@ echo "$SEND_RESPONSE" | jq -e '.result.structuredContent.status == "queued"' >/d
 
 SEND_RESPONSE_REPEAT="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 7,
@@ -895,7 +915,7 @@ echo "Checking composite reply workflow success path through MCP..."
 REPLY_WORKFLOW_IDEMPOTENCY_KEY="mcp-smoke-reply-$AGENT_ID"
 REPLY_WORKFLOW_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 8,
@@ -927,7 +947,7 @@ fi
 echo "Checking composite reply workflow idempotency through MCP..."
 REPLY_WORKFLOW_REPEAT="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 81,
@@ -953,7 +973,7 @@ echo "Checking operator manual send composite tool through MCP..."
 MANUAL_SEND_IDEMPOTENCY_KEY="mcp-manual-send-$AGENT_ID"
 MANUAL_SEND_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 83,
@@ -985,7 +1005,7 @@ fi
 echo "Checking operator manual send idempotency through MCP..."
 MANUAL_SEND_REPEAT="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 84,
@@ -1014,7 +1034,7 @@ echo "$MANUAL_SEND_REPEAT" | jq -e --arg draft "$MANUAL_SEND_DRAFT_ID" --arg out
 echo "Checking composite reply workflow error path through MCP..."
 REPLY_WORKFLOW_ERROR_RESPONSE="$(curl -sS "$BASE_URL/mcp" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"jsonrpc\": \"2.0\",
     \"id\": 82,

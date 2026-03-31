@@ -182,7 +182,7 @@ function extractFilename(contentDisposition?: string, contentType?: string): str
 
 export function normalizeSubject(subject?: string): string {
   return (subject ?? "")
-    .replace(/^(re|fwd|fw):\s*/gi, "")
+    .replace(/^((re|fwd|fw):\s*)+/gi, "")
     .trim()
     .toLowerCase();
 }

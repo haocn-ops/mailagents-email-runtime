@@ -103,6 +103,35 @@ When targeting deployed `dev`, the script defaults to the admin secret in
 `.dev.vars`. Override `ADMIN_API_SECRET_FOR_SMOKE` explicitly if the deployed
 environment uses a different admin secret.
 
+## Run the production public black-box smoke
+
+This production-safe smoke covers only public or intentionally disabled
+surfaces:
+
+- home page availability
+- runtime and compatibility metadata
+- public signup method, content-type, JSON-shape, and field validation
+- public token-reissue method, CORS, JSON-shape, required-field, and alias validation
+- generic accepted token-reissue response for a clearly nonexistent mailbox
+- admin MCP disabled posture without requiring an admin secret
+
+Run:
+
+```bash
+npm run smoke:production:public
+BASE_URL=https://api.mailagents.net bash ./scripts/production_public_blackbox_smoke.sh
+```
+
+Optional overrides:
+
+- `BASE_URL`
+
+This smoke is intended for production-like environments where admin and debug
+routes are disabled. The broader post-deploy verifier now runs both:
+
+- `bash ./scripts/production_readonly_smoke.sh`
+- `bash ./scripts/production_public_blackbox_smoke.sh`
+
 ## Run the billing + DID smoke script
 
 ```bash

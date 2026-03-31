@@ -55,11 +55,11 @@ Admin and debug routes are separate from bearer-auth API routes:
 - debug routes should stay disabled outside local or tightly controlled
   environments
 
-For mailbox creation through the signup API, `POST /public/signup` can return a
-default mailbox-scoped bearer token for the created mailbox and include the
-same token in the welcome email. This allows newly registered mailboxes to read
-mail, list inbox state, send outbound email, and reply on-thread without a
-separate operator token-mint step.
+For mailbox creation through the signup API, `POST /public/signup` issues a
+default mailbox-scoped bearer token for the created mailbox. By default that
+token is delivered through the configured operator channel instead of the
+anonymous HTTP response. Legacy inline return can be re-enabled only with
+explicit runtime opt-in.
 
 ## Minimum Safe Scopes
 
@@ -100,7 +100,7 @@ For local development:
 For production onboarding through the signup API:
 
 1. call `POST /public/signup`
-2. store the returned mailbox-scoped bearer token
+2. retrieve the mailbox-scoped bearer token from the configured operator delivery channel
 3. call `POST /mcp` with `tools/list` to discover the runtime surface
 4. use that token for `list_messages`, `send_email`, `reply_to_message`, or the mailbox self routes
 5. if the token expires, call `POST /public/token/reissue`

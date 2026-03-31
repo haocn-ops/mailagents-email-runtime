@@ -3,6 +3,7 @@ import {
   CONTACT_ALIAS_LOCALPARTS,
   CONTACT_ALIAS_TENANT_ID,
   getContactAliasAddress,
+  shouldBootstrapContactAliasRouting,
 } from "../lib/contact-aliases";
 import {
   deleteEmailRoutingRule,
@@ -10,6 +11,11 @@ import {
   requireCloudflareEmailConfig,
   upsertWorkerRule,
 } from "../lib/cloudflare-email";
+import {
+  DraftSendValidationError,
+  ensureDraftSendAllowed,
+  reserveDraftSendCredits,
+} from "../lib/draft-send-guards";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
 import { evaluateOutboundPolicy } from "../lib/outbound-policy";
 import { allRows, firstRow } from "../lib/db";
@@ -20,17 +26,20 @@ import { buildRuntimeMetadata } from "../lib/runtime-metadata";
 import { escapeHtml } from "../lib/self-serve";
 import { runIdempotencyCleanupNow } from "../handlers/scheduled";
 import {
-  ensureMailbox,
+  deleteMailboxIfUnreferenced,
+  ensureMailboxWithStatus,
+  getMailboxByAddress,
   getMailboxById,
   MailboxConflictError,
   listMailboxes,
+  updateMailboxStatus,
 } from "../repositories/agents";
 import {
   completeIdempotencyKey,
   createDraft,
   enqueueDraftSend,
   getDraft,
-  getDraftByR2Key,
+  getDraftByR2KeyForOutboundLifecycle,
   getMessage,
   getMessageContent,
   getOutboundJob,
@@ -44,6 +53,7 @@ import {
   markDraftStatus,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
+  updateIdempotencyKeyResource,
   updateMessageStatus,
   updateOutboundJobStatus,
 } from "../repositories/mail";
@@ -56,6 +66,8 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
   <path d="M14 45V19h8l10 13 10-13h8v26h-7V29L32 41 21 29v16z" fill="#f6f0e7" />
 </svg>`;
 const SITE_ADMIN_SESSION_COOKIE = "mailagents_admin_session";
+const SITE_ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
+const textEncoder = new TextEncoder();
 
 class SiteRequestError extends Error {
   readonly status: number;
@@ -252,6 +264,29 @@ interface AdminPageBootstrap {
   aliasAdminMessage: string | null;
 }
 
+function isManagedAliasMailboxHealthy(
+  mailbox: Awaited<ReturnType<typeof getMailboxByAddress>>
+): boolean {
+  return mailbox?.tenant_id === CONTACT_ALIAS_TENANT_ID && mailbox.status === "active";
+}
+
+function isManagedAliasWorkerRuleHealthy(
+  env: Env,
+  alias: string,
+  rule: Awaited<ReturnType<typeof listEmailRoutingRules>>[number] | undefined
+): boolean {
+  if (!rule?.enabled) {
+    return false;
+  }
+
+  const workerAction = rule.actions.find((action) => action.type === "worker");
+  return rule.matchers.some((matcher) =>
+    matcher.type === "literal"
+    && matcher.field === "to"
+    && matcher.value === getContactAliasAddress(env, alias)
+  ) && Boolean(workerAction?.value?.includes(env.CLOUDFLARE_EMAIL_WORKER ?? ""));
+}
+
 function isMissingTableError(error: unknown): boolean {
   return error instanceof Error && /no such table/i.test(error.message);
 }
@@ -263,6 +298,20 @@ function toCount(value: unknown): number {
 
 function toOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function bestEffortCompleteRecoveredIdempotency(env: Env, input: {
+  operation: string;
+  tenantId: string;
+  idempotencyKey: string;
+  resourceId?: string;
+  response: unknown;
+}): Promise<void> {
+  try {
+    await completeIdempotencyKey(env, input);
+  } catch {
+    // Recovery should still succeed even if the pending idempotency row cannot be repaired inline.
+  }
 }
 
 async function optionalFirstRow<T>(statement: D1PreparedStatement): Promise<T | null> {
@@ -1020,22 +1069,23 @@ async function loadAdminPageBootstrap(request: Request, env: Env): Promise<Admin
 
   try {
     const rules = await listEmailRoutingRules(env);
-    const aliases = CONTACT_ALIAS_LOCALPARTS.map((alias) => {
+    const aliases = await Promise.all(CONTACT_ALIAS_LOCALPARTS.map(async (alias) => {
       const address = getContactAliasAddress(env, alias);
       const rule = rules.find((entry) =>
         entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
       );
+      const mailbox = await getMailboxByAddress(env, address);
       const forwardAction = rule?.actions.find((action) => action.type === "forward");
       const workerAction = rule?.actions.find((action) => action.type === "worker");
 
       return {
         address,
-        configured: Boolean(rule),
+        configured: Boolean(rule?.enabled) && isManagedAliasMailboxHealthy(mailbox),
         mode: workerAction ? "internal" : forwardAction ? "forward" : null,
         destination: forwardAction?.value?.[0] ?? null,
         worker: workerAction?.value?.[0] ?? null,
       } satisfies AdminAliasSummary;
-    });
+    }));
 
     return {
       overviewSnapshot,
@@ -1062,20 +1112,51 @@ async function loadAdminPageBootstrap(request: Request, env: Env): Promise<Admin
   }
 }
 
-async function restoreAdminSendReplay(env: Env, outboundJobId: string | undefined) {
-  if (!outboundJobId) {
+async function restoreAdminSendReplay(env: Env, resourceId: string | undefined) {
+  if (!resourceId) {
     throw new SiteRequestError("Stored idempotent admin send result is incomplete", 500);
   }
 
-  const outboundJob = await getOutboundJob(env, outboundJobId);
-  if (!outboundJob) {
+  let outboundJob = await getOutboundJob(env, resourceId);
+  if (outboundJob) {
+    const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
+    if (!draft) {
+      throw new SiteRequestError("Stored idempotent draft no longer exists", 409);
+    }
+    if (!(await getMessage(env, outboundJob.messageId))) {
+      throw new SiteRequestError("Stored idempotent outbound message no longer exists", 409);
+    }
+
+    return {
+      ok: true,
+      draftId: draft.id,
+      outboundJobId: outboundJob.id,
+      status: "queued" as const,
+    };
+  }
+
+  let draft = await getDraft(env, resourceId);
+  if (!draft) {
+    throw new SiteRequestError("Stored idempotent outbound job no longer exists", 409);
+  }
+  if (draft.status !== "draft" && draft.status !== "approved") {
     throw new SiteRequestError("Stored idempotent outbound job no longer exists", 409);
   }
 
-  const draft = await getDraftByR2Key(env, outboundJob.draftR2Key);
-  if (!draft) {
-    throw new SiteRequestError("Stored idempotent draft no longer exists", 409);
+  const resumed = await enqueueDraftSend(env, draft.id);
+  const resumedDraft = await getDraft(env, draft.id);
+  if (!resumedDraft) {
+    throw new SiteRequestError("Stored idempotent draft disappeared during replay recovery", 409);
   }
+  const resumedOutboundJob = await getOutboundJob(env, resumed.outboundJobId);
+  if (!resumedOutboundJob) {
+    throw new SiteRequestError("Stored idempotent outbound job disappeared during replay recovery", 409);
+  }
+  if (!(await getMessage(env, resumedOutboundJob.messageId))) {
+    throw new SiteRequestError("Stored idempotent outbound message disappeared during replay recovery", 409);
+  }
+  draft = resumedDraft;
+  outboundJob = resumedOutboundJob;
 
   return {
     ok: true,
@@ -1132,10 +1213,44 @@ async function readDraftRecipientsForAdmin(env: Env, draftR2Key: string): Promis
   }
 
   const payload = await object.json<Record<string, unknown>>();
+  const parseRecipientList = (value: unknown, field: "to" | "cc" | "bcc"): string[] => {
+    if (value === undefined || value === null) {
+      if (field === "to") {
+        throw new SiteRequestError(
+          "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+          409,
+        );
+      }
+      return [];
+    }
+
+    if (!Array.isArray(value)) {
+      throw new SiteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        409,
+      );
+    }
+
+    const items = value.map((item) => typeof item === "string" ? item.trim() : "");
+    if (items.some((item) => !item)) {
+      throw new SiteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        409,
+      );
+    }
+    if (field === "to" && items.length === 0) {
+      throw new SiteRequestError(
+        "Draft recipients must include a non-empty to array and optional cc/bcc string arrays",
+        409,
+      );
+    }
+
+    return items;
+  };
   return {
-    to: Array.isArray(payload.to) ? payload.to.filter((item): item is string => typeof item === "string") : [],
-    cc: Array.isArray(payload.cc) ? payload.cc.filter((item): item is string => typeof item === "string") : [],
-    bcc: Array.isArray(payload.bcc) ? payload.bcc.filter((item): item is string => typeof item === "string") : [],
+    to: parseRecipientList(payload.to, "to"),
+    cc: parseRecipientList(payload.cc, "cc"),
+    bcc: parseRecipientList(payload.bcc, "bcc"),
   };
 }
 
@@ -1166,7 +1281,7 @@ site.on("GET", "/admin", async (_request, env, _ctx, route) => {
   }
 
   const requestUrl = new URL(_request.url);
-  const initiallyAuthenticated = hasValidSiteAdminSession(_request, env);
+  const initiallyAuthenticated = await hasValidSiteAdminSession(_request, env);
   const errorCode = requestUrl.searchParams.get("error");
   const authError = errorCode === "invalid_admin_secret"
     ? "Invalid admin secret."
@@ -1199,14 +1314,14 @@ site.on("GET", "/admin", async (_request, env, _ctx, route) => {
     },
   });
 });
-site.on("HEAD", "/admin", (_request, env, _ctx, route) => {
+site.on("HEAD", "/admin", async (_request, env, _ctx, route) => {
   const routeError = requireAdminRoutesEnabled(_request, env);
   if (routeError) {
     return routeError;
   }
 
   return html(layout("admin", "Admin Dashboard", renderAdmin(route.url, {
-    initiallyAuthenticated: hasValidSiteAdminSession(_request, env),
+    initiallyAuthenticated: await hasValidSiteAdminSession(_request, env),
   })), {
     headers: {
       "cache-control": "private, no-store, max-age=0",
@@ -1237,7 +1352,8 @@ site.on("POST", "/admin/login", async (request, env) => {
   }
 
   const response = redirect("/admin", 303);
-  response.headers.append("set-cookie", buildSiteAdminSessionCookie(new URL(request.url), env.ADMIN_API_SECRET));
+  response.headers.append("set-cookie", await buildSiteAdminSessionCookie(new URL(request.url), env.ADMIN_API_SECRET));
+  response.headers.set("cache-control", "private, no-store, max-age=0");
   return response;
 });
 site.on("POST", "/admin/logout", (request, env) => {
@@ -1248,10 +1364,11 @@ site.on("POST", "/admin/logout", (request, env) => {
 
   const response = redirect("/admin", 303);
   response.headers.append("set-cookie", buildExpiredSiteAdminSessionCookie(new URL(request.url)));
+  response.headers.set("cache-control", "private, no-store, max-age=0");
   return response;
 });
 site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1259,7 +1376,7 @@ site.on("GET", "/admin/api/runtime-metadata", async (request, env) => {
   return json(buildRuntimeMetadata(request, env));
 });
 site.on("GET", "/admin/api/session/verify", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1270,7 +1387,7 @@ site.on("GET", "/admin/api/session/verify", async (request, env) => {
   });
 });
 site.on("GET", "/admin/api/overview-stats", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1283,7 +1400,7 @@ site.on("GET", "/admin/api/overview-stats", async (request, env) => {
 });
 
 site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1311,27 +1428,31 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
 
   try {
     const rules = await listEmailRoutingRules(env);
-    const aliases = CONTACT_ALIAS_LOCALPARTS.map((alias) => {
+    const aliases = await Promise.all(CONTACT_ALIAS_LOCALPARTS.map(async (alias) => {
       const address = getContactAliasAddress(env, alias);
       const rule = rules.find((entry) =>
         entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
       );
+      const mailbox = await getMailboxByAddress(env, address);
       const forwardAction = rule?.actions.find((action) => action.type === "forward");
       const workerAction = rule?.actions.find((action) => action.type === "worker");
       return {
         alias,
         address,
-        configured: Boolean(rule),
+        configured: Boolean(rule?.enabled) && isManagedAliasMailboxHealthy(mailbox),
         enabled: rule?.enabled ?? false,
         mode: workerAction ? "internal" : forwardAction ? "forward" : null,
         destination: forwardAction?.value?.[0] ?? null,
         worker: workerAction?.value?.[0] ?? null,
         ruleId: rule?.id ?? null,
+        mailboxId: mailbox?.id ?? null,
+        mailboxStatus: mailbox?.status ?? null,
       };
-    });
+    }));
 
     return json({
       domain: env.CLOUDFLARE_EMAIL_DOMAIN,
+      bootstrapManaged: shouldBootstrapContactAliasRouting(env),
       aliases,
       rules,
     });
@@ -1340,7 +1461,7 @@ site.on("GET", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1356,6 +1477,9 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
   if (!alias || !/^[a-z0-9._+-]+$/.test(alias)) {
     return badRequest("alias is required");
   }
+  if (!CONTACT_ALIAS_LOCALPARTS.includes(alias as typeof CONTACT_ALIAS_LOCALPARTS[number])) {
+    return badRequest(`alias must be one of: ${CONTACT_ALIAS_LOCALPARTS.join(", ")}`);
+  }
 
   if (!env.CLOUDFLARE_EMAIL_WORKER) {
     return json({ error: "CLOUDFLARE_EMAIL_WORKER is not configured" }, { status: 500 });
@@ -1367,11 +1491,26 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
     const existing = rules.find((entry) =>
       entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
     );
-    const mailbox = await ensureMailbox(env, {
+    const mailboxResult = await ensureMailboxWithStatus(env, {
       tenantId: CONTACT_ALIAS_TENANT_ID,
       address,
     });
-    const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+    const priorMailboxStatus = mailboxResult.mailbox.status;
+    let mailbox = mailboxResult.mailbox;
+    if (priorMailboxStatus !== "active") {
+      mailbox = await updateMailboxStatus(env, mailbox.id, "active");
+    }
+    let rule;
+    try {
+      rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+    } catch (error) {
+      if (mailboxResult.created) {
+        await deleteMailboxIfUnreferenced(env, mailboxResult.mailbox.id).catch(() => undefined);
+      } else if (priorMailboxStatus !== "active") {
+        await updateMailboxStatus(env, mailboxResult.mailbox.id, priorMailboxStatus).catch(() => undefined);
+      }
+      throw error;
+    }
     return json({ ok: true, rule, mailbox });
   } catch (error) {
     const status = error instanceof MailboxConflictError ? 409 : 502;
@@ -1379,7 +1518,7 @@ site.on("POST", "/admin/api/contact-aliases", async (request, env) => {
   }
 });
 site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1406,16 +1545,44 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
         entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
       );
 
-      if (existing && !body.overwrite) {
-        results.push({ alias, skipped: true, reason: "exists" });
+      const ensureActiveAliasMailbox = async () => {
+        const mailboxResult = await ensureMailboxWithStatus(env, {
+          tenantId: CONTACT_ALIAS_TENANT_ID,
+          address,
+        });
+        if (mailboxResult.mailbox.status === "active") {
+          return mailboxResult.mailbox;
+        }
+
+        return await updateMailboxStatus(env, mailboxResult.mailbox.id, "active");
+      };
+
+      if (existing && !body.overwrite && isManagedAliasWorkerRuleHealthy(env, alias, existing)) {
+        const mailbox = await ensureActiveAliasMailbox();
+        results.push({ alias, skipped: true, reason: "exists", mailboxId: mailbox.id });
         continue;
       }
 
-      const mailbox = await ensureMailbox(env, {
+      const mailboxResult = await ensureMailboxWithStatus(env, {
         tenantId: CONTACT_ALIAS_TENANT_ID,
         address,
       });
-      const rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+      const priorMailboxStatus = mailboxResult.mailbox.status;
+      let mailbox = mailboxResult.mailbox;
+      if (priorMailboxStatus !== "active") {
+        mailbox = await updateMailboxStatus(env, mailbox.id, "active");
+      }
+      let rule;
+      try {
+        rule = await upsertWorkerRule(env, alias, env.CLOUDFLARE_EMAIL_WORKER, existing?.id);
+      } catch (error) {
+        if (mailboxResult.created) {
+          await deleteMailboxIfUnreferenced(env, mailboxResult.mailbox.id).catch(() => undefined);
+        } else if (priorMailboxStatus !== "active") {
+          await updateMailboxStatus(env, mailboxResult.mailbox.id, priorMailboxStatus).catch(() => undefined);
+        }
+        throw error;
+      }
       results.push({ alias, skipped: false, ruleId: rule.id, mailboxId: mailbox.id });
     }
 
@@ -1426,35 +1593,62 @@ site.on("POST", "/admin/api/contact-aliases/bootstrap", async (request, env) => 
   }
 });
 site.on("DELETE", "/admin/api/contact-aliases/:alias", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
+  }
+  const alias = route.params.alias.toLowerCase();
+  if (!CONTACT_ALIAS_LOCALPARTS.includes(alias as typeof CONTACT_ALIAS_LOCALPARTS[number])) {
+    return badRequest(`alias must be one of: ${CONTACT_ALIAS_LOCALPARTS.join(", ")}`);
   }
 
   const configError = requireCloudflareEmailConfig(env);
   if (configError) {
     return configError;
   }
+  if (shouldBootstrapContactAliasRouting(env)) {
+    return json({
+      error: "Managed contact aliases are automatically maintained in this environment; disable CONTACT_ALIAS_ROUTING_BOOTSTRAP_ENABLED before deleting them manually.",
+    }, { status: 409 });
+  }
 
   try {
     const rules = await listEmailRoutingRules(env);
-    const address = `${route.params.alias.toLowerCase()}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
+    const address = `${alias}@${env.CLOUDFLARE_EMAIL_DOMAIN}`;
     const existing = rules.find((entry) =>
       entry.matchers.some((matcher) => matcher.type === "literal" && matcher.field === "to" && matcher.value === address)
     );
+    const mailbox = await getMailboxByAddress(env, address);
+    if (mailbox && mailbox.tenant_id !== CONTACT_ALIAS_TENANT_ID) {
+      return json({
+        error: `Managed contact alias ${address} is already owned by tenant ${mailbox.tenant_id}`,
+      }, { status: 409 });
+    }
+    const previousStatus = mailbox?.status;
 
-    if (!existing) {
-      return json({ ok: true, deleted: false });
+    if (mailbox && mailbox.tenant_id === CONTACT_ALIAS_TENANT_ID && mailbox.status !== "inactive") {
+      await updateMailboxStatus(env, mailbox.id, "inactive");
     }
 
-    await deleteEmailRoutingRule(env, existing.id);
+    if (!existing) {
+      return json({ ok: true, deleted: Boolean(mailbox) });
+    }
+
+    try {
+      await deleteEmailRoutingRule(env, existing.id);
+    } catch (error) {
+      if (mailbox && mailbox.tenant_id === CONTACT_ALIAS_TENANT_ID && previousStatus && previousStatus !== "inactive") {
+        await updateMailboxStatus(env, mailbox.id, previousStatus).catch(() => undefined);
+      }
+      throw error;
+    }
     return json({ ok: true, deleted: true });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to delete alias" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/mailboxes", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1466,7 +1660,7 @@ site.on("GET", "/admin/api/mailboxes", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1474,7 +1668,7 @@ site.on("GET", "/admin/api/messages", async (request, env) => {
   try {
     const url = new URL(request.url);
     const mailboxId = url.searchParams.get("mailboxId") ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     const search = url.searchParams.get("search")?.trim() || undefined;
     const direction = (url.searchParams.get("direction")?.trim() as "inbound" | "outbound" | null) ?? undefined;
     const status = (url.searchParams.get("status")?.trim() as
@@ -1491,7 +1685,7 @@ site.on("GET", "/admin/api/messages", async (request, env) => {
   }
 });
 site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1507,19 +1701,23 @@ site.on("GET", "/admin/api/messages/:messageId", async (request, env, _ctx, rout
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/content", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     return json(await getMessageContent(env, route.params.messageId));
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load message content" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1535,19 +1733,23 @@ site.on("GET", "/admin/api/threads/:threadId", async (request, env, _ctx, route)
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/events", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     return json({ items: await listDeliveryEventsByMessageId(env, route.params.messageId) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load delivery events" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1561,19 +1763,23 @@ site.on("GET", "/admin/api/outbound-jobs", async (request, env) => {
       | "retry"
       | "failed"
       | null) ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     return json({ items: await listOutboundJobs(env, { status, limit }) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load outbound jobs" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/messages/:messageId/outbound-job", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
 
   try {
+    const message = await getMessage(env, route.params.messageId);
+    if (!message) {
+      return json({ error: "Message not found" }, { status: 404 });
+    }
     const job = await getOutboundJobByMessageId(env, route.params.messageId);
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
@@ -1584,7 +1790,7 @@ site.on("GET", "/admin/api/messages/:messageId/outbound-job", async (request, en
   }
 });
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1594,7 +1800,15 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
+    const draft = await getDraftByR2KeyForOutboundLifecycle(env, job.draftR2Key);
+    if (!draft) {
+      return json({ error: "Outbound draft not found" }, { status: 409 });
+    }
+
     const message = await getMessage(env, job.messageId);
+    if (!message) {
+      return json({ error: "Outbound message not found" }, { status: 409 });
+    }
     const previousMessageStatus = message?.status;
     const deliveryEvents = message ? await listDeliveryEventsByMessageId(env, message.id) : [];
     if (message?.providerMessageId || message?.sentAt || deliveryEvents.length > 0) {
@@ -1608,21 +1822,35 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
     if (job.status !== "failed") {
       return json({ error: `Outbound job status ${job.status} cannot be retried` }, { status: 409 });
     }
-
-    await updateOutboundJobStatus(env, {
-      outboundJobId: job.id,
-      status: "queued",
-      retryCount: 0,
-      lastError: null,
-      nextRetryAt: null,
+    await ensureDraftSendAllowed(env, {
+      tenantId: draft.tenantId,
+      agentId: draft.agentId,
+      mailboxId: draft.mailboxId,
+      draftR2Key: draft.draftR2Key,
+      threadId: draft.threadId ?? undefined,
+      sourceMessageId: draft.sourceMessageId ?? undefined,
     });
-    await updateMessageStatus(env, job.messageId, "tasked");
-    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    const draftRecipients = await readDraftRecipientsForAdmin(env, job.draftR2Key);
+    await reserveDraftSendCredits(env, {
+      tenantId: draft.tenantId,
+      draftR2Key: draft.draftR2Key,
+      sourceMessageId: draft.sourceMessageId,
+      createdVia: draft.createdVia,
+    });
+
     const previousDraftStatus = draft?.status;
-    if (draft) {
-      await markDraftStatus(env, draft.id, "queued");
-    }
     try {
+      await updateOutboundJobStatus(env, {
+        outboundJobId: job.id,
+        status: "queued",
+        retryCount: 0,
+        lastError: null,
+        nextRetryAt: null,
+      });
+      await updateMessageStatus(env, job.messageId, "tasked");
+      if (draft) {
+        await markDraftStatus(env, draft.id, "queued");
+      }
       await env.OUTBOUND_SEND_QUEUE.send({ outboundJobId: job.id });
     } catch (error) {
       await updateOutboundJobStatus(env, {
@@ -1638,16 +1866,33 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/retry", async (request,
       if (draft && previousDraftStatus) {
         await markDraftStatus(env, draft.id, previousDraftStatus).catch(() => undefined);
       }
+      try {
+        await releaseOutboundUsageReservation(env, {
+          tenantId: draft.tenantId,
+          outboundJobId: job.id,
+          sourceMessageId: draft.sourceMessageId,
+          draftCreatedVia: draft.createdVia,
+          ...draftRecipients,
+        });
+      } catch {
+        // Best-effort rollback for credit reservations after queue re-enqueue failure.
+      }
       throw error;
     }
 
     return json({ ok: true, outboundJobId: job.id, status: "queued" });
   } catch (error) {
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof DraftSendValidationError) {
+      return json({ error: error.message }, { status: error.status });
+    }
     return json({ error: error instanceof Error ? error.message : "Unable to retry outbound job" }, { status: 502 });
   }
 });
 site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1662,6 +1907,9 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", asy
     if (!job) {
       return json({ error: "Outbound job not found" }, { status: 404 });
     }
+    if (job.status !== "failed") {
+      return json({ error: `Outbound job status ${job.status} does not support manual send resolution` }, { status: 409 });
+    }
     if (job.lastError !== "send_attempt_uncertain_manual_review_required") {
       return json({ error: "Outbound job does not require manual send resolution" }, { status: 409 });
     }
@@ -1670,7 +1918,7 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", asy
     if (!message) {
       return json({ error: "Outbound message not found" }, { status: 409 });
     }
-    const draft = await getDraftByR2Key(env, job.draftR2Key);
+    const draft = await getDraftByR2KeyForOutboundLifecycle(env, job.draftR2Key);
     if (!draft) {
       return json({ error: "Outbound draft not found" }, { status: 409 });
     }
@@ -1691,14 +1939,14 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", asy
         sourceMessageId: draft.sourceMessageId,
         ...recipients,
       });
+      await updateMessageStatus(env, job.messageId, "replied");
+      await markDraftStatus(env, draft.id, "sent");
       await updateOutboundJobStatus(env, {
         outboundJobId: job.id,
         status: "sent",
         lastError: null,
         nextRetryAt: null,
       });
-      await updateMessageStatus(env, job.messageId, "replied");
-      await markDraftStatus(env, draft.id, "sent");
       return json({ ok: true, outboundJobId: job.id, status: "sent", billingResolution: "settled" });
     }
 
@@ -1709,21 +1957,24 @@ site.on("POST", "/admin/api/outbound-jobs/:outboundJobId/manual-resolution", asy
       draftCreatedVia: draft.createdVia,
       ...recipients,
     });
+    await updateMessageStatus(env, job.messageId, "failed");
+    await markDraftStatus(env, draft.id, "failed");
     await updateOutboundJobStatus(env, {
       outboundJobId: job.id,
       status: "failed",
       lastError: "manual_send_not_sent_confirmed",
       nextRetryAt: null,
     });
-    await updateMessageStatus(env, job.messageId, "failed");
-    await markDraftStatus(env, draft.id, "failed");
     return json({ ok: true, outboundJobId: job.id, status: "failed", billingResolution: "released" });
   } catch (error) {
+    if (error instanceof SiteRequestError) {
+      return json({ error: error.message }, { status: error.status });
+    }
     return json({ error: error instanceof Error ? error.message : "Unable to resolve outbound job manually" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/drafts", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1739,14 +1990,14 @@ site.on("GET", "/admin/api/drafts", async (request, env) => {
       | "cancelled"
       | "failed"
       | null) ?? undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
     return json({ items: await listDrafts(env, { mailboxId, status, limit }) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Unable to load drafts" }, { status: 502 });
   }
 });
 site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1762,7 +2013,7 @@ site.on("GET", "/admin/api/drafts/:draftId", async (request, env, _ctx, route) =
   }
 });
 site.on("POST", "/admin/api/send", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1801,6 +2052,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
   }
   const mailboxId = body.mailboxId;
   const tenantId = body.tenantId;
+  let sideEffectCommitted = false;
 
   try {
     const validateAdminSendInput = async () => {
@@ -1889,9 +2141,28 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         return json({ error: "Idempotency key is already used for a different admin send request" }, { status: 409 });
       }
       if (reservation.status === "pending") {
+        if (reservation.record.resourceId) {
+          const validationError = await validateAdminSendInput();
+          if (validationError) {
+            return validationError;
+          }
+          const response = await restoreAdminSendReplay(env, reservation.record.resourceId);
+          await bestEffortCompleteRecoveredIdempotency(env, {
+            operation: "admin_send",
+            tenantId,
+            idempotencyKey,
+            resourceId: response.outboundJobId,
+            response,
+          });
+          return json(response);
+        }
         return json({ error: "An admin send request with this idempotency key is already in progress" }, { status: 409 });
       }
       if (reservation.status === "completed") {
+        const validationError = await validateAdminSendInput();
+        if (validationError) {
+          return validationError;
+        }
         if (reservation.record.response) {
           return json(reservation.record.response);
         }
@@ -1926,6 +2197,15 @@ site.on("POST", "/admin/api/send", async (request, env) => {
         attachments: [],
       },
     });
+    sideEffectCommitted = true;
+    if (idempotencyKey) {
+      await updateIdempotencyKeyResource(env, {
+        operation: "admin_send",
+        tenantId,
+        idempotencyKey,
+        resourceId: draft.id,
+      });
+    }
     const result = await enqueueDraftSend(env, draft.id);
     const response = {
       ok: true,
@@ -1935,6 +2215,12 @@ site.on("POST", "/admin/api/send", async (request, env) => {
     };
 
     if (idempotencyKey) {
+      await updateIdempotencyKeyResource(env, {
+        operation: "admin_send",
+        tenantId,
+        idempotencyKey,
+        resourceId: result.outboundJobId,
+      });
       await completeIdempotencyKey(env, {
         operation: "admin_send",
         tenantId,
@@ -1946,8 +2232,13 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 
     return json(response);
   } catch (error) {
-    if (idempotencyKey) {
+    if (idempotencyKey && !sideEffectCommitted) {
       await releaseIdempotencyKey(env, "admin_send", tenantId, idempotencyKey).catch(() => undefined);
+    }
+    if (sideEffectCommitted) {
+      return json({
+        error: "Request may have partially succeeded after creating server-side state. Retry only with the same idempotency key or inspect draft/outbound state before retrying.",
+      }, { status: 409 });
     }
     if (error instanceof SiteRequestError) {
       return json({ error: error.message }, { status: error.status });
@@ -1957,7 +2248,7 @@ site.on("POST", "/admin/api/send", async (request, env) => {
 });
 
 site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1976,7 +2267,7 @@ site.on("POST", "/admin/api/maintenance/idempotency-cleanup", async (request, en
 });
 
 site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) => {
-  const accessError = requireSiteAdminAccess(request, env);
+  const accessError = await requireSiteAdminAccess(request, env);
   if (accessError) {
     return accessError;
   }
@@ -1986,7 +2277,7 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
     const operation = url.searchParams.get("operation")?.trim() || undefined;
     const statusParam = url.searchParams.get("status")?.trim();
     const status = statusParam === "pending" || statusParam === "completed" ? statusParam : undefined;
-    const limit = Number(url.searchParams.get("limit") ?? "50");
+    const limit = parseSiteListLimit(url.searchParams.get("limit"), 50, 200);
 
     return json({
       items: await listIdempotencyRecords(env, {
@@ -2002,13 +2293,14 @@ site.on("GET", "/admin/api/maintenance/idempotency-keys", async (request, env) =
 
 export async function handleSiteRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response | null> {
   try {
-    return await site.handle(request, env, ctx);
+    const response = await site.handle(request, env, ctx);
+    return response ? applyAdminApiResponseHeaders(request, response) : null;
   } catch (error) {
     if (error instanceof InvalidJsonBodyError) {
-      return badRequest(error.message);
+      return applyAdminApiResponseHeaders(request, badRequest(error.message));
     }
     if (error instanceof SiteRequestError) {
-      return json({ error: error.message }, { status: error.status });
+      return applyAdminApiResponseHeaders(request, json({ error: error.message }, { status: error.status }));
     }
 
     throw error;
@@ -2038,26 +2330,111 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function hasValidSiteAdminSession(request: Request, env: Env): boolean {
-  if (!env.ADMIN_API_SECRET) {
+interface SiteAdminSessionValidation {
+  viaHeader: boolean;
+}
+
+function toBase64Url(input: Uint8Array): string {
+  let binary = "";
+  for (const byte of input) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(input: string): Uint8Array {
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(input.length / 4) * 4, "=");
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function importSiteAdminSessionKey(secret: string): Promise<CryptoKey> {
+  return await crypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  );
+}
+
+async function signSiteAdminSession(secret: string, payload: string): Promise<string> {
+  const key = await importSiteAdminSessionKey(secret);
+  const signature = await crypto.subtle.sign("HMAC", key, textEncoder.encode(payload));
+  return toBase64Url(new Uint8Array(signature));
+}
+
+async function verifySiteAdminSession(secret: string, payload: string, signature: string): Promise<boolean> {
+  try {
+    const key = await importSiteAdminSessionKey(secret);
+    return await crypto.subtle.verify("HMAC", key, fromBase64Url(signature), textEncoder.encode(payload));
+  } catch {
     return false;
+  }
+}
+
+async function readValidSiteAdminSession(request: Request, env: Env): Promise<SiteAdminSessionValidation | null> {
+  if (!env.ADMIN_API_SECRET) {
+    return null;
   }
 
   const headerSecret = request.headers.get("x-admin-secret");
   if (headerSecret === env.ADMIN_API_SECRET) {
-    return true;
+    return { viaHeader: true };
   }
 
-  return readCookie(request, SITE_ADMIN_SESSION_COOKIE) === env.ADMIN_API_SECRET;
+  const token = readCookie(request, SITE_ADMIN_SESSION_COOKIE);
+  if (!token) {
+    return null;
+  }
+
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) {
+    return null;
+  }
+
+  const valid = await verifySiteAdminSession(env.ADMIN_API_SECRET, payload, signature);
+  if (!valid) {
+    return null;
+  }
+
+  try {
+    const claims = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as {
+      scope?: string;
+      exp?: number;
+    };
+    if (claims.scope !== "site-admin" || typeof claims.exp !== "number") {
+      return null;
+    }
+    if (claims.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    return { viaHeader: false };
+  } catch {
+    return null;
+  }
 }
 
-function buildSiteAdminSessionCookie(url: URL, secret: string): string {
+async function hasValidSiteAdminSession(request: Request, env: Env): Promise<boolean> {
+  return Boolean(await readValidSiteAdminSession(request, env));
+}
+
+async function buildSiteAdminSessionCookie(url: URL, secret: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = toBase64Url(textEncoder.encode(JSON.stringify({
+    scope: "site-admin",
+    iat: now,
+    exp: now + SITE_ADMIN_SESSION_TTL_SECONDS,
+  })));
+  const signature = await signSiteAdminSession(secret, payload);
+  const token = `${payload}.${signature}`;
   const parts = [
-    `${SITE_ADMIN_SESSION_COOKIE}=${encodeURIComponent(secret)}`,
+    `${SITE_ADMIN_SESSION_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    "Max-Age=604800",
+    `Max-Age=${SITE_ADMIN_SESSION_TTL_SECONDS}`,
   ];
 
   if (url.protocol === "https:") {
@@ -2084,7 +2461,29 @@ function buildExpiredSiteAdminSessionCookie(url: URL): string {
   return parts.join("; ");
 }
 
-function requireSiteAdminAccess(request: Request, env: Env): Response | null {
+function isSafeRequestMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+function parseSiteListLimit(raw: string | null, fallback: number, max: number): number {
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.trunc(parsed), max));
+}
+
+function hasSameOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) {
+    return false;
+  }
+
+  return origin === new URL(request.url).origin;
+}
+
+async function requireSiteAdminAccess(request: Request, env: Env): Promise<Response | null> {
   const routeError = requireAdminRoutesEnabled(request, env);
   if (routeError) {
     return routeError;
@@ -2094,11 +2493,25 @@ function requireSiteAdminAccess(request: Request, env: Env): Response | null {
     return json({ error: "ADMIN_API_SECRET is not configured" }, { status: 500 });
   }
 
-  if (!hasValidSiteAdminSession(request, env)) {
+  const session = await readValidSiteAdminSession(request, env);
+  if (!session) {
     return json({ error: "Invalid admin secret" }, { status: 401 });
   }
 
+  if (!session.viaHeader && !isSafeRequestMethod(request.method) && !hasSameOrigin(request)) {
+    return json({ error: "Admin request origin denied" }, { status: 403 });
+  }
+
   return null;
+}
+
+function applyAdminApiResponseHeaders(request: Request, response: Response): Response {
+  if (!new URL(request.url).pathname.startsWith("/admin/api/")) {
+    return response;
+  }
+
+  response.headers.set("cache-control", "private, no-store, max-age=0");
+  return response;
 }
 
 function html(markup: string, init: ResponseInit = {}): Response {
@@ -2534,7 +2947,7 @@ function renderHome(url: URL): string {
 
 <h2>For Agents First</h2>
 
-<p>If you only read one thing: sign up at <code>${signupApi}</code>, keep the mailbox-scoped token, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
+<p>If you only read one thing: sign up at <code>${signupApi}</code>, retrieve the mailbox-scoped token from the configured operator delivery channel, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
 
 <h2>Summary</h2>
 
@@ -2544,7 +2957,7 @@ function renderHome(url: URL): string {
   <li><strong>Recommended first surface:</strong> MCP plus mailbox-scoped self routes</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
-  <li><strong>Default signup access:</strong> mailbox-scoped bearer token with read, draft, and send scopes</li>
+  <li><strong>Default signup access:</strong> mailbox-scoped bearer token delivered through the configured operator channel; inline return is opt-in</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
   <li><strong>GitHub repo:</strong> <a href="${githubRepo}"><code>${githubRepo}</code></a></li>
@@ -2579,13 +2992,13 @@ function renderHome(url: URL): string {
 
 <h2>Availability And Constraints</h2>
 
-<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat the inline signup token and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
+<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat operator-channel token delivery and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
 
 <ul>
-  <li><strong>Available now:</strong> signup API, inline access token, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
+  <li><strong>Available now:</strong> signup API, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
   <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
-  <li><strong>Recommended fallback:</strong> save the inline <code>accessToken</code> from signup and use <code>POST /v1/auth/token/rotate</code> while the current token is still valid.</li>
+  <li><strong>Recommended fallback:</strong> use <code>POST /v1/auth/token/rotate</code> while the current token is still valid; legacy inline signup token return now requires explicit runtime opt-in.</li>
   <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
 
@@ -2634,7 +3047,7 @@ content-type: application/json
 
 <h3>Signup Response</h3>
 
-<p>A successful signup returns mailbox metadata plus a default mailbox-scoped bearer token that can immediately read inbound messages, create drafts, inspect drafts, and send drafts for the newly created mailbox.</p>
+<p>A successful signup returns mailbox metadata plus the default mailbox-scoped scopes. By default the token itself is delivered only through the configured operator channel; inline token return is a legacy opt-in.</p>
 
 <pre><code>{
   "tenantId": "tnt_example",
@@ -2643,8 +3056,6 @@ content-type: application/json
   "agentId": "agt_example",
   "agentVersionId": "agv_example",
   "deploymentId": "agd_example",
-  "accessToken": "REDACTED",
-  "accessTokenExpiresAt": "2026-04-17T05:24:03.000Z",
   "accessTokenScopes": [
     "task:read",
     "mail:read",
@@ -2661,8 +3072,8 @@ content-type: application/json
 <p>This path intentionally prefers mailbox-scoped self routes and high-level send/reply routes first. Treat explicit draft lifecycle control as the advanced path.</p>
 
 <ol>
-  <li>Call the signup API at <code>${signupApi}</code> and save <code>accessToken</code> and <code>mailboxAddress</code>.</li>
-  <li>Use the returned bearer token with <code>Authorization: Bearer ...</code>.</li>
+  <li>Call the signup API at <code>${signupApi}</code> and save <code>mailboxAddress</code>.</li>
+  <li>Retrieve the issued bearer token from the configured operator delivery channel, unless your runtime explicitly enables legacy inline signup token return.</li>
   <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
   <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
   <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
@@ -2675,7 +3086,7 @@ content-type: application/json
 
 <h2>Token Lifecycle</h2>
 
-<p>Every new signup returns a mailbox-scoped bearer token. That token lets the agent read inbound mail, create drafts, and send messages for the mailbox.</p>
+<p>Every new signup issues a mailbox-scoped bearer token. By default that token is delivered through the configured operator channel instead of the anonymous HTTP response.</p>
 
 <ul>
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
@@ -2964,7 +3375,7 @@ function renderLimits(): string {
     <section>
       <h2>How To Work Safely While Limited</h2>
       <ul>
-        <li>Save the inline <code>accessToken</code> returned by signup and use mailbox-scoped routes immediately.</li>
+        <li>Retrieve the issued token from the configured operator delivery channel, or explicitly enable legacy inline signup token return if that risk is acceptable in your environment.</li>
         <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
         <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
       </ul>
@@ -5815,19 +6226,25 @@ function renderAdmin(
       }
     }
 
-    function renderAliases(aliases) {
+    function renderAliases(aliases, bootstrapManaged) {
       latestAliases = aliases;
       aliasList.innerHTML = aliases.map((item) => {
         const target = item.mode === "internal"
           ? 'Internal inbox via worker <strong>' + esc(item.worker || 'n/a') + '</strong>'
           : esc(item.destination || 'Not configured');
-        const action = item.configured
+        const mailboxStatus = item.mailboxStatus || 'missing';
+        const action = item.configured && !bootstrapManaged
           ? '<button data-alias="' + esc(item.alias) + '" class="button secondary delete-alias" type="button">Delete</button>'
           : "";
+        const managedNote = bootstrapManaged
+          ? '<p>Managed automatically by bootstrap maintenance.</p>'
+          : '';
         return '<div class="faq-item">' +
           '<h3>' + esc(item.address) + '</h3>' +
           '<p>Status: ' + esc(item.configured ? 'Configured' : 'Missing') + '</p>' +
           '<p>Route: ' + target + '</p>' +
+          '<p>Mailbox: ' + esc(mailboxStatus) + '</p>' +
+          managedNote +
           '<p style="margin-top:12px;">' + action + '</p>' +
         '</div>';
       }).join("");
@@ -5860,12 +6277,15 @@ function renderAdmin(
           ? payload.message
           : '';
         authStatus.textContent = 'Dashboard unlocked.';
-        renderAliases(Array.isArray(payload.aliases) ? payload.aliases : []);
+        renderAliases(
+          Array.isArray(payload.aliases) ? payload.aliases : [],
+          payload.bootstrapManaged === true,
+        );
       } catch (error) {
         aliasAdminAvailable = false;
         aliasAdminMessage = error.message;
         authStatus.textContent = 'Dashboard unlocked with alias admin unavailable.';
-        renderAliases([]);
+        renderAliases([], false);
       }
     }
 

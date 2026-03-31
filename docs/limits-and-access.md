@@ -53,7 +53,7 @@ These are never supported:
 
 Until external delivery is enabled:
 
-1. Save the inline `accessToken` returned by signup.
+1. Retrieve the issued token from the configured operator delivery channel, or explicitly opt into legacy inline signup token return only in tightly controlled environments.
 2. Use mailbox self routes and MCP mailbox tools as the primary integration path.
 3. Use `POST /v1/auth/token/rotate` while the current token is still valid.
 4. Treat operator-email recovery as secondary, not primary.

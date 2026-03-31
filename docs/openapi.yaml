@@ -1566,7 +1566,7 @@ components:
           type: string
         accessToken:
           type: string
-          description: Mailbox-scoped bearer token issued during signup API provisioning when API signing is configured.
+          description: Legacy opt-in mailbox-scoped bearer token returned inline only when public signup inline token delivery is explicitly enabled for the runtime.
         accessTokenExpiresAt:
           type: string
           format: date-time

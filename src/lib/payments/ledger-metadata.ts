@@ -52,6 +52,34 @@ export type TypedCreditLedgerEntryRecord =
   | TypedUpgradeCreditLedgerEntryRecord
   | TypedOutboundUsageCreditLedgerEntryRecord;
 
+export function isTopupSettlementLedgerEntry(
+  entry: TypedCreditLedgerEntryRecord | null | undefined,
+): entry is TypedTopupCreditLedgerEntryRecord {
+  const metadata = entry?.metadata;
+  return Boolean(
+    entry
+    && metadata
+    && entry.entryType === "topup"
+    && metadata.entryType === "topup"
+    && "receiptType" in metadata
+    && metadata.receiptType === "topup",
+  );
+}
+
+export function isUpgradeCreditGrantLedgerEntry(
+  entry: TypedCreditLedgerEntryRecord | null | undefined,
+): entry is TypedUpgradeCreditLedgerEntryRecord {
+  const metadata = entry?.metadata;
+  return Boolean(
+    entry
+    && metadata
+    && entry.entryType === "adjustment"
+    && metadata.entryType === "adjustment"
+    && "receiptType" in metadata
+    && metadata.receiptType === "upgrade",
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
