@@ -224,6 +224,7 @@ export async function ensureDraftSendAllowed(env: Env, input: {
     tenantId: input.tenantId,
     agentId: input.agentId,
     ...recipients,
+    excludeDraftR2Key: input.draftR2Key,
   });
   if (!decision.ok) {
     const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;

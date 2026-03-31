@@ -2323,6 +2323,7 @@ export async function getTenantOutboundUsageWindowCounts(env: Env, input: {
   tenantId: string;
   sinceHour: string;
   sinceDay: string;
+  excludeDraftR2Key?: string;
 }): Promise<{
   sentLastHour: number;
   sentLastDay: number;
@@ -2336,6 +2337,22 @@ export async function getTenantOutboundUsageWindowCounts(env: Env, input: {
        WHERE m.tenant_id = ?
          AND m.direction = 'outbound'
          AND m.created_at >= ?
+         AND m.status != 'failed'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM outbound_jobs failed_outbound_job
+           WHERE failed_outbound_job.message_id = m.id
+             AND failed_outbound_job.status = 'failed'
+         )
+         AND (
+           ? IS NULL
+           OR NOT EXISTS (
+             SELECT 1
+             FROM outbound_jobs current_outbound_job
+             WHERE current_outbound_job.message_id = m.id
+               AND current_outbound_job.draft_r2_key = ?
+           )
+         )
          AND EXISTS (
            SELECT 1
            FROM mailboxes
@@ -2388,6 +2405,8 @@ export async function getTenantOutboundUsageWindowCounts(env: Env, input: {
       input.sinceDay,
       input.tenantId,
       input.sinceDay,
+      input.excludeDraftR2Key ?? null,
+      input.excludeDraftR2Key ?? null,
     )
   );
 

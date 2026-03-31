@@ -556,23 +556,38 @@ async function ensureSignupRouting(env: Env): Promise<{
   status: SignupSuccessResult["routingStatus"];
   error?: string;
 }> {
-  if (!shouldAutoconfigureSignupRouting(env)) {
-    return {
-      status: "skipped",
-      error: "Self-serve signup routing autoconfiguration is disabled for public requests in this environment.",
-    };
-  }
+  const shouldAutoconfigure = shouldAutoconfigureSignupRouting(env);
 
-  if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ZONE_ID || !env.CLOUDFLARE_EMAIL_WORKER) {
+  if (!env.CLOUDFLARE_ZONE_ID || !env.CLOUDFLARE_EMAIL_WORKER) {
     return {
       status: "skipped",
       error: "Cloudflare Email Routing automation is not configured in this environment.",
     };
   }
 
+  if (!env.CLOUDFLARE_API_TOKEN) {
+    return {
+      status: "skipped",
+      error: shouldAutoconfigure
+        ? "Cloudflare Email Routing automation is not configured in this environment."
+        : "Cloudflare Email Routing verification is not configured in this environment.",
+    };
+  }
+
   try {
     const rules = await listEmailRoutingRules(env);
     const catchAllRule = rules.find((entry) => isCatchAllWorkerRule(entry, env.CLOUDFLARE_EMAIL_WORKER));
+    if (catchAllRule) {
+      return { status: "configured" };
+    }
+
+    if (!shouldAutoconfigure) {
+      return {
+        status: "skipped",
+        error: "Self-serve signup routing autoconfiguration is disabled for public requests in this environment.",
+      };
+    }
+
     if (!catchAllRule) {
       await upsertCatchAllWorkerRule(env, env.CLOUDFLARE_EMAIL_WORKER);
     }

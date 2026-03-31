@@ -71,6 +71,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   to: string[];
   cc: string[];
   bcc: string[];
+  excludeDraftR2Key?: string;
 }): Promise<OutboundPolicyDecision> {
   const { recipientDomains, externalDomains } = await classifyOutboundRecipients(env, input);
   if (recipientDomains.length === 0) {
@@ -143,6 +144,7 @@ export async function evaluateOutboundPolicy(env: Env, input: {
       tenantId: input.tenantId,
       sinceHour: rollingWindowStart(1),
       sinceDay: rollingWindowStart(24),
+      excludeDraftR2Key: input.excludeDraftR2Key,
     });
 
     if (
