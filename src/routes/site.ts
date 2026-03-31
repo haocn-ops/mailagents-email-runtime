@@ -2947,7 +2947,7 @@ function renderHome(url: URL): string {
 
 <h2>For Agents First</h2>
 
-<p>If you only read one thing: sign up at <code>${signupApi}</code>, retrieve the mailbox-scoped token from the configured operator delivery channel, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
+<p>If you only read one thing: sign up at <code>${signupApi}</code>, read the inline <code>accessToken</code> from the response, then start with <code>POST /mcp</code> or the mailbox self routes.</p>
 
 <h2>Summary</h2>
 
@@ -2957,7 +2957,7 @@ function renderHome(url: URL): string {
   <li><strong>Recommended first surface:</strong> MCP plus mailbox-scoped self routes</li>
   <li><strong>Registration mode:</strong> API only</li>
   <li><strong>Signup API:</strong> <a href="${signupApi}"><code>${signupApi}</code></a></li>
-  <li><strong>Default signup access:</strong> mailbox-scoped bearer token delivered through the configured operator channel; inline return is opt-in</li>
+  <li><strong>Default signup access:</strong> mailbox-scoped bearer token returned inline from signup; operator delivery remains a backup path</li>
   <li><strong>Runtime metadata:</strong> <a href="${runtimeMetadata}"><code>${runtimeMetadata}</code></a></li>
   <li><strong>Compatibility contract:</strong> <a href="${compatibilityApi}"><code>${compatibilityApi}</code></a></li>
   <li><strong>GitHub repo:</strong> <a href="${githubRepo}"><code>${githubRepo}</code></a></li>
@@ -2998,7 +2998,7 @@ function renderHome(url: URL): string {
   <li><strong>Available now:</strong> signup API, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
   <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
-  <li><strong>Recommended fallback:</strong> use <code>POST /v1/auth/token/rotate</code> while the current token is still valid; legacy inline signup token return now requires explicit runtime opt-in.</li>
+  <li><strong>Recommended fallback:</strong> use <code>POST /v1/auth/token/rotate</code> while the current token is still valid, or <code>POST /public/token/reissue</code> if the token has already expired.</li>
   <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
 
@@ -3047,7 +3047,7 @@ content-type: application/json
 
 <h3>Signup Response</h3>
 
-<p>A successful signup returns mailbox metadata plus the default mailbox-scoped scopes. By default the token itself is delivered only through the configured operator channel; inline token return is a legacy opt-in.</p>
+<p>A successful signup returns mailbox metadata plus the default mailbox-scoped token inline by default. The configured operator channel remains available as a backup delivery path.</p>
 
 <pre><code>{
   "tenantId": "tnt_example",
@@ -3056,6 +3056,8 @@ content-type: application/json
   "agentId": "agt_example",
   "agentVersionId": "agv_example",
   "deploymentId": "agd_example",
+  "accessToken": "eyJ...",
+  "accessTokenExpiresAt": "2026-04-30T00:00:00.000Z",
   "accessTokenScopes": [
     "task:read",
     "mail:read",
@@ -3073,7 +3075,7 @@ content-type: application/json
 
 <ol>
   <li>Call the signup API at <code>${signupApi}</code> and save <code>mailboxAddress</code>.</li>
-  <li>Retrieve the issued bearer token from the configured operator delivery channel, unless your runtime explicitly enables legacy inline signup token return.</li>
+  <li>Read <code>accessToken</code> from the signup response and use it immediately.</li>
   <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
   <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
   <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
@@ -3083,10 +3085,11 @@ content-type: application/json
 
 <p>If the signup token expires, call <code>POST /public/token/reissue</code> with <code>mailboxAlias</code> or <code>mailboxAddress</code>. The runtime will email a refreshed mailbox-scoped token only to the original <code>operatorEmail</code>; it never returns the new token to the caller.</p>
 <p>If the current token is still valid and the agent wants to rotate proactively without emailing the operator, call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the new token inline and can optionally deliver it back to the mailbox itself.</p>
+<p>The default single-mailbox self-serve token can also be used directly for billing self-service on the same tenant, including <code>POST /v1/billing/topup</code>, <code>POST /v1/billing/upgrade-intent</code>, <code>POST /v1/billing/payment/confirm</code>, and the matching billing read routes.</p>
 
 <h2>Token Lifecycle</h2>
 
-<p>Every new signup issues a mailbox-scoped bearer token. By default that token is delivered through the configured operator channel instead of the anonymous HTTP response.</p>
+<p>Every new signup issues a mailbox-scoped bearer token and returns it inline by default. The configured operator channel can still receive the welcome delivery, and runtimes can explicitly disable inline return if they need that posture.</p>
 
 <ul>
   <li><strong>Default lifetime:</strong> the signup token expires after 30 days unless the runtime is configured with a different <code>SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS</code> value.</li>
@@ -3375,7 +3378,7 @@ function renderLimits(): string {
     <section>
       <h2>How To Work Safely While Limited</h2>
       <ul>
-        <li>Retrieve the issued token from the configured operator delivery channel, or explicitly enable legacy inline signup token return if that risk is acceptable in your environment.</li>
+        <li>Use the inline <code>accessToken</code> returned by <code>POST /public/signup</code> as the primary bootstrap credential.</li>
         <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
         <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
       </ul>
@@ -3385,10 +3388,10 @@ function renderLimits(): string {
       <p>External delivery follows a credits-first model. The normal unlock paths are adding credits or moving the tenant to an explicitly enabled outbound policy. A suspended outbound policy still hard-blocks delivery.</p>
       <ol>
         <li>Keep using the default mailbox-scoped flow until the mailbox is active and the token is stored safely.</li>
-        <li>Top up credits with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity immediately.</li>
+        <li>Use that default single-mailbox self-serve token directly with <code>POST /v1/billing/topup</code> if the tenant needs outbound capacity immediately.</li>
         <li>Or request <code>POST /v1/billing/upgrade-intent</code>; a settled upgrade also grants the configured upgrade credit bundle.</li>
         <li>If a receipt remains <code>pending</code> or <code>verified</code>, retry facilitator settlement with <code>POST /v1/billing/payment/confirm</code>.</li>
-        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> before treating arbitrary external delivery as ready.</li>
+        <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> with the same token before treating arbitrary external delivery as ready.</li>
       </ol>
       <p>Mailagents uses facilitator-backed x402 settlement. In the normal path, proof submission settles immediately. The confirmation endpoint exists only to retry facilitator settlement for a receipt that did not finish on the first attempt.</p>
     </section>

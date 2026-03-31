@@ -46,8 +46,9 @@ Recommended usage:
 
 ## 2. Obtain a Scoped Bearer Token
 
-For signup API onboarding, call `POST /public/signup` first and retrieve the
-mailbox-scoped bearer token from the configured operator delivery channel.
+For signup API onboarding, call `POST /public/signup` first and read the
+mailbox-scoped bearer token from the inline `accessToken` field in the
+response. The configured operator delivery channel remains a backup path.
 
 If that token expires later, call `POST /public/token/reissue`. The runtime
 will only email the refreshed token to the original `operatorEmail` from signup;
@@ -57,6 +58,11 @@ If the current signup API token is still valid and the agent wants to rotate it
 without emailing the operator, call `POST /v1/auth/token/rotate`. That
 authenticated route can return the rotated token inline, deliver it back to the
 mailbox itself, or do both.
+
+That same default single-mailbox self-serve token can also call the billing
+self-service endpoints for its own tenant, including `POST /v1/billing/topup`,
+`POST /v1/billing/upgrade-intent`, `POST /v1/billing/payment/confirm`, and the
+matching billing read routes.
 
 Use `POST /v1/auth/tokens` when you need a broader operator token, an
 operator-provisioned workflow, or an environment where the mailbox was created
@@ -469,7 +475,7 @@ For long-lived integrations:
 
 1. read `/v2/meta/compatibility`
 2. validate the response against `/v2/meta/compatibility/schema`
-3. obtain a least-privilege token, usually via the configured operator delivery path triggered by `POST /public/signup`
+3. obtain a least-privilege token, usually from the inline `accessToken` returned by `POST /public/signup`
 4. call `tools/list`
 5. plan with `riskLevel`, `humanReviewRequired`, and `sendAdditionalScopes`
 6. prefer read calls before side effects

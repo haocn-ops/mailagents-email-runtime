@@ -53,10 +53,10 @@ These are never supported:
 
 Until external delivery is enabled:
 
-1. Retrieve the issued token from the configured operator delivery channel, or explicitly opt into legacy inline signup token return only in tightly controlled environments.
+1. Use the inline `accessToken` returned by `POST /public/signup` as the primary bootstrap path for automated agents.
 2. Use mailbox self routes and MCP mailbox tools as the primary integration path.
 3. Use `POST /v1/auth/token/rotate` while the current token is still valid.
-4. Treat operator-email recovery as secondary, not primary.
+4. Treat operator-email recovery and welcome-email delivery as secondary, not primary.
 
 ## Unlocking External Delivery
 
@@ -69,10 +69,11 @@ The current unlock model has one hard safety stop and one normal unlock path:
 
 The current flow is:
 
-1. Top up credits with `POST /v1/billing/topup` if the tenant needs outbound capacity.
-2. Or request an upgrade with `POST /v1/billing/upgrade-intent`; a settled upgrade also grants the configured upgrade credit bundle.
-3. If the environment still returns a `pending` or `verified` receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
-4. Verify the resulting state with:
+1. Use either a tenant-scoped token or the default single-mailbox self-serve signup token for billing self-service.
+2. Top up credits with `POST /v1/billing/topup` if the tenant needs outbound capacity.
+3. Or request an upgrade with `POST /v1/billing/upgrade-intent`; a settled upgrade also grants the configured upgrade credit bundle.
+4. If the environment still returns a `pending` or `verified` receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
+5. Verify the resulting state with:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
 

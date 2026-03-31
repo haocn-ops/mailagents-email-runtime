@@ -11,6 +11,8 @@ ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 CREDITS_TO_BUY="${CREDITS_TO_BUY:-25}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
 PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-facilitator}"
+DEV_D1_NAME="${DEV_D1_NAME_FOR_SMOKE:-mailagents-dev}"
+DEV_R2_BUCKET="${DEV_R2_BUCKET_FOR_SMOKE:-mailagents-dev-email}"
 
 TEMP_FILES=()
 
@@ -104,7 +106,10 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
 
 TOKEN="$(python3 - <<'PY' "$SIGNUP_JSON"
 import json,sys
-print(json.load(open(sys.argv[1]))['accessToken'])
+payload=json.load(open(sys.argv[1]))
+token=payload.get("accessToken")
+if isinstance(token, str) and token:
+    print(token)
 PY
 )"
 
@@ -113,6 +118,71 @@ import json,sys
 print(json.load(open(sys.argv[1]))['tenantId'])
 PY
 )"
+
+if [[ -z "$TOKEN" ]]; then
+  OUTBOUND_JOB_ID="$(python3 - <<'PY' "$SIGNUP_JSON"
+import json,sys
+payload=json.load(open(sys.argv[1]))
+value=payload.get("outboundJobId")
+if isinstance(value, str):
+    print(value)
+PY
+)"
+
+  if [[ -z "$OUTBOUND_JOB_ID" ]]; then
+    echo "Signup did not return accessToken or outboundJobId." >&2
+    cat "$SIGNUP_JSON" >&2
+    exit 1
+  fi
+
+  DRAFT_META_JSON="$(new_temp)"
+  DRAFT_PAYLOAD_JSON="$(new_temp)"
+  echo "Signup did not inline a token. Resolving token from the queued welcome draft ..."
+  env -u CLOUDFLARE_API_TOKEN wrangler d1 execute "$DEV_D1_NAME" \
+    --remote \
+    --env dev \
+    --command "SELECT draft_r2_key FROM outbound_jobs WHERE id = '$OUTBOUND_JOB_ID' LIMIT 1;" \
+    > "$DRAFT_META_JSON"
+
+  DRAFT_R2_KEY="$(python3 - <<'PY' "$DRAFT_META_JSON"
+import json,sys
+raw=open(sys.argv[1]).read()
+start=raw.find('[')
+if start == -1:
+    raise SystemExit("Could not parse Wrangler D1 response.")
+payload=json.loads(raw[start:])
+results=payload[0].get("results") or []
+if not results or not results[0].get("draft_r2_key"):
+    raise SystemExit("Could not find welcome draft key for signup.")
+print(results[0]["draft_r2_key"])
+PY
+)"
+
+  env -u CLOUDFLARE_API_TOKEN wrangler r2 object get "${DEV_R2_BUCKET}/${DRAFT_R2_KEY}" \
+    --remote \
+    --pipe > "$DRAFT_PAYLOAD_JSON"
+
+  TOKEN="$(python3 - <<'PY' "$DRAFT_PAYLOAD_JSON"
+import json,sys
+payload=json.load(open(sys.argv[1]))
+text=payload.get("text") or ""
+if not isinstance(text, str):
+    raise SystemExit("Welcome draft did not include a text body.")
+marker="Default API access token"
+if marker not in text:
+    raise SystemExit("Welcome draft did not contain an access token section.")
+parts=[line.strip() for line in text.splitlines()]
+for idx,line in enumerate(parts):
+    if line == marker:
+        for candidate in parts[idx+1:]:
+            if candidate.startswith("eyJ"):
+                print(candidate)
+                raise SystemExit(0)
+        break
+raise SystemExit("Could not extract access token from welcome draft.")
+PY
+)"
+fi
 
 echo "Creating hosted did:web binding ..."
 curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
@@ -130,10 +200,24 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   -H 'content-type: application/json' \
   --data "{\"credits\":$CREDITS_TO_BUY}" > /dev/null
 
+QUOTE_STATUS="$(awk '/^HTTP\// { status=$2 } END { print status }' "$QUOTE_HEADERS")"
+if [[ "$QUOTE_STATUS" != "402" ]]; then
+  echo "Expected HTTP 402 from /v1/billing/topup but received ${QUOTE_STATUS:-<none>}." >&2
+  cat "$QUOTE_JSON" >&2
+  exit 1
+fi
+
 read -r PAY_TO AMOUNT_ATOMIC <<<"$(python3 - <<'PY' "$QUOTE_JSON"
 import json,sys
 obj=json.load(open(sys.argv[1]))
-pr=obj['quote']['paymentRequired']
+quote=obj.get("quote")
+if not isinstance(quote, dict):
+    print(json.dumps(obj, indent=2), file=sys.stderr)
+    raise SystemExit("Topup quote response did not include a quote payload.")
+pr=quote.get("paymentRequired")
+if not isinstance(pr, dict):
+    print(json.dumps(obj, indent=2), file=sys.stderr)
+    raise SystemExit("Topup quote response did not include quote.paymentRequired.")
 accepted=pr['accepts'][0]
 print(accepted.get('payTo',''), accepted.get('amount',''))
 PY

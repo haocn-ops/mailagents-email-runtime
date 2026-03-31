@@ -415,7 +415,11 @@ WEBHOOK_HEADERS=()
 if [[ -n "$WEBHOOK_SECRET" ]]; then
   WEBHOOK_HEADERS+=("x-webhook-shared-secret: $WEBHOOK_SECRET")
 fi
-capture_request "POST" "/v1/webhooks/ses" "$(cat "$WEBHOOK_PAYLOAD")" "${WEBHOOK_HEADERS[@]}"
+if [[ "${#WEBHOOK_HEADERS[@]}" -gt 0 ]]; then
+  capture_request "POST" "/v1/webhooks/ses" "$(cat "$WEBHOOK_PAYLOAD")" "${WEBHOOK_HEADERS[@]}"
+else
+  capture_request "POST" "/v1/webhooks/ses" "$(cat "$WEBHOOK_PAYLOAD")"
+fi
 assert_status "202"
 jq -e '
   .provider == "ses" and

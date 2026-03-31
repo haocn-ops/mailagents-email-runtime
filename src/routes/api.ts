@@ -20,7 +20,7 @@ import {
   performSelfServeSignup,
   SignupError,
 } from "../lib/self-serve";
-import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
+import { issueSelfServeAccessToken, SELF_SERVE_DEFAULT_SCOPES } from "../lib/provisioning/default-access";
 import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPublishedHostedDidBinding } from "../lib/did-web";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
@@ -975,9 +975,9 @@ router.on("GET", "/v1/billing/account", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   return json(await ensureTenantBillingAccount(env, auth.tenantId));
@@ -988,9 +988,9 @@ router.on("GET", "/v1/billing/ledger", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   const url = new URL(request.url);
@@ -1003,9 +1003,9 @@ router.on("GET", "/v1/billing/receipts", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   const url = new URL(request.url);
@@ -1018,9 +1018,9 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   const body = await readJson<{
@@ -1136,9 +1136,9 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   const body = await readJson<{
@@ -1256,9 +1256,9 @@ router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const tenantAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "tenant send policy");
+  if (tenantAccessError) {
+    return tenantAccessError;
   }
 
   const tenantError = enforceTenantAccess(auth, route.params.tenantId);
@@ -1428,9 +1428,9 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const billingAccessError = await requireTenantScopedOrSelfServeMailboxAccess(env, auth, "billing self-service");
+  if (billingAccessError) {
+    return billingAccessError;
   }
 
   const body = await readJson<{
@@ -4080,6 +4080,38 @@ function requireTenantScopedAccess(claims: AccessTokenClaims): Response | null {
   }
 
   return null;
+}
+
+async function requireTenantScopedOrSelfServeMailboxAccess(
+  env: Env,
+  claims: AccessTokenClaims,
+  resourceLabel: string,
+): Promise<Response | null> {
+  if (!claims.agentId && !claims.mailboxIds?.length) {
+    return null;
+  }
+
+  if (!claims.agentId || claims.mailboxIds?.length !== 1) {
+    return json({
+      error: `Only tenant-scoped or single-mailbox self-serve tokens can access ${resourceLabel}`,
+    }, { status: 403 });
+  }
+
+  const missingScopes = SELF_SERVE_DEFAULT_SCOPES.filter((scope) => !claims.scopes.includes(scope));
+  if (missingScopes.length > 0) {
+    return json({
+      error: `Mailbox-scoped self-serve access to ${resourceLabel} requires the default signup scopes`,
+      missingScopes,
+    }, { status: 403 });
+  }
+
+  const mailboxId = claims.mailboxIds[0];
+  const mailboxError = enforceMailboxAccess(claims, mailboxId);
+  if (mailboxError) {
+    return mailboxError;
+  }
+
+  return await requireCurrentMailboxAccessForClaims(env, claims, mailboxId);
 }
 
 function requireAgentControlPlaneAccess(claims: AccessTokenClaims): Response | null {
