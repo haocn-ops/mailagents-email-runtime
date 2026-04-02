@@ -24,6 +24,10 @@ The default signup flow already returns:
 - mailbox self routes such as `GET /v1/mailboxes/self`
 - mailbox message routes such as `GET /v1/mailboxes/self/messages`
 - mailbox-scoped send and reply routes such as `POST /v1/messages/send`
+- self-service billing routes such as `POST /v1/billing/topup`,
+  `POST /v1/billing/upgrade-intent`, and `POST /v1/billing/payment/confirm`
+- self-service tenant status routes such as `GET /v1/billing/account`,
+  `GET /v1/billing/receipts`, and `GET /v1/tenants/{tenantId}/send-policy`
 - authenticated token rotation via `POST /v1/auth/token/rotate`
 - MCP mailbox tools such as `list_messages`, `send_email`, and `reply_to_message`
 
@@ -75,6 +79,10 @@ The current flow is:
 4. Verify the resulting state with:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
+
+These self-service billing and status routes are available to the ordinary
+mailbox-scoped signup token for the same tenant; a broader tenant-scoped token
+is optional, not required.
 
 ## Expected State Transitions
 

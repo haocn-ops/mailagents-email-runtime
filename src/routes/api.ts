@@ -1061,9 +1061,9 @@ router.on("GET", "/v1/billing/account", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   return json(buildBillingAccountResponse(await ensureTenantBillingAccount(env, auth.tenantId)));
@@ -1074,9 +1074,9 @@ router.on("GET", "/v1/billing/ledger", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const url = new URL(request.url);
@@ -1089,9 +1089,9 @@ router.on("GET", "/v1/billing/receipts", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const url = new URL(request.url);
@@ -1104,9 +1104,9 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const body = await readJson<{
@@ -1223,9 +1223,9 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const body = await readJson<{
@@ -1344,14 +1344,9 @@ router.on("GET", "/v1/tenants/:tenantId/send-policy", async (request, env, _ctx,
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
-  }
-
-  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
-  if (tenantError) {
-    return tenantError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, route.params.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   return json(await ensureTenantSendPolicy(env, route.params.tenantId));
@@ -1516,9 +1511,9 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, auth.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const body = await readJson<{
@@ -1570,14 +1565,9 @@ router.on("GET", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) 
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
-  }
-
-  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
-  if (tenantError) {
-    return tenantError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, route.params.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const binding = await getTenantDidBinding(env, route.params.tenantId);
@@ -1593,14 +1583,9 @@ router.on("POST", "/v1/tenants/:tenantId/did/hosted", async (request, env, _ctx,
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
-  }
-
-  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
-  if (tenantError) {
-    return tenantError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, route.params.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const origin = new URL(request.url).origin;
@@ -1623,14 +1608,9 @@ router.on("PUT", "/v1/tenants/:tenantId/did", async (request, env, _ctx, route) 
   if (auth instanceof Response) {
     return auth;
   }
-  const tenantScopeError = requireTenantScopedAccess(auth);
-  if (tenantScopeError) {
-    return tenantScopeError;
-  }
-
-  const tenantError = enforceTenantAccess(auth, route.params.tenantId);
-  if (tenantError) {
-    return tenantError;
+  const accessError = await requireSelfServiceTenantAccess(env, auth, route.params.tenantId);
+  if (accessError) {
+    return accessError;
   }
 
   const body = await readJson<{
@@ -4239,6 +4219,34 @@ async function requireCurrentMailboxAccessForClaims(env: Env, claims: AccessToke
 
   const selfAgent = await resolveSelfAgentForMailbox(env, claims, mailboxId);
   return selfAgent instanceof Response ? selfAgent : null;
+}
+
+async function requireSelfServiceTenantAccess(
+  env: Env,
+  claims: AccessTokenClaims,
+  tenantId: string,
+): Promise<Response | null> {
+  const tenantError = enforceTenantAccess(claims, tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+
+  if (!claims.mailboxIds?.length) {
+    if (claims.agentId) {
+      return json(
+        { error: "Only tenant-scoped or mailbox-scoped tokens can access self-service tenant resources" },
+        { status: 403 },
+      );
+    }
+    return null;
+  }
+
+  const mailbox = await resolveSelfMailbox(env, claims);
+  if (mailbox instanceof Response) {
+    return mailbox;
+  }
+
+  return await requireCurrentMailboxAccessForClaims(env, claims, mailbox.id);
 }
 
 function requireTenantScopedAccess(claims: AccessTokenClaims): Response | null {

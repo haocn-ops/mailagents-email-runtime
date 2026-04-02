@@ -605,18 +605,23 @@ jq -e '.error == "Mailbox-scoped tokens cannot access agent control-plane resour
 
 BILLING_ACCOUNT_BODY="$(new_temp_file)"
 BILLING_ACCOUNT_STATUS="$(capture_status "$BILLING_ACCOUNT_BODY" "$BASE_URL/v1/billing/account" -H "authorization: Bearer $BOUNDARY_MAILBOX_TOKEN")"
-[[ "$BILLING_ACCOUNT_STATUS" == "403" ]]
-jq -e '.error == "Only tenant-scoped tokens can access tenant-level resources"' "$BILLING_ACCOUNT_BODY" >/dev/null
+[[ "$BILLING_ACCOUNT_STATUS" == "200" ]]
+jq -e '.pricingTier and (.availableCredits | type == "number") and (.reservedCredits | type == "number")' "$BILLING_ACCOUNT_BODY" >/dev/null
 
 BILLING_LEDGER_BODY="$(new_temp_file)"
 BILLING_LEDGER_STATUS="$(capture_status "$BILLING_LEDGER_BODY" "$BASE_URL/v1/billing/ledger" -H "authorization: Bearer $BOUNDARY_MAILBOX_TOKEN")"
-[[ "$BILLING_LEDGER_STATUS" == "403" ]]
-jq -e '.error == "Only tenant-scoped tokens can access tenant-level resources"' "$BILLING_LEDGER_BODY" >/dev/null
+[[ "$BILLING_LEDGER_STATUS" == "200" ]]
+jq -e '.items | type == "array"' "$BILLING_LEDGER_BODY" >/dev/null
+
+SEND_POLICY_BODY="$(new_temp_file)"
+SEND_POLICY_STATUS="$(capture_status "$SEND_POLICY_BODY" "$BASE_URL/v1/tenants/$TENANT_ID/send-policy" -H "authorization: Bearer $BOUNDARY_MAILBOX_TOKEN")"
+[[ "$SEND_POLICY_STATUS" == "200" ]]
+jq -e '.pricingTier and .outboundStatus and (.externalSendEnabled | type == "boolean") and (.reviewRequired | type == "boolean")' "$SEND_POLICY_BODY" >/dev/null
 
 DID_BODY="$(new_temp_file)"
 DID_STATUS="$(capture_status "$DID_BODY" "$BASE_URL/v1/tenants/$TENANT_ID/did" -H "authorization: Bearer $BOUNDARY_MAILBOX_TOKEN")"
-[[ "$DID_STATUS" == "403" ]]
-jq -e '.error == "Only tenant-scoped tokens can access tenant-level resources"' "$DID_BODY" >/dev/null
+[[ "$DID_STATUS" == "404" ]]
+jq -e '.error == "DID binding not found"' "$DID_BODY" >/dev/null
 
 REISSUE_EXISTING="$(curl -sS -X POST "$BASE_URL/public/token/reissue" \
   -H 'content-type: application/json' \

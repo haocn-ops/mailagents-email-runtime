@@ -37,6 +37,10 @@ These default scopes are enough for:
 
 - mailbox self routes such as `GET /v1/mailboxes/self/messages`
 - high-level send and reply routes such as `POST /v1/messages/send`
+- self-service billing routes such as `POST /v1/billing/topup`,
+  `POST /v1/billing/upgrade-intent`, and `POST /v1/billing/payment/confirm`
+- self-service tenant status routes such as `GET /v1/billing/account`,
+  `GET /v1/billing/receipts`, and `GET /v1/tenants/{tenantId}/send-policy`
 - MCP mailbox tools such as `list_messages`, `send_email`, and
   `reply_to_message`
 
