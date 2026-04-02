@@ -179,6 +179,7 @@ async function findPaymentReceiptReplay(
 
 function paymentReceiptReplayResponse(receipt: TypedPaymentReceiptRecord): Response {
   return accepted({
+    receiptId: receipt.id,
     receipt,
     verificationStatus: receipt.status,
     message: "Payment proof already captured. Reusing the existing receipt.",
@@ -191,12 +192,97 @@ const AUTHENTICATED_API_METADATA_ALLOW_HEADERS = "content-type";
 
 class RouteRequestError extends Error {
   readonly status: number;
+  readonly body?: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
     super(message);
     this.name = "RouteRequestError";
     this.status = status;
+    this.body = body;
   }
+}
+
+function buildInsufficientCreditsErrorBody(input: {
+  availableCredits?: number;
+  creditsRequired: number;
+}): Record<string, unknown> {
+  const currentCredits = input.availableCredits ?? 0;
+  return {
+    error: `Insufficient credits for external sending. Required: ${input.creditsRequired}, available: ${currentCredits}`,
+    code: "insufficient_credits",
+    currentCredits,
+    requiredCredits: input.creditsRequired,
+    suggestedAction: "Use POST /v1/billing/topup to add credits, then retry the send with the same idempotency key if applicable.",
+    docUrl: "/limits",
+  };
+}
+
+function createInsufficientCreditsRouteError(input: {
+  availableCredits?: number;
+  creditsRequired: number;
+}): RouteRequestError {
+  const body = buildInsufficientCreditsErrorBody(input);
+  return new RouteRequestError(String(body.error), 402, body);
+}
+
+function buildBillingAccountResponse(account: Awaited<ReturnType<typeof ensureTenantBillingAccount>>) {
+  return {
+    ...account,
+    totalCredits: account.availableCredits + account.reservedCredits,
+    spendableCredits: account.availableCredits,
+    pendingReservedCredits: account.reservedCredits,
+  };
+}
+
+function buildSendStatusCheck(outboundJobId: string, draftId: string) {
+  return {
+    outboundJobPath: `/v1/outbound-jobs/${encodeURIComponent(outboundJobId)}`,
+    draftPath: `/v1/drafts/${encodeURIComponent(draftId)}`,
+  };
+}
+
+function buildQueuedSendAcceptedResponse(input: {
+  draftId: string;
+  outboundJobId: string;
+  status: "queued";
+}) {
+  return {
+    ...input,
+    acceptedForDelivery: true,
+    deliveryState: "queued" as const,
+    finalDeliveryState: "pending" as const,
+    statusCheck: buildSendStatusCheck(input.outboundJobId, input.draftId),
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+  };
+}
+
+function buildQueuedCreateAndSendAcceptedResponse(input: {
+  draft: Awaited<ReturnType<typeof createDraft>>;
+  outboundJobId: string;
+  status: "queued";
+}) {
+  return {
+    ...input,
+    acceptedForDelivery: true,
+    deliveryState: "queued" as const,
+    finalDeliveryState: "pending" as const,
+    statusCheck: buildSendStatusCheck(input.outboundJobId, input.draft.id),
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+  };
+}
+
+function buildMissingReceiptIdResponse(): Response {
+  return json({
+    error: "receiptId is required",
+    code: "missing_receipt_id",
+    message: "Pass the receipt id returned as receipt.id or receiptId from POST /v1/billing/topup or POST /v1/billing/upgrade-intent. You can also look it up with GET /v1/billing/receipts.",
+    suggestedAction: "Read the prior billing response, copy receipt.id, and retry POST /v1/billing/payment/confirm with {\"receiptId\":\"...\"}.",
+    receiptSources: [
+      "POST /v1/billing/topup",
+      "POST /v1/billing/upgrade-intent",
+      "GET /v1/billing/receipts",
+    ],
+  }, { status: 400 });
 }
 
 function markSideEffectCommitted(error: unknown): unknown {
@@ -547,10 +633,10 @@ async function validateDraftOutboundCredits(env: Env, draft: {
   });
 
   if (!creditCheck.hasSufficientCredits) {
-    throw new RouteRequestError(
-      `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
-      402,
-    );
+    throw createInsufficientCreditsRouteError({
+      availableCredits: creditCheck.availableCredits,
+      creditsRequired: creditCheck.creditsRequired,
+    });
   }
 }
 
@@ -980,7 +1066,7 @@ router.on("GET", "/v1/billing/account", async (request, env) => {
     return tenantScopeError;
   }
 
-  return json(await ensureTenantBillingAccount(env, auth.tenantId));
+  return json(buildBillingAccountResponse(await ensureTenantBillingAccount(env, auth.tenantId)));
 });
 
 router.on("GET", "/v1/billing/ledger", async (request, env) => {
@@ -1124,6 +1210,7 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
   }
 
   return accepted({
+    receiptId: receipt.id,
     receipt,
     creditsRequested: credits,
     verificationStatus: "pending",
@@ -1243,6 +1330,7 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
   }
 
   return accepted({
+    receiptId: receipt.id,
     receipt,
     targetPricingTier,
     includedCredits: quote.includedCredits,
@@ -1440,7 +1528,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
   }>(request);
 
   if (!body.receiptId) {
-    return badRequest("receiptId is required");
+    return buildMissingReceiptIdResponse();
   }
 
   const facilitatorConfigured = Boolean(getX402FacilitatorConfig(env));
@@ -3490,16 +3578,22 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
           resourceId: response.outboundJobId,
           response,
         });
-        return accepted(response);
+        return accepted(buildQueuedSendAcceptedResponse(response));
       }
       return json({ error: "A draft send request with this idempotency key is already in progress" }, { status: 409 });
     }
     if (reservation.status === "completed") {
       await validateReplayableDraftSend();
-      return accepted(reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
-        draftId: route.params.draftId,
-        outboundJobId: reservation.record.resourceId,
-      }));
+      return accepted(buildQueuedSendAcceptedResponse(
+        reservation.record.response as {
+          draftId: string;
+          outboundJobId: string;
+          status: "queued";
+        } ?? await restoreEnqueuedDraftSend(env, {
+          draftId: route.params.draftId,
+          outboundJobId: reservation.record.resourceId,
+        })
+      ));
     }
 
     if (draft.status !== "draft" && draft.status !== "approved") {
@@ -3531,7 +3625,7 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
         resourceId: result.outboundJobId,
         response,
       });
-      return accepted(response);
+      return accepted(buildQueuedSendAcceptedResponse(response));
     } catch (error) {
       if (!sendEnqueued) {
         await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
@@ -3564,10 +3658,83 @@ router.on("POST", "/v1/drafts/:draftId/send", async (request, env, _ctx, route) 
   await validateDraftOutboundCredits(env, draft);
 
   const result = await enqueueDraftSend(env, route.params.draftId);
-  return accepted({
+  return accepted(buildQueuedSendAcceptedResponse({
     draftId: route.params.draftId,
     outboundJobId: result.outboundJobId,
     status: result.status,
+  }));
+});
+
+router.on("GET", "/v1/outbound-jobs/:outboundJobId", async (request, env, _ctx, route) => {
+  const auth = await requireAuth(request, env, ["draft:read"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+
+  const outboundJob = await getOutboundJob(env, route.params.outboundJobId);
+  if (!outboundJob) {
+    return json({ error: "Outbound job not found" }, { status: 404 });
+  }
+
+  const message = await getMessage(env, outboundJob.messageId);
+  if (!message) {
+    return json({ error: "Outbound job message not found" }, { status: 404 });
+  }
+
+  const tenantError = enforceTenantAccess(auth, message.tenantId);
+  if (tenantError) {
+    return tenantError;
+  }
+  const mailboxError = enforceMailboxAccess(auth, message.mailboxId);
+  if (mailboxError) {
+    return mailboxError;
+  }
+  const currentAccessError = await requireCurrentMailboxAccessForClaims(env, auth, message.mailboxId);
+  if (currentAccessError) {
+    return currentAccessError;
+  }
+
+  const draft = await getDraftByR2KeyForOutboundLifecycle(env, outboundJob.draftR2Key);
+  const sanitizedDraft = draft ? await sanitizeDraftReferencesForClaims(env, auth, draft) : null;
+  const deliveryEvents = await listDeliveryEventsByMessageId(env, message.id);
+  const finalDeliveryState = outboundJob.status === "sent"
+    ? "sent"
+    : outboundJob.status === "failed"
+      ? "failed"
+      : "pending";
+
+  return json({
+    id: outboundJob.id,
+    status: outboundJob.status,
+    retryCount: outboundJob.retryCount,
+    nextRetryAt: outboundJob.nextRetryAt,
+    lastError: outboundJob.lastError,
+    createdAt: outboundJob.createdAt,
+    updatedAt: outboundJob.updatedAt,
+    acceptedForDelivery: true,
+    deliveryState: outboundJob.status,
+    finalDeliveryState,
+    message: {
+      id: message.id,
+      status: message.status,
+      providerMessageId: message.providerMessageId,
+      fromAddr: message.fromAddr,
+      toAddr: message.toAddr,
+      subject: message.subject,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+    },
+    draft: sanitizedDraft
+      ? {
+          id: sanitizedDraft.id,
+          status: sanitizedDraft.status,
+          threadId: sanitizedDraft.threadId,
+          sourceMessageId: sanitizedDraft.sourceMessageId,
+          createdVia: sanitizedDraft.createdVia,
+          updatedAt: sanitizedDraft.updatedAt,
+        }
+      : null,
+    deliveryEvents,
   });
 });
 
@@ -3734,7 +3901,7 @@ export async function handleApiRequest(request: Request, env: Env, ctx: Executio
       return isAuthenticatedApiCorsRequest(request) ? withAuthenticatedApiCors(request, response) : response;
     }
     if (error instanceof RouteRequestError) {
-      const response = json({ error: error.message }, { status: error.status });
+      const response = json(error.body ?? { error: error.message }, { status: error.status });
       if (isPublicSelfServeRequest(request)) {
         return withPublicSelfServeCors(response);
       }
@@ -4183,10 +4350,10 @@ async function createAndSendDraft(env: Env, input: {
       createdVia: input.createdVia,
     });
     if (!creditCheck.hasSufficientCredits) {
-      throw new RouteRequestError(
-        `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
-        402,
-      );
+      throw createInsufficientCreditsRouteError({
+        availableCredits: creditCheck.availableCredits,
+        creditsRequired: creditCheck.creditsRequired,
+      });
     }
   };
 
@@ -4205,11 +4372,11 @@ async function createAndSendDraft(env: Env, input: {
       });
       sideEffectCommitted = true;
       const sendResult = await enqueueDraftSend(env, draft.id);
-      return {
+      return buildQueuedCreateAndSendAcceptedResponse({
         draft,
         outboundJobId: sendResult.outboundJobId,
         status: sendResult.status,
-      };
+      });
     } catch (error) {
       throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
     }
@@ -4268,12 +4435,12 @@ async function createAndSendDraft(env: Env, input: {
       idempotencyKey,
       resourceId: draft.id,
     });
-    const sendResult = await enqueueDraftSend(env, draft.id);
-    const response = {
+      const sendResult = await enqueueDraftSend(env, draft.id);
+    const response = buildQueuedCreateAndSendAcceptedResponse({
       draft,
       outboundJobId: sendResult.outboundJobId,
       status: sendResult.status,
-    };
+    });
     await completeIdempotencyKey(env, {
       operation: "draft_send",
       tenantId: input.tenantId,
@@ -4826,10 +4993,11 @@ async function finalizePaymentReceiptSettlement(
       const account = await reconcileTenantAvailableCredits(env, finalizedReceipt.tenantId);
       const sendPolicy = await ensureTenantSendPolicy(env, finalizedReceipt.tenantId);
       return {
+        receiptId: finalizedReceipt.id,
         receipt: finalizedReceipt,
         ledgerEntry: existingLedgerEntry,
         includedCredits,
-        account,
+        account: buildBillingAccountResponse(account),
         sendPolicy,
         verificationStatus: "settled",
         message: "Payment receipt was already settled.",
@@ -4902,10 +5070,11 @@ async function finalizePaymentReceiptSettlement(
       : finalizedReceipt;
 
     return {
+      receiptId: settledReceipt.id,
       receipt: settledReceipt,
       ledgerEntry,
       includedCredits,
-      account,
+      account: buildBillingAccountResponse(account),
       sendPolicy,
       verificationStatus: "settled",
       message: `Upgrade payment settled, external sending approved automatically, and ${includedCredits} credits granted.`,
@@ -4938,9 +5107,10 @@ async function finalizePaymentReceiptSettlement(
           : finalizedReceipt.metadata,
       });
     return {
+      receiptId: settledReceipt.id,
       receipt: settledReceipt,
       ledgerEntry: existingLedgerEntry,
-      account,
+      account: buildBillingAccountResponse(account),
       verificationStatus: "settled",
       message: "Payment receipt was already settled.",
     };
@@ -4981,9 +5151,10 @@ async function finalizePaymentReceiptSettlement(
   });
 
   return {
+    receiptId: settledReceipt.id,
     receipt: settledReceipt,
     ledgerEntry,
-    account,
+    account: buildBillingAccountResponse(account),
     verificationStatus: "settled",
     message: "Payment receipt settled and credits applied.",
   };

@@ -374,6 +374,9 @@ export interface BillingAccountRecord {
   defaultAsset?: string;
   availableCredits: number;
   reservedCredits: number;
+  totalCredits?: number;
+  spendableCredits?: number;
+  pendingReservedCredits?: number;
   updatedAt: string;
 }
 
@@ -512,6 +515,14 @@ export interface SendDraftResult {
   draftId: string;
   outboundJobId: string;
   status: OutboundJobStatus;
+  acceptedForDelivery?: true;
+  deliveryState?: "queued";
+  finalDeliveryState?: "pending";
+  statusCheck?: {
+    outboundJobPath: string;
+    draftPath: string;
+  };
+  message?: string;
 }
 
 export interface DraftAttachment {
@@ -555,6 +566,46 @@ export interface CreateAndSendAccepted {
   draft: DraftRecord;
   outboundJobId: string;
   status: OutboundJobStatus;
+  acceptedForDelivery?: true;
+  deliveryState?: "queued";
+  finalDeliveryState?: "pending";
+  statusCheck?: {
+    outboundJobPath: string;
+    draftPath: string;
+  };
+  message?: string;
+}
+
+export interface OutboundJobStatusResult {
+  id: string;
+  status: OutboundJobStatus;
+  retryCount: number;
+  nextRetryAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  acceptedForDelivery: true;
+  deliveryState: OutboundJobStatus;
+  finalDeliveryState: "pending" | "sent" | "failed";
+  message: {
+    id: string;
+    status: MessageStatus;
+    providerMessageId?: string;
+    fromAddr: string;
+    toAddr: string;
+    subject?: string;
+    sentAt?: string;
+    createdAt: string;
+  };
+  draft?: {
+    id: string;
+    status: DraftStatus;
+    threadId?: string;
+    sourceMessageId?: string;
+    createdVia?: string;
+    updatedAt: string;
+  } | null;
+  deliveryEvents: DeliveryEventRecord[];
 }
 
 export interface HighLevelSendResult extends CreateAndSendAccepted {}
@@ -1370,6 +1421,10 @@ export class MailagentsAgentClient {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}`);
   }
 
+  async getOutboundJob(outboundJobId: string): Promise<OutboundJobStatusResult> {
+    return this.requestJson(`/v1/outbound-jobs/${encodeURIComponent(outboundJobId)}`);
+  }
+
   async sendDraft(draftId: string, idempotencyKey?: string): Promise<SendDraftResult> {
     return this.requestJson(`/v1/drafts/${encodeURIComponent(draftId)}/send`, {
       method: "POST",
@@ -1564,8 +1619,20 @@ export class MailagentsAgentClient {
 
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new MailagentsClientError(`HTTP request failed: ${response.status}`, {
+      const errorPayload = payload && typeof payload === "object" ? payload as {
+        error?: unknown;
+        message?: unknown;
+        code?: unknown;
+      } : undefined;
+      throw new MailagentsClientError(
+        typeof errorPayload?.message === "string"
+          ? errorPayload.message
+          : typeof errorPayload?.error === "string"
+            ? errorPayload.error
+            : `HTTP request failed: ${response.status}`,
+        {
         status: response.status,
+        errorCode: typeof errorPayload?.code === "string" ? errorPayload.code : undefined,
       });
     }
     return payload as T;

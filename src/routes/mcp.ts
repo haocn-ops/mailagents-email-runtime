@@ -124,6 +124,14 @@ interface CreatedAndSentDraftResult {
   draft: Awaited<ReturnType<typeof createDraft>>;
   outboundJobId: string;
   status: "queued";
+  acceptedForDelivery?: true;
+  deliveryState?: "queued";
+  finalDeliveryState?: "pending";
+  statusCheck?: {
+    outboundJobPath: string;
+    draftPath: string;
+  };
+  message?: string;
 }
 
 async function enqueueReplayTask(env: Env, input: {
@@ -429,10 +437,10 @@ async function validateDraftOutboundCredits(env: Env, draft: {
   });
 
   if (!creditCheck.hasSufficientCredits) {
-    throw new McpToolError(
-      "insufficient_credits",
-      `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
-    );
+    throw createInsufficientCreditsToolError({
+      availableCredits: creditCheck.availableCredits,
+      creditsRequired: creditCheck.creditsRequired,
+    });
   }
 }
 
@@ -895,6 +903,67 @@ function toolErrorPayload(errorCode: string, message: string, details?: unknown)
   };
 }
 
+function buildInsufficientCreditsToolDetails(input: {
+  availableCredits?: number;
+  creditsRequired: number;
+}) {
+  const currentCredits = input.availableCredits ?? 0;
+  return {
+    currentCredits,
+    requiredCredits: input.creditsRequired,
+    suggestedAction: "Use POST /v1/billing/topup to add credits, then retry the send with the same idempotency key if applicable.",
+    docUrl: "/limits",
+  };
+}
+
+function createInsufficientCreditsToolError(input: {
+  availableCredits?: number;
+  creditsRequired: number;
+}): McpToolError {
+  const details = buildInsufficientCreditsToolDetails(input);
+  return new McpToolError(
+    "insufficient_credits",
+    `Insufficient credits for external sending. Required: ${input.creditsRequired}, available: ${details.currentCredits}`,
+    details,
+  );
+}
+
+function buildQueuedCreateAndSendToolResult(input: {
+  draft: Awaited<ReturnType<typeof createDraft>>;
+  outboundJobId: string;
+  status: "queued";
+}): CreatedAndSentDraftResult {
+  return {
+    ...input,
+    acceptedForDelivery: true,
+    deliveryState: "queued",
+    finalDeliveryState: "pending",
+    statusCheck: {
+      outboundJobPath: `/v1/outbound-jobs/${encodeURIComponent(input.outboundJobId)}`,
+      draftPath: `/v1/drafts/${encodeURIComponent(input.draft.id)}`,
+    },
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+  };
+}
+
+function buildQueuedSendDraftToolResult(input: {
+  draftId: string;
+  outboundJobId: string;
+  status: "queued";
+}) {
+  return {
+    ...input,
+    acceptedForDelivery: true,
+    deliveryState: "queued" as const,
+    finalDeliveryState: "pending" as const,
+    statusCheck: {
+      outboundJobPath: `/v1/outbound-jobs/${encodeURIComponent(input.outboundJobId)}`,
+      draftPath: `/v1/drafts/${encodeURIComponent(input.draftId)}`,
+    },
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+  };
+}
+
 async function validateBindingResources(
   env: Env,
   tenantId: string,
@@ -1290,10 +1359,10 @@ async function createAndSendDraftForMcp(env: Env, input: {
       createdVia: input.createdVia,
     });
     if (!creditCheck.hasSufficientCredits) {
-      throw new McpToolError(
-        "insufficient_credits",
-        `Insufficient credits for external sending. Required: ${creditCheck.creditsRequired}, available: ${creditCheck.availableCredits ?? 0}`,
-      );
+      throw createInsufficientCreditsToolError({
+        availableCredits: creditCheck.availableCredits,
+        creditsRequired: creditCheck.creditsRequired,
+      });
     }
   };
 
@@ -1312,11 +1381,11 @@ async function createAndSendDraftForMcp(env: Env, input: {
       });
       sideEffectCommitted = true;
       const sendResult = await enqueueDraftSend(env, draft.id);
-      return {
+      return buildQueuedCreateAndSendToolResult({
         draft,
         outboundJobId: sendResult.outboundJobId,
         status: sendResult.status,
-      };
+      });
     } catch (error) {
       throw sideEffectCommitted ? markSideEffectCommitted(error) : error;
     }
@@ -1376,11 +1445,11 @@ async function createAndSendDraftForMcp(env: Env, input: {
       resourceId: draft.id,
     });
     const sendResult = await enqueueDraftSend(env, draft.id);
-    const response = {
+    const response = buildQueuedCreateAndSendToolResult({
       draft,
       outboundJobId: sendResult.outboundJobId,
       status: sendResult.status,
-    };
+    });
     await completeIdempotencyKey(env, {
       operation: "draft_send",
       tenantId: input.tenantId,
@@ -2371,16 +2440,22 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
             resourceId: response.outboundJobId,
             response,
           });
-          return response;
+          return buildQueuedSendDraftToolResult(response);
         }
         throw new McpToolError("idempotency_in_progress", "A draft send request with this idempotency key is already in progress");
       }
       if (reservation.status === "completed") {
         await validateReplayableDraftSend();
-        return reservation.record.response ?? await restoreEnqueuedDraftSend(env, {
-          draftId,
-          outboundJobId: reservation.record.resourceId,
-        });
+        return buildQueuedSendDraftToolResult(
+          reservation.record.response as {
+            draftId: string;
+            outboundJobId: string;
+            status: "queued";
+          } ?? await restoreEnqueuedDraftSend(env, {
+            draftId,
+            outboundJobId: reservation.record.resourceId,
+          })
+        );
       }
 
       if (draft.status !== "draft" && draft.status !== "approved") {
@@ -2411,7 +2486,7 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
           resourceId: result.outboundJobId,
           response,
         });
-        return response;
+        return buildQueuedSendDraftToolResult(response);
       } catch (error) {
         if (!sendEnqueued) {
           await releaseIdempotencyKey(env, "draft_send", draft.tenantId, idempotencyKey);
@@ -2440,11 +2515,11 @@ async function callTool(request: Request, env: Env, toolName: string, args: Reco
     await validateDraftOutboundCredits(env, draft);
 
     const result = await enqueueDraftSend(env, draftId);
-    return {
+    return buildQueuedSendDraftToolResult({
       draftId,
       outboundJobId: result.outboundJobId,
       status: result.status,
-    };
+    });
   }
 
   if (toolName === "cancel_draft") {

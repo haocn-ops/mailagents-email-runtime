@@ -170,6 +170,8 @@ This endpoint enqueues async delivery and returns:
 - `draftId`
 - `outboundJobId`
 - accepted `status`
+- `statusCheck.outboundJobPath`
+- `statusCheck.draftPath`
 
 Token requirements:
 
@@ -182,6 +184,8 @@ Important send rules:
 
 - sending is asynchronous
 - accepted does not mean delivered
+- poll `GET /v1/outbound-jobs/{outboundJobId}` for the current runtime view of
+  `queued`, `retry`, `sent`, or `failed`
 - if reply headers or attachments are present, the runtime uses the richer
   provider-specific send path; in SES-backed environments that usually means raw MIME send
 - when send state is uncertain, inspect job and message state before trying again

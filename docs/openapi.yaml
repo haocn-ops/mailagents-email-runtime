@@ -1205,6 +1205,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SendDraftAccepted'
+  /v1/outbound-jobs/{outboundJobId}:
+    get:
+      tags: [Drafts]
+      summary: Inspect the current status of an accepted outbound send
+      operationId: getOutboundJob
+      parameters:
+        - $ref: '#/components/parameters/OutboundJobId'
+      responses:
+        '200':
+          description: Outbound job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutboundJobStatusResult'
   /v1/webhooks/ses:
     post:
       tags: [Webhooks]
@@ -1253,6 +1267,12 @@ components:
         type: string
     DraftId:
       name: draftId
+      in: path
+      required: true
+      schema:
+        type: string
+    OutboundJobId:
+      name: outboundJobId
       in: path
       required: true
       schema:
@@ -1651,8 +1671,19 @@ components:
           type: string
         availableCredits:
           type: integer
+          description: Credits currently spendable right now after subtracting any queued-send reservations.
         reservedCredits:
           type: integer
+          description: Credits temporarily held for queued outbound sends that have not settled or been released yet.
+        totalCredits:
+          type: integer
+          description: Ledger-backed credits before subtracting in-flight reservations. Equal to availableCredits + reservedCredits.
+        spendableCredits:
+          type: integer
+          description: Alias for availableCredits to make the semantics explicit for agent callers.
+        pendingReservedCredits:
+          type: integer
+          description: Alias for reservedCredits to make the semantics explicit for agent callers.
         updatedAt:
           type: string
           format: date-time
@@ -1733,8 +1764,10 @@ components:
           $ref: '#/components/schemas/BillingTopupQuote'
     BillingTopupPendingResponse:
       type: object
-      required: [receipt, creditsRequested, verificationStatus, message]
+      required: [receiptId, receipt, creditsRequested, verificationStatus, message]
       properties:
+        receiptId:
+          type: string
         receipt:
           $ref: '#/components/schemas/PaymentReceipt'
         creditsRequested:
@@ -1797,8 +1830,10 @@ components:
           $ref: '#/components/schemas/X402PaymentRequirement'
     BillingUpgradePendingResponse:
       type: object
-      required: [receipt, targetPricingTier, includedCredits, verificationStatus, message]
+      required: [receiptId, receipt, targetPricingTier, includedCredits, verificationStatus, message]
       properties:
+        receiptId:
+          type: string
         receipt:
           $ref: '#/components/schemas/PaymentReceipt'
         targetPricingTier:
@@ -1814,13 +1849,16 @@ components:
     BillingPaymentConfirmRequest:
       type: object
       required: [receiptId]
+      description: Use the `receiptId` returned as `receipt.id` or top-level `receiptId` from `POST /v1/billing/topup` or `POST /v1/billing/upgrade-intent`. You can also retrieve it from `GET /v1/billing/receipts`.
       properties:
         receiptId:
           type: string
     BillingPaymentConfirmResponse:
       type: object
-      required: [receipt, verificationStatus, message]
+      required: [receiptId, receipt, verificationStatus, message]
       properties:
+        receiptId:
+          type: string
         receipt:
           $ref: '#/components/schemas/PaymentReceipt'
         ledgerEntry:
@@ -2931,7 +2969,7 @@ components:
           type: string
     SendDraftAccepted:
       type: object
-      required: [draftId, outboundJobId, status]
+      required: [draftId, outboundJobId, status, acceptedForDelivery, deliveryState, finalDeliveryState, statusCheck, message]
       properties:
         draftId:
           type: string
@@ -2939,9 +2977,21 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/OutboundJobStatus'
+        acceptedForDelivery:
+          type: boolean
+        deliveryState:
+          type: string
+          enum: [queued]
+        finalDeliveryState:
+          type: string
+          enum: [pending]
+        statusCheck:
+          $ref: '#/components/schemas/SendStatusCheck'
+        message:
+          type: string
     CreateAndSendAccepted:
       type: object
-      required: [draft, outboundJobId, status]
+      required: [draft, outboundJobId, status, acceptedForDelivery, deliveryState, finalDeliveryState, statusCheck, message]
       properties:
         draft:
           $ref: '#/components/schemas/Draft'
@@ -2949,6 +2999,98 @@ components:
           type: string
         status:
           $ref: '#/components/schemas/OutboundJobStatus'
+        acceptedForDelivery:
+          type: boolean
+        deliveryState:
+          type: string
+          enum: [queued]
+        finalDeliveryState:
+          type: string
+          enum: [pending]
+        statusCheck:
+          $ref: '#/components/schemas/SendStatusCheck'
+        message:
+          type: string
+    SendStatusCheck:
+      type: object
+      required: [outboundJobPath, draftPath]
+      properties:
+        outboundJobPath:
+          type: string
+        draftPath:
+          type: string
+    OutboundJobStatusResult:
+      type: object
+      required:
+        [id, status, retryCount, createdAt, updatedAt, acceptedForDelivery, deliveryState, finalDeliveryState, message, deliveryEvents]
+      properties:
+        id:
+          type: string
+        status:
+          $ref: '#/components/schemas/OutboundJobStatus'
+        retryCount:
+          type: integer
+        nextRetryAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        acceptedForDelivery:
+          type: boolean
+        deliveryState:
+          $ref: '#/components/schemas/OutboundJobStatus'
+        finalDeliveryState:
+          type: string
+          enum: [pending, sent, failed]
+        message:
+          type: object
+          required: [id, status, fromAddr, toAddr, createdAt]
+          properties:
+            id:
+              type: string
+            status:
+              $ref: '#/components/schemas/MessageStatus'
+            providerMessageId:
+              type: string
+            fromAddr:
+              type: string
+            toAddr:
+              type: string
+            subject:
+              type: string
+            sentAt:
+              type: string
+              format: date-time
+            createdAt:
+              type: string
+              format: date-time
+        draft:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            status:
+              $ref: '#/components/schemas/DraftStatus'
+            threadId:
+              type: string
+            sourceMessageId:
+              type: string
+            createdVia:
+              type: string
+            updatedAt:
+              type: string
+              format: date-time
+        deliveryEvents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryEvent'
     ReplyAccepted:
       allOf:
         - $ref: '#/components/schemas/CreateAndSendAccepted'

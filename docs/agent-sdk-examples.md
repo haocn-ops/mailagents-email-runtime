@@ -96,6 +96,13 @@ curl -sS 'https://api.mailagents.net/v1/mailboxes/self/messages?limit=10' \
   -H "authorization: Bearer $TOKEN" | jq
 ```
 
+For accepted outbound sends, poll the authenticated outbound-job status route:
+
+```bash
+curl -sS "https://api.mailagents.net/v1/outbound-jobs/$OUTBOUND_JOB_ID" \
+  -H "authorization: Bearer $TOKEN" | jq
+```
+
 ## 3. Discover MCP Tools
 
 ```bash

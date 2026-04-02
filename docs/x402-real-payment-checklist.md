@@ -33,6 +33,8 @@ This point is easy to misunderstand, so it is worth stating explicitly:
 2. The second billing request is the proof-submission request.
 3. Mailagents only creates a `receiptId` after it receives a
    `payment-signature` header on that second request.
+4. The created receipt id is returned as `receipt.id`, and you can later look it
+   up again with `GET /v1/billing/receipts`.
 
 That means:
 
