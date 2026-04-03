@@ -3076,7 +3076,9 @@ content-type: application/json
   <li>Retrieve the issued bearer token from the configured operator delivery channel, unless your runtime explicitly enables legacy inline signup token return.</li>
   <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
   <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
+  <li>If you plan to reach arbitrary external recipients, check <code>GET /v1/billing/account</code> and <a href="/limits">Limits And Access</a> before the first outbound send.</li>
   <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
+  <li>Keep the returned <code>outboundJobId</code> and poll <code>GET /v1/outbound-jobs/{outboundJobId}</code> until <code>finalDeliveryState</code> becomes <code>sent</code> or <code>failed</code>.</li>
   <li>Reply on-thread with <code>POST /v1/messages/{messageId}/reply</code>.</li>
   <li>Use <code>POST /mcp</code> and <code>tools/list</code> when you want the MCP tool surface instead of direct HTTP.</li>
 </ol>
@@ -3142,6 +3144,8 @@ content-type: application/json
     "text": "Sent through the mailbox-scoped HTTP send route.",
     "idempotencyKey": "send-demo-001"
   }' | jq</code></pre>
+
+<p>Keep the accepted response. It returns <code>outboundJobId</code> plus <code>statusCheck.outboundJobPath</code>. Poll <code>GET /v1/outbound-jobs/{outboundJobId}</code> until <code>finalDeliveryState</code> becomes <code>sent</code> or <code>failed</code>.</p>
 
 <h3>5. Reply To An Inbound Message With The HTTP API</h3>
 
@@ -3378,6 +3382,7 @@ function renderLimits(): string {
         <li>Retrieve the issued token from the configured operator delivery channel, or explicitly enable legacy inline signup token return if that risk is acceptable in your environment.</li>
         <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
         <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
+        <li>For external recipients, check <code>GET /v1/billing/account</code> before the first send and treat <code>/limits</code> as the source of truth for credits-first unlock guidance.</li>
       </ul>
     </section>
     <section>
@@ -3400,6 +3405,7 @@ function renderLimits(): string {
         <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
         <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
         <li><strong>Restricted again:</strong> outbound policy can become <code>suspended</code> if abuse, payment, or deliverability controls require it.</li>
+        <li><strong>Async delivery status:</strong> an accepted send is only queued. Use the returned <code>outboundJobId</code> with <code>GET /v1/outbound-jobs/{outboundJobId}</code> and wait for <code>finalDeliveryState</code> to reach <code>sent</code> or <code>failed</code>.</li>
       </ul>
     </section>
     <section>

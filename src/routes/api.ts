@@ -252,7 +252,7 @@ function buildQueuedSendAcceptedResponse(input: {
     deliveryState: "queued" as const,
     finalDeliveryState: "pending" as const,
     statusCheck: buildSendStatusCheck(input.outboundJobId, input.draftId),
-    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet. Poll statusCheck.outboundJobPath for the current pending, sent, or failed delivery state.",
   };
 }
 
@@ -267,7 +267,7 @@ function buildQueuedCreateAndSendAcceptedResponse(input: {
     deliveryState: "queued" as const,
     finalDeliveryState: "pending" as const,
     statusCheck: buildSendStatusCheck(input.outboundJobId, input.draft.id),
-    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet.",
+    message: "Send queued for asynchronous delivery. Accepted means the runtime queued the send, not that the provider has delivered it yet. Poll statusCheck.outboundJobPath for the current pending, sent, or failed delivery state.",
   };
 }
 

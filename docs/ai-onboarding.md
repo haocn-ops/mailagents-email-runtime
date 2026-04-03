@@ -101,16 +101,19 @@ For production onboarding through the signup API:
 
 1. call `POST /public/signup`
 2. retrieve the mailbox-scoped bearer token from the configured operator delivery channel
-3. call `POST /mcp` with `tools/list` to discover the runtime surface
-4. use that token for `list_messages`, `send_email`, `reply_to_message`, or the mailbox self routes
-5. if the token expires, call `POST /public/token/reissue`
-6. retrieve the refreshed token from the original `operatorEmail`
-7. if the token is still valid and the agent wants to rotate it proactively,
+3. confirm mailbox context with `GET /v1/mailboxes/self`
+4. if the workflow will target arbitrary external recipients, check `GET /v1/billing/account` and `/limits` before the first outbound send
+5. call `POST /mcp` with `tools/list` to discover the runtime surface
+6. use that token for `list_messages`, `send_email`, `reply_to_message`, or the mailbox self routes
+7. when a send is accepted, keep `outboundJobId` and poll `GET /v1/outbound-jobs/{outboundJobId}` until `finalDeliveryState` becomes `sent` or `failed`
+8. if the token expires, call `POST /public/token/reissue`
+9. retrieve the refreshed token from the original `operatorEmail`
+10. if the token is still valid and the agent wants to rotate it proactively,
    call `POST /v1/auth/token/rotate`
-8. use `delivery: "inline"` for immediate return, `delivery: "self_mailbox"`
+11. use `delivery: "inline"` for immediate return, `delivery: "self_mailbox"`
    to send the refreshed token back to the mailbox itself, or `delivery:
    "both"` for both channels
-9. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
+12. fall back to `POST /v1/auth/tokens` only for broader operator workflows or
    operator-managed provisioning
 
 `POST /public/token/reissue` is intentionally recovery-only:
@@ -193,7 +196,7 @@ High-risk operations:
 When unsure whether an outbound action succeeded:
 
 1. inspect the draft
-2. inspect the outbound job
+2. inspect the outbound job and prefer `finalDeliveryState` over the initial accepted status
 3. inspect the message delivery events
 4. avoid re-sending until state is confirmed
 

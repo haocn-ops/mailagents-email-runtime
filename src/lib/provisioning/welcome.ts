@@ -14,6 +14,8 @@ export function buildWelcomeText(input: {
     `Mailbox: ${input.mailboxAddress}`,
     "",
     "You can now use this mailbox for inbound email, transactional replies, and managed agent workflows.",
+    "If you plan to send to external recipients, check credits and access policy first: GET /v1/billing/account and /limits.",
+    "When a send is accepted, keep the returned outboundJobId and poll statusCheck.outboundJobPath to confirm pending, sent, or failed delivery state.",
   ];
 
   if (input.accessToken) {
@@ -63,6 +65,8 @@ export function buildWelcomeHtml(input: {
   <strong>Agent:</strong> ${escapeHtml(input.agentName)}<br />
   <strong>Mailbox:</strong> ${escapeHtml(input.mailboxAddress)}</p>
   <p>You can now use this mailbox for inbound email, transactional replies, and managed agent workflows.</p>
+  <p>If you plan to send to external recipients, check credits and access policy first with <code>GET /v1/billing/account</code> and <a href="https://api.mailagents.net/limits">/limits</a>.</p>
+  <p>When a send is accepted, keep the returned <code>outboundJobId</code> and poll <code>statusCheck.outboundJobPath</code> to confirm whether delivery is still pending, sent, or failed.</p>
   ${tokenSection}
   <p><a href="https://api.mailagents.net/v2/meta/runtime">Runtime metadata</a><br />
   <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md">AI agent guide</a></p>`;
@@ -82,6 +86,8 @@ export function buildTokenReissueText(input: {
     `Product: ${input.productName}`,
     `Agent: ${input.agentName}`,
     `Mailbox: ${input.mailboxAddress}`,
+    "",
+    "If you are resuming outbound work, check current credits and access policy before treating arbitrary external delivery as ready: GET /v1/billing/account and /limits.",
   ];
 
   if (input.accessToken) {
@@ -130,6 +136,7 @@ export function buildTokenReissueHtml(input: {
   <p><strong>Product:</strong> ${escapeHtml(input.productName)}<br />
   <strong>Agent:</strong> ${escapeHtml(input.agentName)}<br />
   <strong>Mailbox:</strong> ${escapeHtml(input.mailboxAddress)}</p>
+  <p>If you are resuming outbound work, check current credits and access policy before treating arbitrary external delivery as ready with <code>GET /v1/billing/account</code> and <a href="https://api.mailagents.net/limits">/limits</a>.</p>
   ${tokenSection}
   <p><a href="https://api.mailagents.net/v2/meta/runtime">Runtime metadata</a><br />
   <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md">AI agent guide</a></p>`;
