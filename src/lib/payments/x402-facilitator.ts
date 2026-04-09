@@ -397,6 +397,7 @@ function normalizeSettlementResponse(
   const settlementReference = extractReference(input.data, [
     "settlementReference",
     "transactionHash",
+    "transaction",
     "txHash",
     "signature",
     "reference",
@@ -436,7 +437,7 @@ function normalizeSettlementResponse(
       network,
       asset: asString(input.data?.asset) ?? input.paymentRequirements.asset,
       amount: asString(input.data?.amount) ?? getX402RequirementAmount(input.paymentRequirements),
-      transactionHash: extractReference(input.data, ["transactionHash", "txHash", "signature"]),
+      transactionHash: extractReference(input.data, ["transactionHash", "transaction", "txHash", "signature"]),
       settlementReference,
       raw: input.data,
     },
