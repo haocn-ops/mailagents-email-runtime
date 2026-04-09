@@ -76,6 +76,7 @@ The current flow is:
 1. Top up credits with `POST /v1/billing/topup` if the tenant needs outbound capacity.
 2. Or request an upgrade with `POST /v1/billing/upgrade-intent`; a settled upgrade also grants the configured upgrade credit bundle.
 3. If the environment still returns a `pending` or `verified` receipt, retry facilitator settlement with `POST /v1/billing/payment/confirm`.
+   Pass the Mailagents runtime `receiptId` in the form `prc_...`, not a blockchain transaction hash, chain receipt hash, or facilitator reference.
 4. Verify the resulting state with:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
@@ -115,6 +116,11 @@ settled state without a second confirmation request. If the first settlement
 attempt does not complete, `POST /v1/billing/payment/confirm` is used only to
 retry facilitator settlement for the existing receipt. Manual operator-driven
 payment confirmation is no longer part of the supported x402 flow.
+
+If a stored receipt's x402 authorization has already expired, retrying
+`POST /v1/billing/payment/confirm` will not rescue it. In that case, request a
+fresh quote, sign a new x402 proof, and submit a new topup or upgrade request
+so the runtime can create a new `receiptId`.
 
 Do not assume payment proof alone is enough until the tenant billing account
 shows usable credits or the tenant send policy is explicitly enabled.

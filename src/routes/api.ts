@@ -285,6 +285,20 @@ function buildMissingReceiptIdResponse(): Response {
   }, { status: 400 });
 }
 
+function buildReceiptNotFoundResponse(): Response {
+  return json({
+    error: "Payment receipt not found",
+    code: "receipt_not_found",
+    message: "POST /v1/billing/payment/confirm only accepts a Mailagents receipt id such as prc_... from POST /v1/billing/topup, POST /v1/billing/upgrade-intent, or GET /v1/billing/receipts.",
+    suggestedAction: "Read the earlier billing response or call GET /v1/billing/receipts, then retry with the runtime receipt.id. Do not pass a blockchain transaction hash, chain receipt hash, or facilitator reference as receiptId.",
+    receiptSources: [
+      "POST /v1/billing/topup",
+      "POST /v1/billing/upgrade-intent",
+      "GET /v1/billing/receipts",
+    ],
+  }, { status: 404 });
+}
+
 function markSideEffectCommitted(error: unknown): unknown {
   if (error instanceof Error) {
     Object.assign(error, { sideEffectCommitted: true });
@@ -1540,7 +1554,7 @@ router.on("POST", "/v1/billing/payment/confirm", async (request, env) => {
 
   const receipt = await getTypedTenantPaymentReceiptById(env, auth.tenantId, body.receiptId);
   if (!receipt) {
-    return json({ error: "Payment receipt not found" }, { status: 404 });
+    return buildReceiptNotFoundResponse();
   }
 
   if (receipt.status === "failed") {

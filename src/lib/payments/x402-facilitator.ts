@@ -128,7 +128,7 @@ function extractErrorMessage(data: Record<string, unknown> | undefined): string 
     return undefined;
   }
 
-  for (const key of ["error", "message", "reason"]) {
+  for (const key of ["error", "message", "reason", "errorReason", "invalidMessage", "invalidReason"]) {
     const value = asString(data[key]);
     if (value) {
       return value;

@@ -70,6 +70,14 @@ not complete on the first try, `POST /v1/billing/payment/confirm` can be used as
 a facilitator retry endpoint by submitting the `receiptId` only. Manual payment
 confirmation is no longer part of the supported x402 flow.
 
+Important:
+
+- `receiptId` means the Mailagents runtime id in the form `prc_...`
+- do not pass a blockchain transaction hash, chain receipt hash, or facilitator
+  reference to `POST /v1/billing/payment/confirm`
+- if no new `prc_...` receipt was created, investigate the original
+  `POST /v1/billing/topup` or `POST /v1/billing/upgrade-intent` response first
+
 ## Target Outcome
 
 After completing this checklist, a tenant should be able to:
@@ -297,6 +305,12 @@ Expected result:
 - ledger gets a `topup` entry
 - `availableCredits` increases
 
+Do not keep retrying an older receipt indefinitely. If the stored x402 proof
+used EIP-3009 authorization and its `payload.authorization.validBefore` window
+has already passed, facilitator settlement will continue to fail. In that case,
+request a fresh quote, sign a new proof, submit it again to
+`POST /v1/billing/topup`, and use the new `receiptId`.
+
 ### Step 7
 
 Verify:
@@ -412,6 +426,8 @@ In practice, check these first:
 2. Does the decoded payload include `"x402Version": 2`?
 3. Is the client sending the whole x402 proof object, not just tx metadata?
 4. Does the proof include both `accepted` and `payload.authorization`?
+5. If `payment/confirm` later returns `404`, did the earlier billing response
+   actually return a new Mailagents `receiptId` in the form `prc_...`?
 
 Do not jump straight to "server facilitator is unconfigured" when this error
 appears. A working facilitator can still return this exact error if the client
@@ -487,6 +503,42 @@ Check:
 - base64 decode the header value locally
 - confirm the JSON includes `"x402Version": 2`
 - confirm the proof is not just a raw tx hash or receipt
+
+### Case 4b: The server returns `404 Payment receipt not found`
+
+Likely cause:
+
+- `POST /v1/billing/payment/confirm` was called with something other than a
+  Mailagents runtime `receiptId`
+- or the original `topup` / `upgrade-intent` call never created a new receipt
+
+Check:
+
+- the earlier billing response body for `receipt.id` or top-level `receiptId`
+- `GET /v1/billing/receipts` for the tenant
+- whether the submitted value starts with `prc_...`
+
+Do not use a blockchain transaction hash, chain receipt hash, or facilitator
+reference as `receiptId`.
+
+### Case 4c: The facilitator says `authorization_valid_before` or equivalent
+
+Likely cause:
+
+- the stored x402 proof is structurally valid
+- but its EIP-3009 authorization window has already expired
+
+Check:
+
+- `paymentProof.parsed.payload.authorization.validBefore`
+- the receipt creation time and any much-later retry time
+
+Resolution:
+
+- request a fresh quote
+- sign a new x402 proof
+- submit a new `topup` or `upgrade-intent` request
+- use the newly returned `receiptId`
 
 ### Case 5: The server returns `200 settled` but credits or policy did not change
 
