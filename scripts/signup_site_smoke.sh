@@ -8,7 +8,7 @@ ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
 RESERVED_ALIAS="${RESERVED_ALIAS_FOR_SMOKE:-hello}"
 SIGNUP_ALIAS="${SIGNUP_ALIAS_FOR_SMOKE:-signup-$RUN_ID}"
-OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-signup-$RUN_ID@example.com}"
+OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-signup-$RUN_ID@local.mailagents.test}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -20,6 +20,7 @@ TENANT_ID=""
 MAILBOX_ID=""
 MAILBOX_ADDRESS=""
 OUTBOUND_JOB_ID=""
+AGENT_ID=""
 
 cleanup() {
   if [[ "${#TEMP_FILES[@]}" -gt 0 ]]; then
@@ -154,7 +155,7 @@ capture_request "POST" "/public/signup" "{
   \"useCase\": \"Verifying reserved aliases are blocked.\"
 }"
 assert_status "409"
-jq -e --arg alias "$RESERVED_ALIAS" '.error | contains($alias) and contains("reserved")' "$LAST_BODY" >/dev/null
+jq -e '.error == "The requested mailbox alias is unavailable. Please choose a different alias."' "$LAST_BODY" >/dev/null
 
 echo "Creating a self-serve signup on the merged worker..."
 capture_request "POST" "/public/signup" "{
@@ -172,24 +173,16 @@ jq -e --arg alias "$SIGNUP_ALIAS" '
 ' "$LAST_BODY" >/dev/null
 TENANT_ID="$(jq -r '.tenantId' "$LAST_BODY")"
 MAILBOX_ID="$(jq -r '.mailboxId' "$LAST_BODY")"
+AGENT_ID="$(jq -r '.agentId' "$LAST_BODY")"
 MAILBOX_ADDRESS="$(jq -r '.mailboxAddress' "$LAST_BODY")"
 OUTBOUND_JOB_ID="$(jq -r '.outboundJobId // empty' "$LAST_BODY")"
 ACCESS_TOKEN="$(jq -r '.accessToken // empty' "$LAST_BODY")"
-
-if [[ -n "$ACCESS_TOKEN" ]]; then
-  TENANT_TOKEN="$ACCESS_TOKEN"
-else
-  echo "Signup did not return an access token, minting a tenant-scoped token for verification..."
-  capture_request "POST" "/v1/auth/tokens" "{
-    \"sub\": \"signup-site-smoke\",
-    \"tenantId\": \"$TENANT_ID\",
-    \"mailboxIds\": [\"$MAILBOX_ID\"],
-    \"scopes\": [\"mail:read\"],
-    \"expiresInSeconds\": 3600
-  }" "x-admin-secret: $ADMIN_SECRET"
-  assert_status "201"
-  TENANT_TOKEN="$(jq -r '.token' "$LAST_BODY")"
+if [[ -z "$ACCESS_TOKEN" ]]; then
+  echo "Expected signup to return an inline accessToken, but it was empty." >&2
+  cat "$LAST_BODY" >&2
+  exit 1
 fi
+TENANT_TOKEN="$ACCESS_TOKEN"
 
 echo "Checking mailbox-scoped access for the new signup..."
 capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $TENANT_TOKEN"

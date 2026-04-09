@@ -20,7 +20,7 @@ import {
   performSelfServeSignup,
   SignupError,
 } from "../lib/self-serve";
-import { issueSelfServeAccessToken } from "../lib/provisioning/default-access";
+import { issueSelfServeAccessToken, SELF_SERVE_DEFAULT_SCOPES } from "../lib/provisioning/default-access";
 import { buildDidWebDocument, buildHostedDidWeb, defaultHostedDidServices, isPublishedHostedDidBinding } from "../lib/did-web";
 import { releaseOutboundUsageReservation, settleOutboundUsageDebit } from "../lib/outbound-billing";
 import { checkOutboundCreditRequirement } from "../lib/outbound-credits";
@@ -4253,6 +4253,21 @@ async function requireSelfServiceTenantAccess(
       );
     }
     return null;
+  }
+
+  if (!claims.agentId || claims.mailboxIds.length !== 1) {
+    return json(
+      { error: "Only tenant-scoped or single-mailbox self-serve tokens can access self-service tenant resources" },
+      { status: 403 },
+    );
+  }
+
+  const missingScopes = SELF_SERVE_DEFAULT_SCOPES.filter((scope) => !claims.scopes.includes(scope));
+  if (missingScopes.length > 0) {
+    return json({
+      error: "Mailbox-scoped self-serve access to tenant resources requires the default signup scopes",
+      missingScopes,
+    }, { status: 403 });
   }
 
   const mailbox = await resolveSelfMailbox(env, claims);

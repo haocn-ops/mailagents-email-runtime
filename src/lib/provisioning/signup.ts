@@ -368,7 +368,7 @@ function shouldRequireConfiguredSignupRouting(env: Env): boolean {
 
 function shouldIssueInlineSignupToken(env: Env): boolean {
   const explicit = env.SELF_SERVE_PUBLIC_SIGNUP_INLINE_TOKEN_ENABLED?.trim().toLowerCase();
-  return explicit ? ["1", "true", "yes", "on"].includes(explicit) : false;
+  return explicit ? !["0", "false", "no", "off"].includes(explicit) : true;
 }
 
 function shouldAutoconfigureSignupRouting(env: Env): boolean {

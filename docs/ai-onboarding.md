@@ -57,9 +57,9 @@ Admin and debug routes are separate from bearer-auth API routes:
 
 For mailbox creation through the signup API, `POST /public/signup` issues a
 default mailbox-scoped bearer token for the created mailbox. By default that
-token is delivered through the configured operator channel instead of the
-anonymous HTTP response. Legacy inline return can be re-enabled only with
-explicit runtime opt-in.
+token is returned inline in the anonymous HTTP response. The configured
+operator channel remains available as a delivery path, and runtimes can
+explicitly disable inline return if they need operator-channel-only bootstrap.
 
 ## Minimum Safe Scopes
 
@@ -100,7 +100,7 @@ For local development:
 For production onboarding through the signup API:
 
 1. call `POST /public/signup`
-2. retrieve the mailbox-scoped bearer token from the configured operator delivery channel
+2. read the mailbox-scoped bearer token from the inline `accessToken` field in the signup response
 3. confirm mailbox context with `GET /v1/mailboxes/self`
 4. if the workflow will target arbitrary external recipients, check `GET /v1/billing/account` and `/limits` before the first outbound send
 5. call `POST /mcp` with `tools/list` to discover the runtime surface

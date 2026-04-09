@@ -9,6 +9,8 @@ ETHERS_PATH="${ETHERS_PATH:-$REPO_ROOT/node_modules/ethers}"
 OPERATOR_EMAIL="${OPERATOR_EMAIL_FOR_SMOKE:-hello@mailagents.net}"
 UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
 PERSIST_SUCCESS_JSON_PATH="${PERSIST_SUCCESS_JSON_PATH:-$REPO_ROOT/.secrets/latest-upgraded-mailbox.json}"
+DEV_D1_NAME="${DEV_D1_NAME_FOR_SMOKE:-mailagents-dev}"
+DEV_R2_BUCKET="${DEV_R2_BUCKET_FOR_SMOKE:-mailagents-dev-email}"
 
 TEMP_FILES=()
 
@@ -36,6 +38,7 @@ require_cmd curl
 require_cmd jq
 require_cmd python3
 require_cmd node
+require_cmd wrangler
 
 trap cleanup EXIT
 
@@ -74,7 +77,10 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
 
 TOKEN="$(python3 - <<'PY' "$SIGNUP_JSON"
 import json,sys
-print(json.load(open(sys.argv[1]))['accessToken'])
+payload=json.load(open(sys.argv[1]))
+token=payload.get("accessToken")
+if isinstance(token, str) and token:
+    print(token)
 PY
 )"
 
@@ -83,6 +89,71 @@ import json,sys
 print(json.load(open(sys.argv[1]))['tenantId'])
 PY
 )"
+
+if [[ -z "$TOKEN" ]]; then
+  OUTBOUND_JOB_ID="$(python3 - <<'PY' "$SIGNUP_JSON"
+import json,sys
+payload=json.load(open(sys.argv[1]))
+value=payload.get("outboundJobId")
+if isinstance(value, str):
+    print(value)
+PY
+)"
+
+  if [[ -z "$OUTBOUND_JOB_ID" ]]; then
+    echo "Signup did not return accessToken or outboundJobId." >&2
+    cat "$SIGNUP_JSON" >&2
+    exit 1
+  fi
+
+  DRAFT_META_JSON="$(new_temp)"
+  DRAFT_PAYLOAD_JSON="$(new_temp)"
+  echo "Signup did not inline a token. Resolving token from the queued welcome draft ..."
+  env -u CLOUDFLARE_API_TOKEN wrangler d1 execute "$DEV_D1_NAME" \
+    --remote \
+    --env dev \
+    --command "SELECT draft_r2_key FROM outbound_jobs WHERE id = '$OUTBOUND_JOB_ID' LIMIT 1;" \
+    > "$DRAFT_META_JSON"
+
+  DRAFT_R2_KEY="$(python3 - <<'PY' "$DRAFT_META_JSON"
+import json,sys
+raw=open(sys.argv[1]).read()
+start=raw.find('[')
+if start == -1:
+    raise SystemExit("Could not parse Wrangler D1 response.")
+payload=json.loads(raw[start:])
+results=payload[0].get("results") or []
+if not results or not results[0].get("draft_r2_key"):
+    raise SystemExit("Could not find welcome draft key for signup.")
+print(results[0]["draft_r2_key"])
+PY
+)"
+
+  env -u CLOUDFLARE_API_TOKEN wrangler r2 object get "${DEV_R2_BUCKET}/${DRAFT_R2_KEY}" \
+    --remote \
+    --pipe > "$DRAFT_PAYLOAD_JSON"
+
+  TOKEN="$(python3 - <<'PY' "$DRAFT_PAYLOAD_JSON"
+import json,sys
+payload=json.load(open(sys.argv[1]))
+text=payload.get("text") or ""
+if not isinstance(text, str):
+    raise SystemExit("Welcome draft did not include a text body.")
+marker="Default API access token"
+if marker not in text:
+    raise SystemExit("Welcome draft did not contain an access token section.")
+parts=[line.strip() for line in text.splitlines()]
+for idx,line in enumerate(parts):
+    if line == marker:
+        for candidate in parts[idx+1:]:
+            if candidate.startswith("eyJ"):
+                print(candidate)
+                raise SystemExit(0)
+        break
+raise SystemExit("Could not extract access token from welcome draft.")
+PY
+)"
+fi
 
 echo "Creating hosted did:web binding ..."
 curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
@@ -100,6 +171,13 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
   -H 'content-type: application/json' \
   --data '{"targetPricingTier":"paid_review"}' > /dev/null
 
+QUOTE_STATUS="$(awk '/^HTTP\// { status=$2 } END { print status }' "$QUOTE_HEADERS")"
+if [[ "$QUOTE_STATUS" != "402" ]]; then
+  echo "Expected HTTP 402 from /v1/billing/upgrade-intent but received ${QUOTE_STATUS:-<none>}." >&2
+  cat "$QUOTE_JSON" >&2
+  exit 1
+fi
+
 echo "Creating facilitator-ready x402 EIP-3009 payload ..."
 node - <<'NODE' "$QUOTE_JSON" "$PAYMENT_JSON" "$WALLET_JSON_PATH" "$ETHERS_PATH"
 const fs = require("fs");
@@ -109,7 +187,15 @@ const walletPath = process.argv[4];
 const ethersPath = process.argv[5];
 const { Wallet, randomBytes, hexlify } = require(ethersPath);
 const quoteEnvelope = JSON.parse(fs.readFileSync(quotePath, "utf8"));
+if (!quoteEnvelope?.quote || typeof quoteEnvelope.quote !== "object") {
+  console.error(JSON.stringify(quoteEnvelope, null, 2));
+  process.exit(1);
+}
 const paymentRequired = quoteEnvelope.quote.paymentRequired;
+if (!paymentRequired || typeof paymentRequired !== "object") {
+  console.error(JSON.stringify(quoteEnvelope, null, 2));
+  process.exit(1);
+}
 const accepted = paymentRequired.accepts[0];
 const resource = paymentRequired.resource;
 const walletJson = JSON.parse(fs.readFileSync(walletPath, "utf8"));
@@ -174,7 +260,13 @@ curl --http1.1 --retry 3 --retry-delay 1 --retry-all-errors -sS \
 
 RECEIPT_ID="$(python3 - <<'PY' "$PENDING_JSON"
 import json,sys
-print(json.load(open(sys.argv[1]))['receipt']['id'])
+payload=json.load(open(sys.argv[1]))
+receipt=payload.get("receipt")
+if not isinstance(receipt, dict) or not receipt.get("id"):
+    print("Upgrade proof submission did not return a receipt.", file=sys.stderr)
+    print(json.dumps(payload, indent=2), file=sys.stderr)
+    raise SystemExit(1)
+print(receipt["id"])
 PY
 )"
 

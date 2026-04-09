@@ -22,8 +22,8 @@ The default signup API token is:
 
 - mailbox-scoped to the new mailbox
 - agent-scoped to the default agent created during signup
-- delivered through the configured operator channel
-- returned in the signup API response only when `SELF_SERVE_PUBLIC_SIGNUP_INLINE_TOKEN_ENABLED` is explicitly enabled
+- returned inline in the signup API response by default
+- optionally also delivered through the configured operator channel
 
 Default scopes:
 

@@ -238,6 +238,7 @@ paths:
     get:
       tags: [Billing]
       summary: Get or initialize the billing account for the current tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: getBillingAccount
       responses:
         '200':
@@ -250,6 +251,7 @@ paths:
     post:
       tags: [Billing]
       summary: Start an x402-compatible topup flow for the current tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: createBillingTopupIntent
       requestBody:
         required: true
@@ -286,6 +288,7 @@ paths:
     post:
       tags: [Billing]
       summary: Start an x402-compatible upgrade payment flow for the current tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: createBillingUpgradeIntent
       requestBody:
         required: true
@@ -322,6 +325,7 @@ paths:
     post:
       tags: [Billing]
       summary: Retry facilitator settlement for a captured payment receipt
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: confirmBillingPayment
       requestBody:
         required: true
@@ -358,6 +362,7 @@ paths:
     get:
       tags: [Policy]
       summary: Get the send policy for a tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: getTenantSendPolicy
       parameters:
         - $ref: '#/components/parameters/TenantId'
@@ -416,6 +421,7 @@ paths:
     get:
       tags: [Billing]
       summary: List recent credit ledger entries for the current tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: listBillingLedger
       parameters:
         - name: limit
@@ -440,6 +446,7 @@ paths:
     get:
       tags: [Billing]
       summary: List recent payment receipts for the current tenant
+      description: Accepts either a tenant-scoped token or the default single-mailbox self-serve signup token for the same tenant.
       operationId: listPaymentReceipts
       parameters:
         - name: limit
@@ -1586,7 +1593,7 @@ components:
           type: string
         accessToken:
           type: string
-          description: Legacy opt-in mailbox-scoped bearer token returned inline only when public signup inline token delivery is explicitly enabled for the runtime.
+          description: Mailbox-scoped bearer token returned inline by default from public signup. Runtimes may explicitly disable inline return and fall back to operator-channel delivery only.
         accessTokenExpiresAt:
           type: string
           format: date-time

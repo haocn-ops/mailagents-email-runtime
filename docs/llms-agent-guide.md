@@ -87,10 +87,10 @@ Current shared `dev` URLs:
 
 Default integration auth is a signed bearer token.
 
-For mailboxes created through the signup API, the first bearer token is usually
-delivered through the configured operator channel after `POST /public/signup`.
-Legacy inline return from the anonymous HTTP response now requires explicit
-runtime opt-in.
+For mailboxes created through the signup API, the first bearer token is
+returned inline by default from `POST /public/signup`. The same token may also
+be delivered through the configured operator channel. Runtimes can explicitly
+disable inline return if they want operator-channel-only bootstrap.
 
 If that signup API token later expires, recovery should use
 `POST /public/token/reissue`. That endpoint only emails a refreshed token to
