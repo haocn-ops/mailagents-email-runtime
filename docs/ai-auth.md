@@ -48,6 +48,17 @@ The default expiration can be controlled with
 `SELF_SERVE_ACCESS_TOKEN_TTL_SECONDS`. If it is not set, the signup API token
 defaults to 30 days.
 
+Inline token behavior by route:
+
+- `POST /public/signup` returns the initial mailbox-scoped `accessToken`
+  inline by default
+- `POST /public/token/reissue` is recovery-only and never returns the refreshed
+  token inline
+- `POST /v1/auth/token/rotate` is the authenticated proactive path and can
+  return the rotated token inline
+
+## Recovering an Expired Signup Token
+
 If the signup API token expires, use `POST /public/token/reissue`.
 
 Important behavior:
@@ -57,6 +68,8 @@ Important behavior:
 - the refreshed token is emailed only to the original `operatorEmail` from signup
 - the refreshed token is never returned inline to the caller
 - mailbox cooldowns and source-IP rate limits apply to reduce abuse
+
+## Rotating a Still-Valid Signup Token
 
 If the signup API token is still valid and the agent wants to rotate
 proactively without emailing the operator, use `POST /v1/auth/token/rotate`.
