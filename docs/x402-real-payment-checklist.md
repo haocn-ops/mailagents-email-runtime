@@ -186,7 +186,12 @@ Expected result:
 
 ### Step 4
 
-Pay the quote using the Base Sepolia wallet.
+Create and sign the Base Sepolia EIP-3009 authorization with the payer wallet.
+
+For Mailagents' facilitator-backed `exact/eip3009` path, the signed
+authorization is submitted inside the x402 proof and the facilitator performs
+the on-chain settlement. Do not broadcast `transferWithAuthorization` yourself
+first using the same authorization nonce and signature.
 
 ### Step 5
 
@@ -202,6 +207,8 @@ Expected result:
 - HTTP `200` when facilitator-backed settlement completes immediately
 - HTTP `202` only if the receipt is captured but needs a later facilitator retry
 - receipt status `settled` or `verified`/`pending`, depending on the exact retry state
+- if the same authorization was already consumed on-chain by the client, a
+  later facilitator settle can fail with `invalid_exact_evm_transaction_failed`
 
 ### What The Client Must Actually Send
 
@@ -539,6 +546,33 @@ Resolution:
 - sign a new x402 proof
 - submit a new `topup` or `upgrade-intent` request
 - use the newly returned `receiptId`
+
+### Case 4d: The facilitator says `invalid_exact_evm_transaction_failed`
+
+Likely cause:
+
+- facilitator `verify` accepted the x402 proof
+- but the underlying EIP-3009 authorization was already consumed or cannot be
+  executed anymore at settle time
+- the most common self-inflicted version of this is broadcasting
+  `transferWithAuthorization` yourself and then submitting the same
+  authorization to Mailagents
+
+Check:
+
+- `paymentProof.parsed.payload.authorization.nonce`
+- whether the client submitted an on-chain transaction before or around the
+  same time as `POST /v1/billing/topup`
+- whether the chain receipt already shows `AuthorizationUsed` and `Transfer`
+  logs for that same nonce
+
+Resolution:
+
+- request a fresh quote
+- sign a fresh x402 proof with a new authorization nonce and validity window
+- submit the proof directly to `POST /v1/billing/topup`
+- let the facilitator execute settlement
+- do not pre-broadcast the same `transferWithAuthorization` yourself
 
 ### Case 5: The server returns `200 settled` but credits or policy did not change
 
