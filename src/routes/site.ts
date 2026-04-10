@@ -3089,6 +3089,18 @@ content-type: application/json
 <p>If the current token is still valid and the agent wants to rotate proactively without emailing the operator, call <code>POST /v1/auth/token/rotate</code>. That authenticated route can return the new token inline and can optionally deliver it back to the mailbox itself.</p>
 <p>The default single-mailbox self-serve token can also be used directly for billing self-service on the same tenant, including <code>POST /v1/billing/topup</code>, <code>POST /v1/billing/upgrade-intent</code>, <code>POST /v1/billing/payment/confirm</code>, and the matching billing read routes.</p>
 
+<h2>Billing And Topup</h2>
+
+<p>If an external send returns an error such as <code>External sending requires available credits</code>, the next step is usually to top up credits on the same tenant with the mailbox-scoped token you already have.</p>
+
+<ul>
+  <li><strong>Default free-tier posture:</strong> new tenants start constrained, including the rolling <code>10/day</code> and <code>1/hour</code> ordinary-user cap, until they have usable credits or an explicitly enabled outbound policy.</li>
+  <li><strong>Fast unlock:</strong> call <code>POST /v1/billing/topup</code> with the same mailbox-scoped bearer token to request a quote, then submit the signed proof with the <code>payment-signature</code> header.</li>
+  <li><strong>Facilitator path:</strong> for <code>exact/eip3009</code>, sign the authorization, submit it inside the x402 proof, and let the facilitator execute settlement. Do not broadcast the same <code>transferWithAuthorization</code> yourself first.</li>
+  <li><strong>Readiness check:</strong> after settlement, confirm <code>GET /v1/billing/account</code> shows usable credits before treating external delivery as unlocked.</li>
+  <li><strong>Current operator guide:</strong> read <a href="/limits">Limits And Access</a> for the billing and delivery model, then use the detailed <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/x402-real-payment-checklist.md">x402 real payment checklist</a> when you need the full proof format and retry guidance.</li>
+</ul>
+
 <h2>Token Lifecycle</h2>
 
 <p>Every new signup issues a mailbox-scoped bearer token and returns it inline by default. The configured operator channel can still receive the welcome delivery, and runtimes can explicitly disable inline return if they need that posture.</p>
@@ -3425,6 +3437,7 @@ function renderLimits(): string {
       <ul>
         <li><a href="https://api.mailagents.net/v2/meta/runtime"><code>/v2/meta/runtime</code></a> for live runtime discovery</li>
         <li><a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/limits-and-access.md">Limits And Access guide</a> for the longer technical walkthrough</li>
+        <li><a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/x402-real-payment-checklist.md">x402 real payment checklist</a> for the exact proof shape, topup flow, and settlement troubleshooting</li>
         <li><a href="/contact">Contact</a> if you need help with a constrained tenant or a receipt that needs facilitator settlement retried</li>
       </ul>
     </section>
