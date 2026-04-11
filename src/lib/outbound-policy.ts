@@ -86,7 +86,9 @@ export async function evaluateOutboundPolicy(env: Env, input: {
   const account = await ensureTenantBillingAccount(env, input.tenantId);
   const sendingUnlockedByPolicy =
     tenantPolicy.externalSendEnabled && tenantPolicy.outboundStatus === "external_enabled";
-  const sendingUnlockedByCredits = account.availableCredits > 0;
+  // Queue-time revalidation can happen after the current send has already reserved its credit.
+  // Treat reserved credits as sufficient to keep the credits-backed unlock active for that in-flight send.
+  const sendingUnlockedByCredits = (account.availableCredits + account.reservedCredits) > 0;
   const externalSendingUnlockedByPolicy = sendingUnlockedByPolicy;
   const externalSendingUnlockedByCredits = sendingUnlockedByCredits;
   const externalSendingUnlocked =
