@@ -5213,12 +5213,24 @@ function x402PaymentFailureResponse(
     headers.set(X402_PAYMENT_RESPONSE_HEADER, encodePaymentResponseHeader(settlement));
   }
 
-  return json({
+  const body: Record<string, unknown> = {
     error: message,
     protocol: "x402",
     verificationStatus: "failed",
     settlement,
-  }, {
+  };
+
+  if (settlement?.type === "settle" && settlement.settled === false && settlement.error === "invalid_exact_evm_transaction_failed") {
+    body.note = "settlementReference identifies the facilitator's own settle attempt. It can differ from a transaction you broadcast yourself before submitting the same authorization to Mailagents.";
+    body.suggestedAction = "If you already broadcast transferWithAuthorization yourself, request a fresh quote, sign a fresh proof with a new authorization nonce, and submit it directly to POST /v1/billing/topup without pre-broadcasting the same authorization.";
+    body.docUrl = "/limits";
+  } else if (settlement?.type === "verify" && settlement.isValid === false && settlement.error === "invalid_exact_evm_nonce_already_used") {
+    body.note = "The EIP-3009 authorization nonce in this proof has already been consumed on-chain, so the facilitator cannot reuse it for Mailagents settlement.";
+    body.suggestedAction = "Request a fresh quote, sign a fresh proof with a new authorization nonce, and submit it directly to POST /v1/billing/topup without first broadcasting transferWithAuthorization yourself.";
+    body.docUrl = "/limits";
+  }
+
+  return json(body, {
     status,
     headers,
   });

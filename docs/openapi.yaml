@@ -1891,6 +1891,12 @@ components:
         verificationStatus:
           type: string
           enum: [failed]
+        note:
+          type: string
+        suggestedAction:
+          type: string
+        docUrl:
+          type: string
         settlement:
           oneOf:
             - $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
@@ -1976,8 +1982,10 @@ components:
           type: string
         settlementReference:
           type: string
+          description: Facilitator settlement reference. In on-chain exact/eip3009 flows this is usually the facilitator's transaction hash or equivalent settlement attempt identifier.
         transactionHash:
           type: string
+          description: The facilitator transaction hash when settlement succeeded on-chain.
         raw:
           type: object
           additionalProperties: true
@@ -1999,6 +2007,7 @@ components:
           type: string
         settlementReference:
           type: string
+          description: Facilitator settlement reference for the failed settle attempt. This can differ from a caller-broadcast transaction hash if the caller already submitted the authorization on-chain before the facilitator retried it.
         raw:
           type: object
           additionalProperties: true
