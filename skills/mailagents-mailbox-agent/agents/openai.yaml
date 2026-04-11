@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mailagents Mailbox Agent"
+  short_description: "Onboard and operate a Mailagents mailbox agent"
+  default_prompt: "Onboard to Mailagents, discover mailbox-safe capabilities, read mailbox state, and send or reply safely with the least privilege needed."
