@@ -4838,6 +4838,7 @@ async function confirmPaymentReceiptWithFacilitator(
           "Payment verification failed",
           verifyResult.response,
           402,
+          failedReceipt,
         ),
       };
     }
@@ -4900,6 +4901,7 @@ async function confirmPaymentReceiptWithFacilitator(
         "Payment settlement failed",
         settleResult.response,
         402,
+        verifiedReceipt,
       ),
     };
   }
@@ -5207,6 +5209,7 @@ function x402PaymentFailureResponse(
   message: string,
   settlement: X402FacilitatorVerificationResponse | X402FacilitatorSettlementResponse | undefined,
   status = 402,
+  receipt?: TypedPaymentReceiptRecord,
 ): Response {
   const headers = new Headers();
   if (settlement) {
@@ -5219,6 +5222,10 @@ function x402PaymentFailureResponse(
     verificationStatus: "failed",
     settlement,
   };
+  if (receipt) {
+    body.receiptId = receipt.id;
+    body.receipt = receipt;
+  }
 
   if (settlement?.type === "settle" && settlement.settled === false && settlement.error === "invalid_exact_evm_transaction_failed") {
     body.note = "settlementReference identifies the facilitator's own settle attempt. It can differ from a transaction you broadcast yourself before submitting the same authorization to Mailagents.";

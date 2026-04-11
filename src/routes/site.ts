@@ -3411,6 +3411,7 @@ function renderLimits(): string {
         <li>Check <code>GET /v1/billing/account</code> and <code>GET /v1/tenants/{tenantId}/send-policy</code> with the same token before treating arbitrary external delivery as ready.</li>
       </ol>
       <p>Mailagents uses facilitator-backed x402 settlement. In the normal path, proof submission settles immediately. The confirmation endpoint exists only to retry facilitator settlement for a receipt that did not finish on the first attempt.</p>
+      <p>The initial quote-style <code>402</code> response does not include a receipt yet. After you resubmit the same billing route with <code>payment-signature</code>, any later facilitator failure <code>402</code> includes the created runtime <code>receiptId</code> so you can inspect it or continue troubleshooting with the matching receipt record.</p>
       <p>For the <code>exact/eip3009</code> path, submit the signed authorization inside the x402 proof and let the facilitator execute settlement. Do not broadcast the same <code>transferWithAuthorization</code> yourself first, or the later facilitator settle can fail because that authorization was already consumed.</p>
     </section>
     <section>

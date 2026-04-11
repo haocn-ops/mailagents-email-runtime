@@ -35,6 +35,8 @@ This point is easy to misunderstand, so it is worth stating explicitly:
    `payment-signature` header on that second request.
 4. The created receipt id is returned as `receipt.id`, and you can later look it
    up again with `GET /v1/billing/receipts`.
+5. If facilitator verification or settlement fails on that second request, the
+   failure `402` response also includes the created `receiptId` and `receipt`.
 
 That means:
 
@@ -522,6 +524,9 @@ Likely cause:
 Check:
 
 - the earlier billing response body for `receipt.id` or top-level `receiptId`
+- if the proof-submission request itself failed with `402`, check that failure
+  body too; it now includes `receiptId` once Mailagents had already created the
+  runtime receipt
 - `GET /v1/billing/receipts` for the tenant
 - whether the submitted value starts with `prc_...`
 

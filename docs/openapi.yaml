@@ -267,11 +267,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingPaymentConfirmResponse'
         '402':
-          description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
+          description: Either an x402-compatible quote before proof submission, or a facilitator failure after proof submission. Proof-submission failures include the created runtime `receiptId`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BillingTopupQuoteResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/BillingTopupQuoteResponse'
+                  - $ref: '#/components/schemas/BillingPaymentFailureResponse'
         '503':
           description: x402 billing is not configured for this environment.
           content:
@@ -304,11 +306,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingPaymentConfirmResponse'
         '402':
-          description: Payment required. The response includes an x402-compatible quote and `payment-required` header.
+          description: Either an x402-compatible quote before proof submission, or a facilitator failure after proof submission. Proof-submission failures include the created runtime `receiptId`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BillingUpgradeQuoteResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/BillingUpgradeQuoteResponse'
+                  - $ref: '#/components/schemas/BillingPaymentFailureResponse'
         '503':
           description: x402 billing is not configured for this environment.
           content:
@@ -1891,6 +1895,11 @@ components:
         verificationStatus:
           type: string
           enum: [failed]
+        receiptId:
+          type: string
+          description: Present when the runtime had already created a payment receipt before facilitator verification or settlement failed.
+        receipt:
+          $ref: '#/components/schemas/PaymentReceipt'
         note:
           type: string
         suggestedAction:

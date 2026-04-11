@@ -12,6 +12,7 @@ TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"t
 UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-upgrade-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
 PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-facilitator}"
 UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
+EXPECTED_TOPUP_FAILURE_STAGE="${EXPECT_TOPUP_FAILURE_STAGE_FOR_SMOKE:-}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -262,6 +263,51 @@ echo "Submitting topup proof..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
+if [[ -n "$EXPECTED_TOPUP_FAILURE_STAGE" ]]; then
+  assert_status "402"
+  TOPUP_RECEIPT_ID="$(jq -r '.receiptId' "$LAST_BODY")"
+  if [[ -z "$TOPUP_RECEIPT_ID" || "$TOPUP_RECEIPT_ID" == "null" ]]; then
+    echo "Expected facilitator failure response to include receiptId" >&2
+    cat "$LAST_BODY" >&2
+    exit 1
+  fi
+
+  case "$EXPECTED_TOPUP_FAILURE_STAGE" in
+    verify)
+      jq -e '
+        .receiptId == .receipt.id and
+        .receipt.receiptType == "topup" and
+        .receipt.status == "failed" and
+        .verificationStatus == "failed" and
+        .settlement.type == "verify" and
+        .settlement.isValid == false
+      ' "$LAST_BODY" >/dev/null
+      ;;
+    settle)
+      jq -e '
+        .receiptId == .receipt.id and
+        .receipt.receiptType == "topup" and
+        .receipt.status == "verified" and
+        .verificationStatus == "failed" and
+        .settlement.type == "settle" and
+        .settlement.settled == false
+      ' "$LAST_BODY" >/dev/null
+      ;;
+    *)
+      echo "Unsupported EXPECT_TOPUP_FAILURE_STAGE_FOR_SMOKE value: $EXPECTED_TOPUP_FAILURE_STAGE" >&2
+      exit 1
+      ;;
+  esac
+
+  capture_request "GET" "/v1/billing/receipts?limit=5" "" "authorization: Bearer $TOKEN"
+  assert_status "200"
+  jq -e --arg receipt "$TOPUP_RECEIPT_ID" '
+    .items | any(.id == $receipt)
+  ' "$LAST_BODY" >/dev/null
+
+  echo "Verified facilitator failure response includes receiptId and persisted receipt."
+  exit 0
+fi
 if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
   echo "Expected HTTP 200 or 202 but received $LAST_STATUS" >&2
   cat "$LAST_BODY" >&2

@@ -82,6 +82,13 @@ The current flow is:
    - `GET /v1/billing/account`
    - `GET /v1/tenants/{tenantId}/send-policy`
 
+Important distinction:
+
+- the first `402 Payment required` quote response does not include a receipt yet
+- Mailagents creates the runtime receipt only after the client resubmits the same billing route with `payment-signature`
+- if facilitator verification or settlement then fails on that proof-submission request, the `402` failure body now includes the created `receiptId` and `receipt`
+- `GET /v1/billing/receipts` should list the same runtime receipt for that tenant
+
 These self-service billing and status routes are available to the ordinary
 mailbox-scoped signup token for the same tenant; a broader tenant-scoped token
 is optional, not required.
