@@ -2932,6 +2932,7 @@ function renderHome(url: URL): string {
   const agentDocs = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/llms-agent-guide.md";
   const sdkExamples = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/agent-sdk-examples.md";
   const compatibilityDoc = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/runtime-compatibility.md";
+  const mailboxSkill = "https://github.com/haocn-ops/mailagents-email-runtime/blob/main/skills/mailagents-mailbox-agent/SKILL.md";
   const runtimeMetadata = "https://api.mailagents.net/v2/meta/runtime";
   const compatibilityApi = "https://api.mailagents.net/v2/meta/compatibility";
   const signupApi = "https://api.mailagents.net/public/signup";
@@ -3303,6 +3304,16 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li><a href="${compatibilityDoc}">Runtime compatibility docs</a></li>
   <li><a href="${runtimeMetadata}">Live runtime metadata</a></li>
   <li><a href="${compatibilityApi}">Live compatibility contract</a></li>
+</ul>
+
+<h2>Use As A Skill</h2>
+
+<p>If you want a reusable agent playbook instead of parsing this homepage every time, use the canonical mailbox-agent skill in the repository: <a href="${mailboxSkill}"><code>skills/mailagents-mailbox-agent/SKILL.md</code></a>.</p>
+
+<ul>
+  <li>Use it for mailbox-scoped onboarding, MCP discovery, inbox reads, transactional sends, on-thread replies, and token rotate or reissue flows.</li>
+  <li>Use the skill as the agent-facing workflow source of truth; use this homepage for discovery, auditability, and quick copyable examples.</li>
+  <li>Pair the skill with <a href="${compatibilityApi}"><code>/v2/meta/compatibility</code></a> when the agent needs stable branching rules at runtime.</li>
 </ul>
 
 <h2>Operational Guarantees</h2>
