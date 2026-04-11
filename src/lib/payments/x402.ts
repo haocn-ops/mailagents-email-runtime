@@ -84,6 +84,14 @@ export interface ParsedX402PaymentProof {
   parsed?: Record<string, unknown>;
 }
 
+export interface X402PaymentProofValidationError {
+  code: string;
+  error: string;
+  message: string;
+  suggestedAction?: string;
+  details?: Record<string, unknown>;
+}
+
 function toBase64(input: string): string {
   return btoa(input);
 }
@@ -136,6 +144,30 @@ function usdToAtomicSixDecimals(amount: number): string {
 
 function normalizeSymbol(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function asIntegerLikeString(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    return String(value);
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return value.trim();
+  }
+  return undefined;
+}
+
+function isHexBytes32(value: string): boolean {
+  return /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
 function resolveAssetIdentifier(input: {
@@ -398,4 +430,180 @@ export function parseX402PaymentProof(raw: string | null): ParsedX402PaymentProo
   }
 
   return { raw: trimmed };
+}
+
+export function validateX402PaymentProof(input: {
+  paymentProof: ParsedX402PaymentProof;
+  paymentRequirements: X402PaymentRequirement;
+  paymentRequired: X402PaymentRequired;
+}): X402PaymentProofValidationError | null {
+  const parsed = input.paymentProof.parsed;
+  if (!parsed) {
+    return {
+      code: "invalid_x402_payment_proof_encoding",
+      error: "Invalid x402 payment proof",
+      message: "payment-signature must be a base64-encoded JSON x402 proof object.",
+      suggestedAction: "Base64-encode the full x402 v2 JSON proof and retry the same billing route.",
+    };
+  }
+
+  if (parsed.x402Version !== X402_VERSION) {
+    return {
+      code: "invalid_x402_payment_proof_version",
+      error: "Invalid x402 payment proof",
+      message: `x402Version must be ${X402_VERSION}.`,
+      suggestedAction: "Send a full x402 v2 proof object with x402Version: 2.",
+      details: {
+        expectedVersion: X402_VERSION,
+        receivedVersion: parsed.x402Version ?? null,
+      },
+    };
+  }
+
+  const resource = asRecord(parsed.resource);
+  const resourceUrl = asString(resource?.url);
+  if (!resourceUrl) {
+    return {
+      code: "missing_x402_resource",
+      error: "Invalid x402 payment proof",
+      message: "resource.url is required in the x402 proof.",
+      suggestedAction: `Copy quote.paymentRequired.resource into the proof before base64-encoding it and retry ${input.paymentRequired.resource.url}.`,
+      details: {
+        expectedResourceUrl: input.paymentRequired.resource.url,
+      },
+    };
+  }
+
+  if (resourceUrl !== input.paymentRequired.resource.url) {
+    return {
+      code: "x402_resource_mismatch",
+      error: "Invalid x402 payment proof",
+      message: "resource.url must match the billing endpoint that produced the quote.",
+      suggestedAction: "Use the exact quote.paymentRequired.resource.url from the current quote when building the proof.",
+      details: {
+        expectedResourceUrl: input.paymentRequired.resource.url,
+        receivedResourceUrl: resourceUrl,
+      },
+    };
+  }
+
+  const accepted = asRecord(parsed.accepted);
+  if (!accepted) {
+    return {
+      code: "missing_x402_accepted_requirement",
+      error: "Invalid x402 payment proof",
+      message: "accepted is required in the x402 proof.",
+      suggestedAction: "Copy quote.paymentRequired.accepts[0] into accepted before retrying.",
+    };
+  }
+
+  const requirementMismatches: string[] = [];
+  const compareFields: Array<keyof Pick<X402PaymentRequirement, "scheme" | "network" | "asset" | "amount" | "payTo">> = [
+    "scheme",
+    "network",
+    "asset",
+    "amount",
+    "payTo",
+  ];
+  for (const field of compareFields) {
+    if (asString(accepted[field]) !== input.paymentRequirements[field]) {
+      requirementMismatches.push(field);
+    }
+  }
+  if (requirementMismatches.length > 0) {
+    return {
+      code: "x402_requirement_mismatch",
+      error: "Invalid x402 payment proof",
+      message: "accepted must match the quote's payment requirement.",
+      suggestedAction: "Reuse the exact quote.paymentRequired.accepts[0] object from the current quote.",
+      details: {
+        mismatchedFields: requirementMismatches,
+      },
+    };
+  }
+
+  const payload = asRecord(parsed.payload);
+  if (!payload) {
+    return {
+      code: "missing_x402_payload",
+      error: "Invalid x402 payment proof",
+      message: "payload is required in the x402 proof.",
+      suggestedAction: "Send a proof with payload.signature and, for EIP-3009, payload.authorization.",
+    };
+  }
+
+  const signature = asString(payload.signature);
+  if (!signature) {
+    return {
+      code: "missing_x402_signature",
+      error: "Invalid x402 payment proof",
+      message: "payload.signature is required in the x402 proof.",
+      suggestedAction: "Include the signed EIP-3009 signature in payload.signature.",
+    };
+  }
+
+  const assetTransferMethod = asString(asRecord(input.paymentRequirements.extra)?.assetTransferMethod);
+  if (assetTransferMethod === "eip3009") {
+    const authorization = asRecord(payload.authorization);
+    if (!authorization) {
+      return {
+        code: "missing_x402_authorization",
+        error: "Invalid x402 payment proof",
+        message: "For exact/eip3009 proofs, payload.authorization is required. payload.message is not accepted as a substitute.",
+        suggestedAction: "Place the signed transfer fields under payload.authorization with from, to, value, validAfter, validBefore, and nonce.",
+        details: {
+          expectedFields: [
+            "payload.authorization.from",
+            "payload.authorization.to",
+            "payload.authorization.value",
+            "payload.authorization.validAfter",
+            "payload.authorization.validBefore",
+            "payload.authorization.nonce",
+          ],
+          detectedPayloadFields: Object.keys(payload).sort(),
+        },
+      };
+    }
+
+    const from = asString(authorization.from);
+    const to = asString(authorization.to);
+    const value = asIntegerLikeString(authorization.value);
+    const validAfter = asIntegerLikeString(authorization.validAfter);
+    const validBefore = asIntegerLikeString(authorization.validBefore);
+    const nonce = asString(authorization.nonce);
+    const missingFields = [
+      !from ? "from" : null,
+      !to ? "to" : null,
+      !value ? "value" : null,
+      !validAfter ? "validAfter" : null,
+      !validBefore ? "validBefore" : null,
+      !nonce ? "nonce" : null,
+    ].filter((field): field is string => Boolean(field));
+    if (missingFields.length > 0) {
+      return {
+        code: "incomplete_x402_authorization",
+        error: "Invalid x402 payment proof",
+        message: "payload.authorization is missing required EIP-3009 fields.",
+        suggestedAction: "Include from, to, value, validAfter, validBefore, and nonce under payload.authorization.",
+        details: {
+          missingFields,
+        },
+      };
+    }
+
+    const authorizationNonce = nonce ?? "";
+    if (!isHexBytes32(authorizationNonce)) {
+      return {
+        code: "invalid_x402_authorization_nonce",
+        error: "Invalid x402 payment proof",
+        message: "payload.authorization.nonce must be a 0x-prefixed 32-byte hex string for EIP-3009.",
+        suggestedAction: "Generate a fresh bytes32 nonce, place it under payload.authorization.nonce, and retry the same billing route.",
+        details: {
+          receivedNonce: authorizationNonce,
+        },
+      };
+    }
+  }
+
+  return null;
 }

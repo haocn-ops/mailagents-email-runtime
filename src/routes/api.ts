@@ -149,6 +149,7 @@ import {
   encodePaymentResponseHeader,
   getX402Defaults,
   parseX402PaymentProof,
+  validateX402PaymentProof,
   X402_PAYMENT_REQUIRED_HEADER,
   X402_PAYMENT_RESPONSE_HEADER,
   X402_PAYMENT_SIGNATURE_HEADER,
@@ -1158,6 +1159,14 @@ router.on("POST", "/v1/billing/topup", async (request, env) => {
       quote,
     });
   }
+  const paymentProofError = validateX402PaymentProof({
+    paymentProof,
+    paymentRequirements: quote.paymentRequirements,
+    paymentRequired: quote.paymentRequired,
+  });
+  if (paymentProofError) {
+    return invalidX402PaymentProofResponse(paymentProofError);
+  }
 
   const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
   const replayReceipt = await findPaymentReceiptReplay(env, auth.tenantId, paymentProofFingerprint);
@@ -1276,6 +1285,14 @@ router.on("POST", "/v1/billing/upgrade-intent", async (request, env) => {
       tenantDid: didBinding?.did,
       quote,
     });
+  }
+  const paymentProofError = validateX402PaymentProof({
+    paymentProof,
+    paymentRequirements: quote.paymentRequirements,
+    paymentRequired: quote.paymentRequired,
+  });
+  if (paymentProofError) {
+    return invalidX402PaymentProofResponse(paymentProofError);
   }
 
   const paymentProofFingerprint = await fingerprintPaymentProof(paymentProof);
@@ -4760,6 +4777,23 @@ function x402PaymentRequiredResponse(input: {
     status: 402,
     headers,
   });
+}
+
+function invalidX402PaymentProofResponse(input: {
+  code: string;
+  error: string;
+  message: string;
+  suggestedAction?: string;
+  details?: Record<string, unknown>;
+}): Response {
+  return json({
+    error: input.error,
+    code: input.code,
+    protocol: "x402",
+    message: input.message,
+    suggestedAction: input.suggestedAction,
+    details: input.details,
+  }, { status: 400 });
 }
 
 function x402UnavailableResponse(): Response {

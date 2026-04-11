@@ -29,6 +29,37 @@ require_cmd() {
   fi
 }
 
+build_smoke_payment_signature() {
+  local quote_json="$1"
+  local nonce_hex="$2"
+  python3 - <<'PY' "$quote_json" "$nonce_hex"
+import base64, json, sys
+quote = json.load(open(sys.argv[1]))
+nonce = sys.argv[2]
+payment_required = quote["quote"]["paymentRequired"]
+accepted = payment_required["accepts"][0]
+resource = payment_required["resource"]
+authorization = {
+    "from": "0x1111111111111111111111111111111111111111",
+    "to": accepted["payTo"],
+    "value": accepted["amount"],
+    "validAfter": "0",
+    "validBefore": "9999999999",
+    "nonce": nonce,
+}
+payload = {
+    "x402Version": 2,
+    "resource": resource,
+    "accepted": accepted,
+    "payload": {
+        "signature": "0x" + "11" * 65,
+        "authorization": authorization,
+    },
+}
+print(base64.b64encode(json.dumps(payload).encode()).decode())
+PY
+}
+
 new_tmp() {
   local path
   path="$(mktemp -t upgrade-unlock-check.XXXXXX)"
@@ -161,7 +192,7 @@ if [[ -z "$TOPUP_PAYMENT_REQUIRED" ]]; then
   exit 1
 fi
 
-TOPUP_SIG="$(printf '{"tx":"unlock-topup-%s"}' "$RUN_ID" | base64 | tr -d '\n')"
+TOPUP_SIG="$(build_smoke_payment_signature "$LAST_BODY" "0x$(printf '%064x' 51)")"
 capture "POST" "/v1/billing/topup" '{"credits":25}' -H "authorization: Bearer $TOKEN" -H "payment-signature: $TOPUP_SIG"
 echo "topup submit status=$LAST_STATUS"
 if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then
@@ -208,7 +239,7 @@ if [[ -z "$UPGRADE_PAYMENT_REQUIRED" ]]; then
   exit 1
 fi
 
-UPGRADE_SIG="$(printf '{"tx":"unlock-upgrade-%s"}' "$RUN_ID" | base64 | tr -d '\n')"
+UPGRADE_SIG="$(build_smoke_payment_signature "$LAST_BODY" "0x$(printf '%064x' 68)")"
 capture "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' -H "authorization: Bearer $TOKEN" -H "payment-signature: $UPGRADE_SIG"
 echo "upgrade submit status=$LAST_STATUS"
 if [[ "$LAST_STATUS" != "200" && "$LAST_STATUS" != "202" ]]; then

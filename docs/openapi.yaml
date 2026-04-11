@@ -266,6 +266,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingPaymentConfirmResponse'
+        '400':
+          description: The submitted x402 proof is structurally invalid for the current billing route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingInvalidPaymentProofResponse'
         '402':
           description: Either an x402-compatible quote before proof submission, or a facilitator failure after proof submission. Proof-submission failures include the created runtime `receiptId`.
           content:
@@ -305,6 +311,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingPaymentConfirmResponse'
+        '400':
+          description: The submitted x402 proof is structurally invalid for the current billing route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingInvalidPaymentProofResponse'
         '402':
           description: Either an x402-compatible quote before proof submission, or a facilitator failure after proof submission. Proof-submission failures include the created runtime `receiptId`.
           content:
@@ -1910,6 +1922,24 @@ components:
           oneOf:
             - $ref: '#/components/schemas/X402FacilitatorVerificationResponse'
             - $ref: '#/components/schemas/X402FacilitatorSettlementResponse'
+    BillingInvalidPaymentProofResponse:
+      type: object
+      required: [error, code, protocol, message]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        protocol:
+          type: string
+          enum: [x402]
+        message:
+          type: string
+        suggestedAction:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
     BillingUnavailableResponse:
       type: object
       required: [error, protocol]

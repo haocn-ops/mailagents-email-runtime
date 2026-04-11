@@ -261,6 +261,13 @@ minimum, the decoded JSON should look like:
 }
 ```
 
+Important:
+
+- use `payload.authorization`, not `payload.message`
+- include the top-level `resource` object from the quote
+- for the current Base Sepolia USDC + EIP-3009 path, `payload.authorization.nonce`
+  must be a `0x`-prefixed 32-byte hex string
+
 The entire JSON document above must be base64-encoded and sent as:
 
 ```http
@@ -416,6 +423,8 @@ document that is structurally incomplete for x402. For example:
 - missing `resource`
 - missing `accepted`
 - missing `payload.authorization`
+- using `payload.message` instead of `payload.authorization`
+- sending a numeric nonce instead of a bytes32 hex nonce
 - submitting only a chain transaction record instead of an x402 proof object
 
 ### "No facilitator registered for x402 version: undefined"

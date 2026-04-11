@@ -3096,7 +3096,7 @@ content-type: application/json
 <ul>
   <li><strong>Default free-tier posture:</strong> new tenants start constrained, including the rolling <code>10/day</code> and <code>1/hour</code> ordinary-user cap, until they have usable credits or an explicitly enabled outbound policy.</li>
   <li><strong>Fast unlock:</strong> call <code>POST /v1/billing/topup</code> with the same mailbox-scoped bearer token to request a quote, then submit the signed proof with the <code>payment-signature</code> header.</li>
-  <li><strong>Facilitator path:</strong> for <code>exact/eip3009</code>, sign the authorization, submit it inside the x402 proof, and let the facilitator execute settlement. Do not broadcast the same <code>transferWithAuthorization</code> yourself first.</li>
+  <li><strong>Facilitator path:</strong> for <code>exact/eip3009</code>, sign the authorization, submit it inside the x402 proof as <code>payload.authorization</code>, keep the quote <code>resource</code> object in the proof, and use a bytes32 hex nonce. Do not broadcast the same <code>transferWithAuthorization</code> yourself first.</li>
   <li><strong>Readiness check:</strong> after settlement, confirm <code>GET /v1/billing/account</code> shows usable credits before treating external delivery as unlocked.</li>
   <li><strong>Current operator guide:</strong> read <a href="/limits">Limits And Access</a> for the billing and delivery model, then use the detailed <a href="https://github.com/haocn-ops/mailagents-email-runtime/blob/main/docs/x402-real-payment-checklist.md">x402 real payment checklist</a> when you need the full proof format and retry guidance.</li>
 </ul>

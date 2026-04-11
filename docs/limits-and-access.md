@@ -86,6 +86,7 @@ Important distinction:
 
 - the first `402 Payment required` quote response does not include a receipt yet
 - Mailagents creates the runtime receipt only after the client resubmits the same billing route with `payment-signature`
+- if the submitted proof is structurally wrong, Mailagents now returns a direct `400` with an x402 proof validation error before creating a receipt
 - if facilitator verification or settlement then fails on that proof-submission request, the `402` failure body now includes the created `receiptId` and `receipt`
 - `GET /v1/billing/receipts` should list the same runtime receipt for that tenant
 

@@ -8,11 +8,12 @@ ADMIN_SECRET="${ADMIN_API_SECRET_FOR_SMOKE:-replace-with-admin-api-secret}"
 TENANT_ID="${TENANT_ID:-t_billing_smoke_$(date +%s)}"
 AUTH_SCOPE="${AUTH_SCOPE_FOR_SMOKE:-task:read}"
 RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
-TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-topup-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
-UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-$(printf '{"tx":"local-smoke-upgrade-%s-%s"}' "$TENANT_ID" "$RUN_ID" | base64 | tr -d '\n')}"
+TOPUP_PAYMENT_SIGNATURE="${X402_TOPUP_PAYMENT_SIGNATURE_FOR_SMOKE:-}"
+UPGRADE_PAYMENT_SIGNATURE="${X402_UPGRADE_PAYMENT_SIGNATURE_FOR_SMOKE:-}"
 PAYMENT_CONFIRM_MODE="${PAYMENT_CONFIRM_MODE_FOR_SMOKE:-facilitator}"
 UPGRADE_INCLUDED_CREDITS="${UPGRADE_INCLUDED_CREDITS_FOR_SMOKE:-10000}"
 EXPECTED_TOPUP_FAILURE_STAGE="${EXPECT_TOPUP_FAILURE_STAGE_FOR_SMOKE:-}"
+EXPECTED_TOPUP_PROOF_ERROR_CODE="${EXPECT_TOPUP_PROOF_ERROR_CODE_FOR_SMOKE:-}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
@@ -119,6 +120,37 @@ assert_status() {
   fi
 }
 
+build_smoke_payment_signature() {
+  local quote_json="$1"
+  local nonce_hex="$2"
+  python3 - <<'PY' "$quote_json" "$nonce_hex"
+import base64, json, sys
+quote = json.load(open(sys.argv[1]))
+nonce = sys.argv[2]
+payment_required = quote["quote"]["paymentRequired"]
+accepted = payment_required["accepts"][0]
+resource = payment_required["resource"]
+authorization = {
+    "from": "0x1111111111111111111111111111111111111111",
+    "to": accepted["payTo"],
+    "value": accepted["amount"],
+    "validAfter": "0",
+    "validBefore": "9999999999",
+    "nonce": nonce,
+}
+payload = {
+    "x402Version": 2,
+    "resource": resource,
+    "accepted": accepted,
+    "payload": {
+        "signature": "0x" + "11" * 65,
+        "authorization": authorization,
+    },
+}
+print(base64.b64encode(json.dumps(payload).encode()).decode())
+PY
+}
+
 append_confirm_headers() {
   local headers=()
   headers+=("authorization: Bearer $TOKEN")
@@ -127,6 +159,7 @@ append_confirm_headers() {
 
 require_cmd curl
 require_cmd jq
+require_cmd python3
 
 trap cleanup EXIT
 
@@ -258,11 +291,29 @@ jq -e --arg tenant "$TENANT_ID" '
   .quote.credits == 25 and
   .quote.paymentRequirements.extra.credits == 25
 ' "$LAST_BODY" >/dev/null
+if [[ -z "$TOPUP_PAYMENT_SIGNATURE" ]]; then
+  TOPUP_PAYMENT_SIGNATURE="$(build_smoke_payment_signature "$LAST_BODY" "0x$(printf '%064x' 17)")"
+fi
 
 echo "Submitting topup proof..."
 capture_request "POST" "/v1/billing/topup" '{"credits":25}' \
   "authorization: Bearer $TOKEN" \
   "payment-signature: $TOPUP_PAYMENT_SIGNATURE"
+if [[ -n "$EXPECTED_TOPUP_PROOF_ERROR_CODE" ]]; then
+  assert_status "400"
+  jq -e --arg code "$EXPECTED_TOPUP_PROOF_ERROR_CODE" '
+    .protocol == "x402" and
+    .code == $code and
+    (.message | type) == "string"
+  ' "$LAST_BODY" >/dev/null
+
+  capture_request "GET" "/v1/billing/receipts?limit=5" "" "authorization: Bearer $TOKEN"
+  assert_status "200"
+  jq -e '.items | length == 0' "$LAST_BODY" >/dev/null
+
+  echo "Verified invalid proof is rejected before receipt creation."
+  exit 0
+fi
 if [[ -n "$EXPECTED_TOPUP_FAILURE_STAGE" ]]; then
   assert_status "402"
   TOPUP_RECEIPT_ID="$(jq -r '.receiptId' "$LAST_BODY")"
@@ -393,6 +444,9 @@ jq -e '
   .quote.targetPricingTier == "paid_review" and
   .quote.includedCredits > 0
 ' "$LAST_BODY" >/dev/null
+if [[ -z "$UPGRADE_PAYMENT_SIGNATURE" ]]; then
+  UPGRADE_PAYMENT_SIGNATURE="$(build_smoke_payment_signature "$LAST_BODY" "0x$(printf '%064x' 34)")"
+fi
 
 echo "Submitting upgrade proof..."
 capture_request "POST" "/v1/billing/upgrade-intent" '{"targetPricingTier":"paid_review"}' \
