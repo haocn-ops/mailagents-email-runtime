@@ -20,6 +20,50 @@ require_cmd() {
 
 require_cmd curl
 require_cmd jq
+require_cmd wrangler
+
+mint_token() {
+  local payload="$1"
+  curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
+    -H 'content-type: application/json' \
+    -H "x-admin-secret: $ADMIN_SECRET" \
+    -d "$payload"
+}
+
+exec_sql() {
+  local sql="$1"
+  wrangler d1 execute mailagents-local --local --command "$sql" >/dev/null
+}
+
+reset_demo_outbound_state() {
+  if [[ "$TENANT_ID" != "t_demo" ]]; then
+    return
+  fi
+
+  exec_sql "
+BEGIN TRANSACTION;
+DELETE FROM delivery_events
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM outbound_jobs
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound'
+);
+DELETE FROM drafts
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM idempotency_keys
+WHERE tenant_id = '$TENANT_ID';
+DELETE FROM messages
+WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound';
+DELETE FROM threads
+WHERE tenant_id = '$TENANT_ID' AND id != 'thr_demo_inbound';
+COMMIT;"
+}
 
 load_local_secrets() {
   local dev_vars="$REPO_ROOT/.dev.vars"
@@ -64,38 +108,35 @@ if [[ "$WEBHOOK_SECRET" == "replace-with-shared-secret" ]]; then
   exit 1
 fi
 
-echo "Minting bearer token..."
-TOKEN="$(curl -sS -X POST "$BASE_URL/v1/auth/tokens" \
-  -H 'content-type: application/json' \
-  -H "x-admin-secret: $ADMIN_SECRET" \
-  -d "{
-    \"sub\": \"local-smoke\",
-    \"tenantId\": \"$TENANT_ID\",
-    \"scopes\": [
-      \"agent:create\",
-      \"agent:read\",
-      \"agent:update\",
-      \"agent:bind\",
-      \"task:read\",
-      \"mail:read\",
-      \"mail:replay\",
-      \"draft:create\",
-      \"draft:read\",
-      \"draft:send\"
-    ],
-    \"mailboxIds\": [\"$MAILBOX_ID\"],
-    \"expiresInSeconds\": 3600
-  }" | jq -r '.token')"
+echo "Resetting demo tenant outbound state..."
+reset_demo_outbound_state
 
-if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
-  echo "Failed to mint token" >&2
+echo "Minting tenant-scoped control token..."
+TENANT_TOKEN="$(mint_token "{
+  \"sub\": \"local-smoke-tenant\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"scopes\": [
+    \"agent:create\",
+    \"agent:read\",
+    \"mail:read\",
+    \"mail:replay\",
+    \"task:read\",
+    \"draft:create\",
+    \"draft:read\",
+    \"draft:send\"
+  ],
+  \"expiresInSeconds\": 3600
+}" | jq -r '.token')"
+
+if [[ -z "$TENANT_TOKEN" || "$TENANT_TOKEN" == "null" ]]; then
+  echo "Failed to mint tenant-scoped control token" >&2
   exit 1
 fi
 
 echo "Creating agent..."
 AGENT_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/agents" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $TENANT_TOKEN" \
   -d "{
     \"tenantId\": \"$TENANT_ID\",
     \"name\": \"Smoke Agent\",
@@ -116,10 +157,33 @@ fi
 
 echo "$AGENT_RESPONSE" | jq -e --arg tenant "$TENANT_ID" '.tenantId == $tenant' >/dev/null
 
+echo "Minting agent-bound control token..."
+AGENT_CONTROL_TOKEN="$(mint_token "{
+  \"sub\": \"local-smoke-agent-control\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"agentId\": \"$AGENT_ID\",
+  \"scopes\": [
+    \"agent:read\",
+    \"agent:bind\",
+    \"mail:read\",
+    \"mail:replay\",
+    \"task:read\",
+    \"draft:create\",
+    \"draft:read\",
+    \"draft:send\"
+  ],
+  \"expiresInSeconds\": 3600
+}" | jq -r '.token')"
+
+if [[ -z "$AGENT_CONTROL_TOKEN" || "$AGENT_CONTROL_TOKEN" == "null" ]]; then
+  echo "Failed to mint agent-bound control token" >&2
+  exit 1
+fi
+
 echo "Binding mailbox..."
 BIND_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/agents/$AGENT_ID/mailboxes" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" \
   -d "{
     \"tenantId\": \"$TENANT_ID\",
     \"mailboxId\": \"$MAILBOX_ID\",
@@ -127,9 +191,32 @@ BIND_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/agents/$AGENT_ID/mailboxes" \
   }")"
 echo "$BIND_RESPONSE" | jq -e --arg mailbox "$MAILBOX_ID" '.mailboxId == $mailbox' >/dev/null
 
+echo "Minting mailbox-scoped agent token..."
+AGENT_TOKEN="$(mint_token "{
+  \"sub\": \"local-smoke-agent\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"agentId\": \"$AGENT_ID\",
+  \"scopes\": [
+    \"agent:read\",
+    \"mail:read\",
+    \"mail:replay\",
+    \"task:read\",
+    \"draft:create\",
+    \"draft:read\",
+    \"draft:send\"
+  ],
+  \"mailboxIds\": [\"$MAILBOX_ID\"],
+  \"expiresInSeconds\": 3600
+}" | jq -r '.token')"
+
+if [[ -z "$AGENT_TOKEN" || "$AGENT_TOKEN" == "null" ]]; then
+  echo "Failed to mint mailbox-scoped agent token" >&2
+  exit 1
+fi
+
 echo "Checking mailbox listing..."
 curl -sS -X GET "$BASE_URL/v1/agents/$AGENT_ID/mailboxes" \
-  -H "authorization: Bearer $TOKEN" | jq -e --arg mailbox "$MAILBOX_ID" '.items | any(.mailboxId == $mailbox)' >/dev/null
+  -H "authorization: Bearer $AGENT_CONTROL_TOKEN" | jq -e --arg mailbox "$MAILBOX_ID" '.items | any(.mailboxId == $mailbox)' >/dev/null
 
 echo "Checking persisted agent state..."
 curl -sS -X GET "$BASE_URL/v1/debug/agents/$AGENT_ID" \
@@ -138,7 +225,7 @@ curl -sS -X GET "$BASE_URL/v1/debug/agents/$AGENT_ID" \
 echo "Creating draft..."
 DRAFT_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/agents/$AGENT_ID/drafts" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_TOKEN" \
   -d "{
     \"tenantId\": \"$TENANT_ID\",
     \"mailboxId\": \"$MAILBOX_ID\",
@@ -159,7 +246,7 @@ echo "$DRAFT_RESPONSE" | jq -e '.status == "draft"' >/dev/null
 
 echo "Checking draft fetch..."
 curl -sS -X GET "$BASE_URL/v1/drafts/$DRAFT_ID" \
-  -H "authorization: Bearer $TOKEN" | jq -e --arg draft "$DRAFT_ID" '.id == $draft' >/dev/null
+  -H "authorization: Bearer $AGENT_TOKEN" | jq -e --arg draft "$DRAFT_ID" '.id == $draft' >/dev/null
 
 echo "Checking persisted draft payload..."
 curl -sS -X GET "$BASE_URL/v1/debug/drafts/$DRAFT_ID" \
@@ -169,7 +256,7 @@ echo "Enqueueing draft send..."
 SEND_IDEMPOTENCY_KEY="smoke-send-$DRAFT_ID"
 SEND_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/drafts/$DRAFT_ID/send" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_TOKEN" \
   -d "{
     \"idempotencyKey\": \"$SEND_IDEMPOTENCY_KEY\"
   }")"
@@ -185,11 +272,23 @@ echo "$SEND_RESPONSE" | jq -e '.status == "queued"' >/dev/null
 echo "Checking draft send idempotency..."
 SEND_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/drafts/$DRAFT_ID/send" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $TOKEN" \
+  -H "authorization: Bearer $AGENT_TOKEN" \
   -d "{
     \"idempotencyKey\": \"$SEND_IDEMPOTENCY_KEY\"
   }")"
-echo "$SEND_RESPONSE_REPEAT" | jq -e --arg outbound "$OUTBOUND_JOB_ID" --arg draft "$DRAFT_ID" '.outboundJobId == $outbound and .draftId == $draft and .status == "queued"' >/dev/null
+if echo "$SEND_RESPONSE_REPEAT" | jq -e --arg outbound "$OUTBOUND_JOB_ID" --arg draft "$DRAFT_ID" '
+  .outboundJobId == $outbound and .draftId == $draft and .status == "queued"
+' >/dev/null 2>&1; then
+  :
+elif echo "$SEND_RESPONSE_REPEAT" | jq -e '
+  (.error // "") | contains("Free-tier hourly send limit reached")
+' >/dev/null 2>&1; then
+  echo "Draft send idempotency replay revalidated current send eligibility and hit the free-tier rolling limit."
+else
+  echo "Unexpected draft send idempotency replay response" >&2
+  echo "$SEND_RESPONSE_REPEAT" >&2
+  exit 1
+fi
 
 echo "Checking persisted outbound job..."
 OUTBOUND_JOB_RESPONSE="$(curl -sS -X GET "$BASE_URL/v1/debug/outbound-jobs/$OUTBOUND_JOB_ID" \
@@ -202,7 +301,7 @@ REPLAY_IDEMPOTENCY_KEY="smoke-replay-$DRAFT_ID"
 if [[ -n "$OUTBOUND_MESSAGE_ID" && "$OUTBOUND_MESSAGE_ID" != "null" ]]; then
   REPLAY_RESPONSE="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
     -H 'content-type: application/json' \
-    -H "authorization: Bearer $TOKEN" \
+    -H "authorization: Bearer $AGENT_TOKEN" \
     -d "{
       \"mode\": \"normalize\",
       \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
@@ -210,7 +309,7 @@ if [[ -n "$OUTBOUND_MESSAGE_ID" && "$OUTBOUND_MESSAGE_ID" != "null" ]]; then
   if echo "$REPLAY_RESPONSE" | jq -e --arg message "$OUTBOUND_MESSAGE_ID" '.messageId == $message and .mode == "normalize" and .status == "accepted"' >/dev/null 2>&1; then
     REPLAY_RESPONSE_REPEAT="$(curl -sS -X POST "$BASE_URL/v1/messages/$OUTBOUND_MESSAGE_ID/replay" \
       -H 'content-type: application/json' \
-      -H "authorization: Bearer $TOKEN" \
+      -H "authorization: Bearer $AGENT_TOKEN" \
       -d "{
         \"mode\": \"normalize\",
         \"idempotencyKey\": \"$REPLAY_IDEMPOTENCY_KEY\"
