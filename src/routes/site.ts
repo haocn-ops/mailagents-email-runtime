@@ -3412,7 +3412,8 @@ function renderLimits(): string {
       </ol>
       <p>Mailagents uses facilitator-backed x402 settlement. In the normal path, proof submission settles immediately. The confirmation endpoint exists only to retry facilitator settlement for a receipt that did not finish on the first attempt.</p>
       <p>The initial quote-style <code>402</code> response does not include a receipt yet. After you resubmit the same billing route with <code>payment-signature</code>, any later facilitator failure <code>402</code> includes the created runtime <code>receiptId</code> so you can inspect it or continue troubleshooting with the matching receipt record.</p>
-      <p>For the <code>exact/eip3009</code> path, submit the signed authorization inside the x402 proof and let the facilitator execute settlement. Do not broadcast the same <code>transferWithAuthorization</code> yourself first, or the later facilitator settle can fail because that authorization was already consumed.</p>
+      <p>For the <code>exact/eip3009</code> path, submit the signed authorization inside the x402 proof as <code>payload.authorization</code>, keep the quote <code>resource</code> object in the proof, and use a <code>0x</code>-prefixed 32-byte hex nonce. Do not use <code>payload.message</code> as a substitute, and do not broadcast the same <code>transferWithAuthorization</code> yourself first, or the later facilitator settle can fail because that authorization was already consumed.</p>
+      <p>If the submitted proof is structurally wrong, Mailagents now returns a direct <code>400</code> validation error before creating a receipt. Only structurally valid proof submissions proceed to facilitator verification and possible later <code>402</code> settlement failures.</p>
     </section>
     <section>
       <h2>States You Will See</h2>
