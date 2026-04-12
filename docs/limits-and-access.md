@@ -37,8 +37,13 @@ For most early integration work, this is the recommended path.
 
 New tenants start in a conservative policy state.
 
-Treat these paths as limited until the tenant has usable outbound credits or an
-explicitly enabled external send policy:
+Mailbox-to-mailbox delivery between active Mailagents mailboxes is allowed by
+default. These internal sends are delivered through the runtime's local inbound
+pipeline, not through the configured external provider, and they do not consume
+external-send credits or rolling external-send quota.
+
+Treat these external-recipient paths as limited until the tenant has usable
+outbound credits or an explicitly enabled external send policy:
 
 - ordinary free-tier tenants can send up to 10 outbound emails in a rolling 24-hour window
 - ordinary free-tier tenants can send up to 1 outbound email in a rolling 1-hour window
@@ -68,7 +73,7 @@ External delivery follows a credits-first model.
 
 The current unlock model has one hard safety stop and one normal unlock path:
 
-- `outboundStatus = suspended` always blocks outbound sending
+- `outboundStatus = suspended` blocks external-recipient delivery
 - otherwise, any tenant with usable outbound credits can send to external recipients
 
 The current flow is:
@@ -101,7 +106,9 @@ The main states to expect are:
 - default tenant:
   - billing `pricingTier = free`
   - send policy `outboundStatus = internal_only`
-  - effective outbound cap `10 per rolling 24h` and `1 per rolling 1h`
+  - active Mailagents mailbox recipients are allowed without credits
+  - external-recipient cap `10 per rolling 24h` and `1 per rolling 1h`
+  - internal mailbox-to-mailbox sends do not count toward the external-recipient cap
 - credits-backed external send:
   - billing `availableCredits > 0`
   - external recipients are allowed even if send policy still reports `internal_only`

@@ -66,7 +66,9 @@ Use `POST /v1/messages/send` when the agent wants to send a new outbound email
 through the mailbox-scoped high-level path.
 
 This route creates a draft internally, applies the normal policy checks, and
-enqueues outbound delivery.
+enqueues delivery. Active Mailagents mailbox recipients are routed through the
+runtime's local inbound path; external recipients continue through the configured
+provider and external-send policy.
 
 Common request fields:
 
@@ -184,6 +186,10 @@ Important send rules:
 
 - sending is asynchronous
 - accepted does not mean delivered
+- active Mailagents mailbox recipients are internal delivery targets and do not
+  require external-send credits
+- if a message includes external recipients, at least one external recipient
+  must be in `to`; `to=[internal], cc=[external]` is rejected synchronously
 - poll `GET /v1/outbound-jobs/{outboundJobId}` for the current runtime view of
   `queued`, `retry`, `sent`, or `failed`
 - if reply headers or attachments are present, the runtime uses the richer

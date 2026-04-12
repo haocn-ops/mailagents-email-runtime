@@ -309,6 +309,37 @@ The D1 migrate scripts are now safe to rerun against an existing local or remote
 database. They record applied files in `schema_migrations` and bootstrap that
 state from the already-present schema when upgrading an older environment.
 
+## Run the internal-routing regression smoke
+
+This smoke focuses on the default internal-only send posture. It expects the
+local demo seed (`t_demo`, `mbx_demo`, `agt_demo`) to be present.
+
+```bash
+chmod +x scripts/outbound_quota_regression_smoke.sh
+ADMIN_API_SECRET_FOR_SMOKE=replace-with-admin-api-secret \
+SES_MOCK_SEND=true \
+SES_MOCK_SEND_DELAY_MS=1500 \
+./scripts/outbound_quota_regression_smoke.sh
+```
+
+Or:
+
+```bash
+npm run smoke:quota:local
+npm run smoke:quota:local:auto
+```
+
+Notes:
+
+- The script creates a real local recipient mailbox and verifies that two
+  mailbox-to-mailbox sends succeed while the tenant remains `internal_only`.
+- It confirms the recipient inbox sees `provider = "internal"`.
+- It tightens the sender agent recipient allowlist to prove true internal
+  mailbox routing bypasses external-domain policy checks.
+- It verifies external-recipient sends are still blocked under the same default
+  policy, and that `to=[internal], cc=[external]` is rejected synchronously
+  instead of creating an accepted-but-doomed outbound job.
+
 ## Run the outbound credit smoke script
 
 This smoke focuses on the reserve -> capture -> release path for external sends.

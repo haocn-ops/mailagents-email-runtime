@@ -145,7 +145,9 @@ Recommended:
 
 Current live note:
 
-- production currently uses Resend for outbound delivery
+- production currently uses Resend for external-recipient delivery
+- internal mailbox-to-mailbox delivery is handled inside the Mailagents runtime
+  and does not call Resend or SES
 - if you are reading older rollout notes that mention SES-specific outbound
   behavior, treat those as historical context unless the target environment is
   explicitly configured back to `OUTBOUND_PROVIDER = "ses"`
@@ -170,7 +172,8 @@ Recommended:
 Current SES restriction as of 2026-03-18 for SES-backed environments:
 
 - assume the project is still operating under SES sandbox constraints for external-recipient planning
-- internal mailbox routing and internal operator inbox flows are not blocked by that SES production-access decision
+- internal mailbox routing is not blocked by that SES production-access decision
+  because active Mailagents mailbox recipients are delivered locally
 - validate SES outbound only with verified sender identities and verified recipient addresses
 - do not treat a successful send to an internal or verified inbox as proof that arbitrary external customer delivery is enabled
 

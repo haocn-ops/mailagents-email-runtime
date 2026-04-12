@@ -39,7 +39,9 @@ Verified environments:
 Current outbound provider note as of 2026-03-24:
 
 - shared `dev` currently uses SES
-- production currently uses Resend
+- production currently uses Resend for external-recipient delivery
+- sends to active Mailagents mailboxes are routed internally and do not require
+  SES or Resend
 - historical March 2026 SES rollout caveats still matter for SES-backed environments and remain documented in the rollout and archive notes
 
 Preferred migration path away from SES sandbox:

@@ -279,6 +279,8 @@ curl -X POST http://127.0.0.1:8787/v1/messages/REPLACE_WITH_MESSAGE_ID/replay \
 
 - The current parser is MVP-grade, not a full RFC-complete MIME parser.
 - Outbound now chooses provider-specific rich send behavior for reply headers or attachments. SES uses `Raw` MIME; Resend uses headers plus attachment upload in the API payload.
+- Sends to active Mailagents mailboxes are routed internally through the local
+  inbound ingest path and do not require SES or Resend credentials.
 - Idempotency cleanup can be triggered manually with `POST /admin/api/maintenance/idempotency-cleanup`.
 - For remote D1, use the environment-specific scripts such as `npm run d1:migrate:remote:dev` and `npm run d1:seed:remote:dev`.
 - With fake or sandbox-limited provider credentials, local send tests can still exercise the accepted-to-retry path without proving external delivery.
