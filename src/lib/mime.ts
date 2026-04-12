@@ -37,6 +37,8 @@ export interface BuildMimeInput {
   subject: string;
   text?: string;
   html?: string;
+  date?: string;
+  messageId?: string;
   inReplyTo?: string;
   references?: string[];
   attachments?: MimeAttachment[];
@@ -51,6 +53,14 @@ export function buildRawMimeMessage(input: BuildMimeInput): Uint8Array {
     `Subject: ${normalizeHeaderValue(input.subject)}`,
     "MIME-Version: 1.0",
   ];
+
+  if (input.date) {
+    headers.push(`Date: ${normalizeHeaderValue(input.date)}`);
+  }
+
+  if (input.messageId) {
+    headers.push(`Message-ID: ${normalizeHeaderValue(input.messageId)}`);
+  }
 
   if (input.cc?.length) {
     headers.push(`Cc: ${input.cc.map(normalizeHeaderValue).join(", ")}`);

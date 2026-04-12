@@ -31,7 +31,11 @@ export async function ensureSystemSendAllowed(env: Env, input: {
     bcc,
   });
   if (!decision.ok) {
-    const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+    const status = decision.code === "invalid_recipient_routing"
+      ? 400
+      : decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded"
+        ? 429
+        : 403;
     throw new OutboundSendValidationError(
       decision.message ?? "Outbound policy denied this send request",
       status,

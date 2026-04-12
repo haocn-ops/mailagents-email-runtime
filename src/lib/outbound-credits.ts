@@ -70,7 +70,7 @@ export async function getOutboundCreditRequirement(env: Env, input: {
   return {
     entryType,
     creditsRequired: getOutboundCreditsRequired(entryType),
-    requiresCredits: classification.externalDomains.length > 0,
+    requiresCredits: classification.externalRecipientCount > 0,
     recipientDomains: classification.recipientDomains,
     externalDomains: classification.externalDomains,
   };

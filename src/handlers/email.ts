@@ -1,9 +1,9 @@
+import { dispatchEmailIngestWithFallback } from "../lib/email-ingest";
 import { createId } from "../lib/ids";
 import { enqueueDeadLetter } from "../lib/queue";
 import { nowIso } from "../lib/time";
 import { getMailboxByAddress } from "../repositories/agents";
 import { createInboundMessage, getInboundMessageByInternetMessageId, normalizeInternetMessageId, updateMessageStatus } from "../repositories/mail";
-import { processEmailIngestJob } from "./queues";
 import type { EmailIngestJob, Env } from "../types";
 
 interface ForwardableEmailMessage {
@@ -22,15 +22,6 @@ async function deleteR2Object(env: Env, r2Key: string): Promise<void> {
   await env.R2_EMAIL.delete(r2Key).catch(() => undefined);
 }
 
-async function dispatchEmailIngest(env: Env, payload: EmailIngestJob): Promise<void> {
-  try {
-    await env.EMAIL_INGEST_QUEUE.send(payload);
-    return;
-  } catch {
-    await processEmailIngestJob(payload, env);
-  }
-}
-
 async function failInboundMessage(env: Env, input: {
   messageId: string;
   source: string;
@@ -46,7 +37,7 @@ async function failInboundMessage(env: Env, input: {
 
 async function resumeExistingInboundMessage(env: Env, payload: EmailIngestJob): Promise<void> {
   try {
-    await dispatchEmailIngest(env, payload);
+    await dispatchEmailIngestWithFallback(env, payload);
   } catch (error) {
     await failInboundMessage(env, {
       messageId: payload.messageId,
@@ -130,7 +121,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   };
 
   try {
-    await dispatchEmailIngest(env, payload);
+    await dispatchEmailIngestWithFallback(env, payload);
   } catch (error) {
     await failInboundMessage(env, {
       messageId,

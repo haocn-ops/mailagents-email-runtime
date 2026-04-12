@@ -2799,7 +2799,7 @@ components:
           enum: [inbound, outbound]
         provider:
           type: string
-          enum: [cloudflare, ses, resend]
+          enum: [cloudflare, internal, ses, resend]
         internetMessageId:
           type: string
         providerMessageId:

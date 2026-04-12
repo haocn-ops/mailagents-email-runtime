@@ -447,7 +447,7 @@ export interface MessageRecord {
   mailboxId: string;
   threadId?: string;
   direction: MessageDirection;
-  provider: "cloudflare" | "ses";
+  provider: "cloudflare" | "internal" | "ses" | "resend";
   internetMessageId?: string;
   providerMessageId?: string;
   fromAddr: string;

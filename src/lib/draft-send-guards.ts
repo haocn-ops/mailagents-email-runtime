@@ -227,7 +227,11 @@ export async function ensureDraftSendAllowed(env: Env, input: {
     excludeDraftR2Key: input.draftR2Key,
   });
   if (!decision.ok) {
-    const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+    const status = decision.code === "invalid_recipient_routing"
+      ? 400
+      : decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded"
+        ? 429
+        : 403;
     throw new DraftSendValidationError(
       decision.message ?? "Outbound policy denied this send request",
       status,

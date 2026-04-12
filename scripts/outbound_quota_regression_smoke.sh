@@ -9,14 +9,19 @@ TENANT_ID="${TENANT_ID:-t_demo}"
 AGENT_ID="${AGENT_ID:-agt_demo}"
 MAILBOX_ID="${MAILBOX_ID:-mbx_demo}"
 RUN_ID="${RUN_ID_FOR_SMOKE:-$(date +%s)}"
-FIRST_TO_EMAIL="${FIRST_TO_EMAIL:-quota-first-${RUN_ID}@mailagents.net}"
-SECOND_TO_EMAIL="${SECOND_TO_EMAIL:-quota-second-${RUN_ID}@mailagents.net}"
+INTERNAL_MAILBOX_ID="${INTERNAL_MAILBOX_ID:-mbx_quota_internal}"
+INTERNAL_MAILBOX_ADDRESS="${INTERNAL_MAILBOX_ADDRESS:-quota-recipient@mailagents.net}"
+EXTERNAL_TO_EMAIL="${EXTERNAL_TO_EMAIL:-quota-external-${RUN_ID}@example.com}"
+FIRST_INTERNAL_SUBJECT="Internal routing first send ${RUN_ID}"
+SECOND_INTERNAL_SUBJECT="Internal routing second send ${RUN_ID}"
 
 TEMP_FILES=()
 LAST_HEADERS=""
 LAST_BODY=""
 LAST_STATUS=""
-MAILBOX_TOKEN=""
+SENDER_TOKEN=""
+RECIPIENT_TOKEN=""
+CONTROL_TOKEN=""
 MAILBOX_ADDRESS=""
 
 cleanup() {
@@ -129,38 +134,39 @@ WHERE tenant_id = '$TENANT_ID';
 DELETE FROM messages
 WHERE tenant_id = '$TENANT_ID' AND direction = 'outbound';
 DELETE FROM threads
-WHERE tenant_id = '$TENANT_ID' AND id != 'thr_demo_inbound';
-DELETE FROM tenant_credit_ledger
-WHERE tenant_id = '$TENANT_ID';
-DELETE FROM tenant_payment_receipts
-WHERE tenant_id = '$TENANT_ID';
-DELETE FROM tenant_billing_accounts
-WHERE tenant_id = '$TENANT_ID';
+WHERE tenant_id = '$TENANT_ID' AND mailbox_id = '$MAILBOX_ID' AND id != 'thr_demo_inbound';
 COMMIT;"
 }
 
-seed_failed_outbound_attempt() {
-  local message_id="msg_quota_failed_${RUN_ID}"
-  local outbound_job_id="obj_quota_failed_${RUN_ID}"
-  local draft_r2_key="drafts/drf_quota_failed_${RUN_ID}.json"
-  local timestamp
-  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
+reset_internal_recipient_mailbox() {
   exec_sql "
 BEGIN TRANSACTION;
-INSERT INTO messages (
-  id, tenant_id, mailbox_id, thread_id, direction, provider, from_addr, to_addr,
-  subject, status, created_at
-) VALUES (
-  '$message_id', '$TENANT_ID', '$MAILBOX_ID', NULL, 'outbound', 'ses', '$MAILBOX_ADDRESS', '$FIRST_TO_EMAIL',
-  'Quota regression seeded failed send', 'failed', '$timestamp'
+DELETE FROM agent_runs
+WHERE task_id IN (
+  SELECT id
+  FROM tasks
+  WHERE mailbox_id = '$INTERNAL_MAILBOX_ID'
 );
-INSERT INTO outbound_jobs (
-  id, message_id, task_id, status, ses_region, retry_count, next_retry_at,
-  last_error, draft_r2_key, created_at, updated_at
+DELETE FROM tasks
+WHERE mailbox_id = '$INTERNAL_MAILBOX_ID';
+DELETE FROM attachments
+WHERE message_id IN (
+  SELECT id
+  FROM messages
+  WHERE mailbox_id = '$INTERNAL_MAILBOX_ID'
+);
+DELETE FROM messages
+WHERE mailbox_id = '$INTERNAL_MAILBOX_ID';
+DELETE FROM threads
+WHERE mailbox_id = '$INTERNAL_MAILBOX_ID';
+DELETE FROM agent_mailboxes
+WHERE mailbox_id = '$INTERNAL_MAILBOX_ID';
+DELETE FROM mailboxes
+WHERE id = '$INTERNAL_MAILBOX_ID';
+INSERT INTO mailboxes (
+  id, tenant_id, address, status, created_at
 ) VALUES (
-  '$outbound_job_id', '$message_id', NULL, 'failed', 'us-east-1', 1, NULL,
-  'seeded_failed_send_for_quota_regression', '$draft_r2_key', '$timestamp', '$timestamp'
+  '$INTERNAL_MAILBOX_ID', '$TENANT_ID', '$INTERNAL_MAILBOX_ADDRESS', 'active', '2026-03-16T00:00:00.000Z'
 );
 COMMIT;"
 }
@@ -183,9 +189,35 @@ wait_for_job_status() {
   exit 1
 }
 
+wait_for_recipient_message() {
+  local subject="$1"
+  local attempt
+
+  for attempt in $(seq 1 40); do
+    capture_request "GET" "/v1/mailboxes/self/messages?direction=inbound&limit=20&search=$(python3 - <<'PY' "$subject"
+import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1]))
+PY
+)" "" "authorization: Bearer $RECIPIENT_TOKEN"
+    if [[ "$LAST_STATUS" == "200" ]] && jq -e --arg subject "$subject" '
+      .items
+      | map(select(.subject == $subject and .provider == "internal"))
+      | length >= 1
+    ' "$LAST_BODY" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for recipient mailbox to receive subject: $subject" >&2
+  cat "$LAST_BODY" >&2
+  exit 1
+}
+
 require_cmd curl
 require_cmd jq
 require_cmd wrangler
+require_cmd python3
 
 trap cleanup EXIT
 
@@ -197,9 +229,13 @@ if [[ "$ADMIN_SECRET" == "replace-with-admin-api-secret" ]]; then
   exit 1
 fi
 
-echo "Minting seeded demo mailbox bearer token..."
+echo "Resetting demo outbound state and preparing a real internal recipient mailbox..."
+reset_demo_outbound_state
+reset_internal_recipient_mailbox
+
+echo "Minting sender mailbox bearer token..."
 capture_request "POST" "/v1/auth/tokens" "{
-  \"sub\": \"outbound-quota-regression-smoke\",
+  \"sub\": \"outbound-quota-regression-sender\",
   \"tenantId\": \"$TENANT_ID\",
   \"agentId\": \"$AGENT_ID\",
   \"mailboxIds\": [\"$MAILBOX_ID\"],
@@ -207,18 +243,44 @@ capture_request "POST" "/v1/auth/tokens" "{
   \"expiresInSeconds\": 3600
 }" "x-admin-secret: $ADMIN_SECRET"
 assert_status "201"
-MAILBOX_TOKEN="$(jq -r '.token' "$LAST_BODY")"
+SENDER_TOKEN="$(jq -r '.token' "$LAST_BODY")"
 
-echo "Loading seeded mailbox context..."
-capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $MAILBOX_TOKEN"
+echo "Minting recipient mailbox read token..."
+capture_request "POST" "/v1/auth/tokens" "{
+  \"sub\": \"outbound-quota-regression-recipient\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"mailboxIds\": [\"$INTERNAL_MAILBOX_ID\"],
+  \"scopes\": [\"mail:read\"],
+  \"expiresInSeconds\": 3600
+}" "x-admin-secret: $ADMIN_SECRET"
+assert_status "201"
+RECIPIENT_TOKEN="$(jq -r '.token' "$LAST_BODY")"
+
+echo "Minting control-plane token for agent policy updates..."
+capture_request "POST" "/v1/auth/tokens" "{
+  \"sub\": \"outbound-quota-regression-control\",
+  \"tenantId\": \"$TENANT_ID\",
+  \"agentId\": \"$AGENT_ID\",
+  \"scopes\": [\"agent:update\"],
+  \"expiresInSeconds\": 3600
+}" "x-admin-secret: $ADMIN_SECRET"
+assert_status "201"
+CONTROL_TOKEN="$(jq -r '.token' "$LAST_BODY")"
+
+echo "Loading seeded sender mailbox context..."
+capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $SENDER_TOKEN"
 assert_status "200"
 MAILBOX_ADDRESS="$(jq -r '.address' "$LAST_BODY")"
 jq -e --arg mailbox "$MAILBOX_ID" '.id == $mailbox and .status == "active"' "$LAST_BODY" >/dev/null
 
-echo "Resetting demo tenant outbound state..."
-reset_demo_outbound_state
+echo "Loading internal recipient mailbox context..."
+capture_request "GET" "/v1/mailboxes/self" "" "authorization: Bearer $RECIPIENT_TOKEN"
+assert_status "200"
+jq -e --arg mailbox "$INTERNAL_MAILBOX_ID" --arg address "$INTERNAL_MAILBOX_ADDRESS" '
+  .id == $mailbox and .address == $address and .status == "active"
+' "$LAST_BODY" >/dev/null
 
-echo "Ensuring demo tenant uses the free internal-only policy..."
+echo "Ensuring demo tenant stays on the default internal-only policy..."
 capture_request "PUT" "/v1/tenants/$TENANT_ID/send-policy" '{
   "pricingTier": "free",
   "outboundStatus": "internal_only",
@@ -229,34 +291,61 @@ capture_request "PUT" "/v1/tenants/$TENANT_ID/send-policy" '{
 assert_status "200"
 jq -e '.pricingTier == "free" and .outboundStatus == "internal_only" and .externalSendEnabled == false' "$LAST_BODY" >/dev/null
 
-echo "Seeding one failed outbound attempt inside the rolling quota window..."
-seed_failed_outbound_attempt
+echo "Restricting the sender agent allowlist to example.com so true internal mailbox delivery must bypass domain policy..."
+capture_request "PUT" "/v1/agents/$AGENT_ID/policy" '{
+  "autoReplyEnabled": false,
+  "humanReviewRequired": true,
+  "confidenceThreshold": 0.85,
+  "maxAutoRepliesPerThread": 1,
+  "allowedRecipientDomains": ["example.com"],
+  "blockedSenderDomains": [],
+  "allowedTools": ["reply_email"]
+}' "authorization: Bearer $CONTROL_TOKEN"
+assert_status "200"
+jq -e '.allowedRecipientDomains == ["example.com"]' "$LAST_BODY" >/dev/null
 
-echo "Sending the first legitimate internal email; failed sends should not consume quota..."
+echo "Sending the first internal mailbox-to-mailbox message; it should succeed despite the external-only domain allowlist..."
 capture_request "POST" "/v1/messages/send" "{
-  \"to\": [\"$FIRST_TO_EMAIL\"],
-  \"subject\": \"Quota regression first send $RUN_ID\",
-  \"text\": \"First legitimate send after a failed outbound should succeed.\",
-  \"idempotencyKey\": \"quota-first-$RUN_ID\"
-}" "authorization: Bearer $MAILBOX_TOKEN"
+  \"to\": [\"$INTERNAL_MAILBOX_ADDRESS\"],
+  \"subject\": \"$FIRST_INTERNAL_SUBJECT\",
+  \"text\": \"First internal mailbox delivery should bypass external restrictions.\",
+  \"idempotencyKey\": \"internal-first-$RUN_ID\"
+}" "authorization: Bearer $SENDER_TOKEN"
 assert_status "202"
 FIRST_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
 jq -e '.status == "queued"' "$LAST_BODY" >/dev/null
-
 wait_for_job_status "$FIRST_OUTBOUND_JOB_ID" "sent"
-capture_request "GET" "/v1/debug/outbound-jobs/$FIRST_OUTBOUND_JOB_ID" "" "x-admin-secret: $ADMIN_SECRET"
-assert_status "200"
-jq -e '.status == "sent" and (.lastError == null or .lastError == "")' "$LAST_BODY" >/dev/null
+wait_for_recipient_message "$FIRST_INTERNAL_SUBJECT"
 
-echo "Sending a second legitimate internal email; the hourly limit should still apply after one successful send..."
+echo "Sending the second internal mailbox-to-mailbox message; internal mail should remain unrestricted and not hit the external hourly cap..."
 capture_request "POST" "/v1/messages/send" "{
-  \"to\": [\"$SECOND_TO_EMAIL\"],
-  \"subject\": \"Quota regression second send $RUN_ID\",
-  \"text\": \"Second send in the same rolling hour should be blocked.\",
-  \"idempotencyKey\": \"quota-second-$RUN_ID\"
-}" "authorization: Bearer $MAILBOX_TOKEN"
-assert_status "429"
-jq -e '.error | contains("Free-tier hourly send limit reached")' "$LAST_BODY" >/dev/null
+  \"to\": [\"$INTERNAL_MAILBOX_ADDRESS\"],
+  \"subject\": \"$SECOND_INTERNAL_SUBJECT\",
+  \"text\": \"Second internal mailbox delivery should also succeed.\",
+  \"idempotencyKey\": \"internal-second-$RUN_ID\"
+}" "authorization: Bearer $SENDER_TOKEN"
+assert_status "202"
+SECOND_OUTBOUND_JOB_ID="$(jq -r '.outboundJobId' "$LAST_BODY")"
+jq -e '.status == "queued"' "$LAST_BODY" >/dev/null
+wait_for_job_status "$SECOND_OUTBOUND_JOB_ID" "sent"
+wait_for_recipient_message "$SECOND_INTERNAL_SUBJECT"
+
+echo "Verifying the recipient inbox now contains both internal messages..."
+capture_request "GET" "/v1/mailboxes/self/messages?direction=inbound&limit=20" "" "authorization: Bearer $RECIPIENT_TOKEN"
+assert_status "200"
+jq -e --arg first "$FIRST_INTERNAL_SUBJECT" --arg second "$SECOND_INTERNAL_SUBJECT" '
+  (.items | map(select(.provider == "internal" and .subject == $first)) | length) >= 1 and
+  (.items | map(select(.provider == "internal" and .subject == $second)) | length) >= 1
+' "$LAST_BODY" >/dev/null
+
+echo "Checking that external sending is still blocked under the same internal-only tenant policy..."
+capture_request "POST" "/v1/messages/send" "{
+  \"to\": [\"$EXTERNAL_TO_EMAIL\"],
+  \"subject\": \"Blocked external send $RUN_ID\",
+  \"text\": \"External sending should still require explicit enablement.\",
+  \"idempotencyKey\": \"external-blocked-$RUN_ID\"
+}" "authorization: Bearer $SENDER_TOKEN"
+assert_status "403"
+jq -e '.error | contains("External sending requires available credits or an enabled outbound policy")' "$LAST_BODY" >/dev/null
 
 echo "Outbound quota regression smoke completed."
-echo "First outbound job: $FIRST_OUTBOUND_JOB_ID"

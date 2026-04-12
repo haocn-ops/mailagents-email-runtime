@@ -668,7 +668,11 @@ async function validateDraftOutboundPolicy(env: Env, draft: {
   });
 
   if (!decision.ok) {
-    const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+    const status = decision.code === "invalid_recipient_routing"
+      ? 400
+      : decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded"
+        ? 429
+        : 403;
     throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", status);
   }
 }
@@ -4391,7 +4395,11 @@ async function createAndSendDraft(env: Env, input: {
       bcc: input.payload.bcc,
     });
     if (!decision.ok) {
-      const status = decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded" ? 429 : 403;
+      const status = decision.code === "invalid_recipient_routing"
+        ? 400
+        : decision.code === "daily_quota_exceeded" || decision.code === "hourly_quota_exceeded"
+          ? 429
+          : 403;
       throw new RouteRequestError(decision.message ?? "Outbound policy denied this send request", status);
     }
 

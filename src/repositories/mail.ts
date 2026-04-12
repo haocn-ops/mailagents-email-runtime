@@ -1,6 +1,7 @@
 import { createId } from "../lib/ids";
 import { allRows, execute, firstRow, requireRow } from "../lib/db";
 import { normalizeSubject } from "../lib/email-parser";
+import { routeOutboundRecipients } from "../lib/local-recipient-routing";
 import { getOutboundCreditRequirement } from "../lib/outbound-credits";
 import { getOutboundProvider } from "../lib/outbound-provider";
 import { releaseTenantReservedCredits, reserveTenantAvailableCredits } from "./billing";
@@ -2118,6 +2119,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
       sourceMessageId: draft.sourceMessageId,
       createdVia: draft.createdVia,
     });
+    const routedRecipients = await routeOutboundRecipients(env, { to, cc, bcc });
     const attachmentRefs = draftPayload.attachments === undefined || draftPayload.attachments === null
       ? []
       : Array.isArray(draftPayload.attachments)
@@ -2207,7 +2209,7 @@ export async function enqueueDraftSend(env: Env, draftId: string): Promise<{ out
       draft.mailboxId,
       outboundThreadId,
       "outbound",
-      getOutboundProvider(env),
+      routedRecipients.externalRecipientCount > 0 ? getOutboundProvider(env) : "internal",
       fromAddress,
       Array.isArray(draftPayload.to) ? draftPayload.to.join(",") : "",
       subject,
@@ -2336,6 +2338,7 @@ export async function getTenantOutboundUsageWindowCounts(env: Env, input: {
        FROM messages m
        WHERE m.tenant_id = ?
          AND m.direction = 'outbound'
+         AND m.provider != 'internal'
          AND m.created_at >= ?
          AND m.status != 'failed'
          AND NOT EXISTS (
