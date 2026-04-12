@@ -12,6 +12,28 @@ INSERT OR IGNORE INTO mailboxes (
   '2026-03-16T00:00:00.000Z'
 );
 
+INSERT OR IGNORE INTO mailboxes (
+  id,
+  tenant_id,
+  address,
+  status,
+  created_at
+) VALUES
+  (
+    'mbx_demo_peer',
+    't_demo',
+    'peer@mailagents.net',
+    'active',
+    '2026-03-16T00:00:00.000Z'
+  ),
+  (
+    'mbx_demo_customer',
+    't_demo',
+    'customer@mailagents.net',
+    'active',
+    '2026-03-16T00:00:00.000Z'
+  );
+
 INSERT OR IGNORE INTO agents (
   id,
   tenant_id,
