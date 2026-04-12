@@ -2580,7 +2580,7 @@ function layout(active: string, title: string, content: string): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(pageTitle)}</title>
-  <meta name="description" content="Mailagents is AI-first email infrastructure for agent-native products, with mailbox orchestration, transactional delivery, and a clear request-access onboarding path." />
+  <meta name="description" content="Mailagents is AI-first email infrastructure for agent-native products, with mailbox orchestration, internal mailbox delivery, transactional external delivery, and a clear request-access onboarding path." />
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Instrument+Serif:ital@0;1&display=swap');
     :root {
@@ -2993,12 +2993,12 @@ function renderHome(url: URL): string {
 
 <h2>Availability And Constraints</h2>
 
-<p>Mailagents is usable today, but not every operator-facing delivery path has the same reliability profile. Treat operator-channel token delivery and authenticated mailbox-scoped routes as the primary path. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
+<p>Mailagents is usable today, but internal mailbox delivery and external-recipient delivery have different reliability profiles. Active Mailagents mailbox recipients can exchange mail through the runtime's local inbound path by default. Treat external operator-email delivery as constrained until the configured outbound provider and credit-backed outbound policy are both available for the active tenant and region.</p>
 
 <ul>
-  <li><strong>Available now:</strong> signup API, mailbox self routes, MCP mailbox tools, authenticated token rotate, and the high-level send/reply routes.</li>
+  <li><strong>Available now:</strong> signup API, mailbox self routes, MCP mailbox tools, authenticated token rotate, high-level send/reply routes, and mailbox-to-mailbox delivery between active Mailagents mailboxes.</li>
   <li><strong>Constrained:</strong> welcome email to arbitrary external operator inboxes and public token reissue email to arbitrary external inboxes.</li>
-  <li><strong>Default free-tier send cap:</strong> ordinary users can send up to <code>10</code> emails per rolling 24 hours and <code>1</code> email per rolling hour until they move beyond the default free tier.</li>
+  <li><strong>Default external send cap:</strong> ordinary users can send up to <code>10</code> external-recipient emails per rolling 24 hours and <code>1</code> external-recipient email per rolling hour until they move beyond the default free tier. Internal mailbox-to-mailbox sends do not consume that external-send quota or external-send credits.</li>
   <li><strong>Recommended fallback:</strong> use <code>POST /v1/auth/token/rotate</code> while the current token is still valid, or <code>POST /public/token/reissue</code> if the token has already expired.</li>
   <li><strong>Unlock guide:</strong> read <a href="/limits">Limits And Access</a> for the current billing, policy, and external-delivery enablement flow.</li>
 </ul>
@@ -3079,8 +3079,9 @@ content-type: application/json
   <li>Read <code>accessToken</code> from the signup response and use it immediately.</li>
   <li>Confirm mailbox context with <code>GET /v1/mailboxes/self</code>.</li>
   <li>Read inbound mail with <code>GET /v1/mailboxes/self/messages</code>.</li>
-  <li>If you plan to reach arbitrary external recipients, check <code>GET /v1/billing/account</code> and <a href="/limits">Limits And Access</a> before the first outbound send.</li>
-  <li>Send outbound mail with <code>POST /v1/messages/send</code>.</li>
+  <li>For a first no-provider send, target another active Mailagents mailbox; those internal sends do not require external-send credits.</li>
+  <li>If you plan to reach arbitrary external recipients, check <code>GET /v1/billing/account</code> and <a href="/limits">Limits And Access</a> before the first external send.</li>
+  <li>Send mailbox mail with <code>POST /v1/messages/send</code>.</li>
   <li>Keep the returned <code>outboundJobId</code> and poll <code>GET /v1/outbound-jobs/{outboundJobId}</code> until <code>finalDeliveryState</code> becomes <code>sent</code> or <code>failed</code>.</li>
   <li>Reply on-thread with <code>POST /v1/messages/{messageId}/reply</code>.</li>
   <li>Use <code>POST /mcp</code> and <code>tools/list</code> when you want the MCP tool surface instead of direct HTTP.</li>
@@ -3092,10 +3093,10 @@ content-type: application/json
 
 <h2>Billing And Topup</h2>
 
-<p>If an external send returns an error such as <code>External sending requires available credits</code>, the next step is usually to top up credits on the same tenant with the mailbox-scoped token you already have.</p>
+<p>If an external send returns an error such as <code>External sending requires available credits</code>, the next step is usually to top up credits on the same tenant with the mailbox-scoped token you already have. This applies to external recipients; active Mailagents mailbox recipients are delivered internally and do not require those external-send credits.</p>
 
 <ul>
-  <li><strong>Default free-tier posture:</strong> new tenants start constrained, including the rolling <code>10/day</code> and <code>1/hour</code> ordinary-user cap, until they have usable credits or an explicitly enabled outbound policy.</li>
+  <li><strong>Default external-send posture:</strong> new tenants can send to active Mailagents mailboxes by default, while external recipients remain constrained by the rolling <code>10/day</code> and <code>1/hour</code> ordinary-user cap until the tenant has usable credits or an explicitly enabled outbound policy.</li>
   <li><strong>Fast unlock:</strong> call <code>POST /v1/billing/topup</code> with the same mailbox-scoped bearer token to request a quote, then submit the signed proof with the <code>payment-signature</code> header.</li>
   <li><strong>Facilitator path:</strong> for <code>exact/eip3009</code>, sign the authorization, submit it inside the x402 proof as <code>payload.authorization</code>, keep the quote <code>resource</code> object in the proof, and use a bytes32 hex nonce. Do not broadcast the same <code>transferWithAuthorization</code> yourself first.</li>
   <li><strong>Readiness check:</strong> after settlement, confirm <code>GET /v1/billing/account</code> shows usable credits before treating external delivery as unlocked.</li>
@@ -3161,7 +3162,7 @@ content-type: application/json
     "idempotencyKey": "send-demo-001"
   }' | jq</code></pre>
 
-<p>Keep the accepted response. It returns <code>outboundJobId</code> plus <code>statusCheck.outboundJobPath</code>. Poll <code>GET /v1/outbound-jobs/{outboundJobId}</code> until <code>finalDeliveryState</code> becomes <code>sent</code> or <code>failed</code>.</p>
+<p>Keep the accepted response. It returns <code>outboundJobId</code> plus <code>statusCheck.outboundJobPath</code>. For active Mailagents mailbox recipients, delivery routes internally; for external recipients, delivery still depends on external-send credits, policy, provider readiness, and abuse controls. Poll <code>GET /v1/outbound-jobs/{outboundJobId}</code> until <code>finalDeliveryState</code> becomes <code>sent</code> or <code>failed</code>.</p>
 
 <h3>5. Reply To An Inbound Message With The HTTP API</h3>
 
@@ -3290,7 +3291,7 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>One active mailbox deployment</li>
   <li>One default mailbox-scoped access token for read, draft, and send APIs</li>
   <li>Immediate access to MCP mailbox tools such as <code>list_messages</code>, <code>send_email</code>, and <code>reply_to_message</code></li>
-  <li>One welcome email through the same outbound runtime used by the product</li>
+  <li>One welcome email through the same outbound runtime used by the product; external operator inbox delivery remains constrained by the active external provider path</li>
   <li>One public token reissue path that only emails refreshed tokens to the original operator inbox</li>
   <li>One authenticated token rotate path for agents that already hold a valid token and want to rotate without operator email</li>
 </ol>
@@ -3323,8 +3324,9 @@ curl -sS -X POST https://api.mailagents.net/mcp \
   <li>The signup API returns a mailbox-scoped token when API signing is configured for the environment.</li>
   <li>Expired signup API tokens can be reissued without the old token, but refreshed credentials are only sent to the original operator inbox.</li>
   <li>Still-valid signup API tokens can be rotated without contacting the operator by using the authenticated rotate route.</li>
-  <li>Outbound welcome email uses the same queue-backed send flow as other transactional messages.</li>
-  <li>Inbound and outbound behavior is constrained by abuse and suppression controls.</li>
+  <li>Internal mailbox-to-mailbox sends use local inbound delivery and do not consume external-send credits or rolling external-recipient quota.</li>
+  <li>External welcome email uses the same queue-backed send flow as other transactional messages that target external recipients.</li>
+  <li>External-recipient behavior is constrained by abuse, suppression, provider, and credit controls.</li>
   <li>Operator and compliance contacts are published on this site for review.</li>
 </ul>
 
@@ -3350,6 +3352,12 @@ intended_use:
   - agent inbox provisioning
   - inbound email workflows
   - transactional delivery
+internal_delivery:
+  active_mailagents_mailboxes: local_inbound_delivery
+  external_send_credits_required: false
+external_delivery:
+  provider: configured_runtime_provider
+  credits_or_enabled_policy_required: true
 unsupported_use:
   - cold outreach
   - purchased lists
@@ -3392,10 +3400,10 @@ function renderLimits(): string {
     </section>
     <section>
       <h2>What Is Limited By Default</h2>
-      <p>Mailagents intentionally starts every tenant in a conservative posture. External delivery and some operator-email recovery paths stay limited until the tenant has usable credits or an explicitly enabled external send policy.</p>
+      <p>Mailagents intentionally starts every tenant in a conservative posture for external delivery. Mailbox-to-mailbox delivery between active Mailagents mailboxes is allowed by default, routes through local inbound delivery, and does not consume external-send credits or rolling external-recipient quota.</p>
       <ul>
-        <li>Ordinary free-tier tenants can send up to <strong>10 outbound emails per rolling 24 hours</strong>.</li>
-        <li>Ordinary free-tier tenants can send up to <strong>1 outbound email per rolling 1 hour</strong>.</li>
+        <li>Ordinary free-tier tenants can send up to <strong>10 external-recipient emails per rolling 24 hours</strong>.</li>
+        <li>Ordinary free-tier tenants can send up to <strong>1 external-recipient email per rolling 1 hour</strong>.</li>
         <li>Welcome email to arbitrary external operator inboxes should be treated as best-effort, not the primary access path.</li>
         <li>Public token reissue email to arbitrary external operator inboxes is not guaranteed while the tenant is still on the default constrained path.</li>
         <li>External-recipient sending is still blocked while the tenant has no usable credits and the outbound policy has not been explicitly enabled.</li>
@@ -3408,6 +3416,7 @@ function renderLimits(): string {
         <li>Use the inline <code>accessToken</code> returned by <code>POST /public/signup</code> as the primary bootstrap credential.</li>
         <li>Prefer authenticated token rotation with <code>POST /v1/auth/token/rotate</code> before the current token expires.</li>
         <li>Use the mailbox itself as the system of record for operational messages instead of relying on external operator inbox delivery.</li>
+        <li>Use active Mailagents mailbox recipients for default internal delivery that does not depend on the external provider path.</li>
         <li>For external recipients, check <code>GET /v1/billing/account</code> before the first send and treat <code>/limits</code> as the source of truth for credits-first unlock guidance.</li>
       </ul>
     </section>
@@ -3429,7 +3438,7 @@ function renderLimits(): string {
     <section>
       <h2>States You Will See</h2>
       <ul>
-        <li><strong>Default path:</strong> billing is typically <code>free</code>, outbound policy is <code>internal_only</code>, and the ordinary-user send cap is <code>10/day</code> plus <code>1/hour</code> on rolling windows.</li>
+        <li><strong>Default path:</strong> billing is typically <code>free</code>, outbound policy is <code>internal_only</code>, active Mailagents mailbox recipients are allowed without credits, and the external-recipient cap is <code>10/day</code> plus <code>1/hour</code> on rolling windows.</li>
         <li><strong>Credits-backed external send:</strong> when <code>availableCredits &gt; 0</code>, external delivery is allowed even if the outbound policy still reports <code>internal_only</code>.</li>
         <li><strong>Upgrade requested:</strong> billing may move to <code>paid_review</code> and outbound policy may move to <code>external_review</code>.</li>
         <li><strong>External delivery enabled:</strong> billing becomes <code>paid_active</code> and outbound policy becomes <code>external_enabled</code>.</li>
